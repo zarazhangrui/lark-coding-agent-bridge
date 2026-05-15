@@ -17,7 +17,9 @@
 ## 前置条件
 
 - Node.js **≥ 20**
-- `claude` CLI 已安装并登录：https://docs.anthropic.com/en/docs/claude-code/quickstart
+- 任选其一的 coding-agent CLI，已安装并登录：
+  - `claude`（Claude Code）：https://docs.anthropic.com/en/docs/claude-code/quickstart  *（默认）*
+  - `codex`（OpenAI Codex CLI）：`codex login` 完成认证
 - 一个飞书 / Lark PersonalAgent 应用（首次启动的扫码向导能帮你创建）
 
 ## 安装
@@ -58,15 +60,33 @@ lark-channel-bridge start
 
 启用以后再次 `lark-channel-bridge start`，看到 `✓ 已连接` 就可以在飞书里找 bot 对话了。
 
+### 同时跑 Claude 和 Codex 两个 bot
+
+每个 agent 用独立的数据目录和独立的飞书 app 同机并行：
+
+```bash
+# 原 Claude bot — ~/.lark-channel/，agent=claude
+lark-channel-bridge start            # 或：start --claude
+
+# 新加一个 Codex bot — ~/.lark-codex/，agent=codex
+lark-channel-bridge start --codex
+```
+
+`--codex` 自动指向 `~/.lark-codex/config.json`，首次跑触发扫码向导让你绑定**第二个** PersonalAgent 应用，并把 `preferences.agent = "codex"` 写进那份 config。两个进程共用 `processes.json` 注册机制，`lark-channel-bridge ps` 都能看到。两个数据目录里的 sessions / workspaces / logs / media 互不干扰。
+
+需要更自定义的位置时 `-c <path>` 依然可用：数据目录就是 `dirname(path)`。`-c` 和 `--codex` 可以叠加——`-c` 决定路径，`--codex` 负责写 agent 偏好。
+
+> Codex 0.128 的 `exec --json` 不输出文本 delta，所以卡片内容是整段一次性出现，不是打字机式增量；不过工具调用（`command_execution` / `file_change`）依然有 started/completed 双事件，panel 会实时更新。
+
 ## 命令速查
 
 ### 宿主 CLI
 
 ```
-lark-channel-bridge start [-c <config>]   启动 bot
-lark-channel-bridge ps                    列出本机所有正在跑的 start 进程
-lark-channel-bridge stop <id|#>           终止指定 start 进程（SIGTERM，2s 后 SIGKILL）
-lark-channel-bridge --help                列所有命令
+lark-channel-bridge start [-c <config>] [--claude|--codex]   启动 bot
+lark-channel-bridge ps                                       列出本机所有正在跑的 start 进程
+lark-channel-bridge stop <id|#>                              终止指定 start 进程（SIGTERM，2s 后 SIGKILL）
+lark-channel-bridge --help                                   列所有命令
 ```
 
 > 多开同一个 app 时，开放平台会把事件随机推到其中一个长连接。`start` 启动前会检测同 app 已有的进程，TTY 下提示 `[c]ontinue / [k]ill old / [a]bort` 三选；非 TTY 只 warn 并继续。

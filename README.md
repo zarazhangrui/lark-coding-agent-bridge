@@ -17,7 +17,9 @@ A lightweight bot that bridges Feishu / Lark messenger with your local Claude Co
 ## Prerequisites
 
 - Node.js **>= 20**
-- `claude` CLI installed and logged in — see https://docs.anthropic.com/en/docs/claude-code/quickstart
+- One of the supported coding-agent CLIs, installed and logged in:
+  - `claude` (Claude Code) — see https://docs.anthropic.com/en/docs/claude-code/quickstart  *(default)*
+  - `codex` (OpenAI Codex CLI) — `codex login` to authenticate
 - A Lark / Feishu **PersonalAgent** app (the QR-code wizard on first launch can create one for you).
 
 ## Install
@@ -58,15 +60,33 @@ The wizard creates the app shell, but you still need to confirm a few things on 
 
 After enabling those, run `lark-channel-bridge start` again. Once you see `✓ Connected`, find the bot in Feishu / Lark and start chatting.
 
+### Bridging Codex instead of Claude
+
+Run two bots side-by-side (one per agent) with separate data dirs and separate Lark apps:
+
+```bash
+# original Claude bot — ~/.lark-channel/, agent=claude
+lark-channel-bridge start            # or: start --claude
+
+# second bot wired to Codex — ~/.lark-codex/, agent=codex
+lark-channel-bridge start --codex
+```
+
+`--codex` auto-uses `~/.lark-codex/config.json`, fires the QR-code wizard on first run so you can bind a **second** PersonalAgent app, and persists `preferences.agent = "codex"` into that config. Both processes use the same `processes.json` mechanism, so `lark-channel-bridge ps` lists them both. Sessions, workspaces, logs, and media cache stay fully isolated between the two data dirs.
+
+For a fully custom location, `-c <path>` still works: the data dir is `dirname(path)`. You can combine `-c` with `--codex` if you want a non-default codex install (`-c` wins on path, `--codex` still writes the agent preference).
+
+> Codex 0.128 does not emit incremental text tokens on `exec --json`, so the card content updates once per turn rather than typewriter-style. Tool-call panels (`command_execution` / `file_change`) still render incrementally.
+
 ## Commands
 
 ### Host CLI
 
 ```
-lark-channel-bridge start [-c <config>]   Start the bot
-lark-channel-bridge ps                    List all running start processes on this machine
-lark-channel-bridge stop <id|#>           Stop a start process (SIGTERM, SIGKILL after 2s)
-lark-channel-bridge --help                List all commands
+lark-channel-bridge start [-c <config>] [--claude|--codex]   Start the bot
+lark-channel-bridge ps                                       List all running start processes on this machine
+lark-channel-bridge stop <id|#>                              Stop a start process (SIGTERM, SIGKILL after 2s)
+lark-channel-bridge --help                                   List all commands
 ```
 
 > When the same app is started multiple times, Lark's open platform routes events to one of the live WebSocket connections at random. `start` detects existing processes for the same app and (in a TTY) prompts: `[c]ontinue / [k]ill old / [a]bort`. In non-TTY mode it warns and continues.
