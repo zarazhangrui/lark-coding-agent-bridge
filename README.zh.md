@@ -17,8 +17,91 @@
 ## 前置条件
 
 - Node.js **≥ 20**
-- `claude` CLI 已安装并登录：https://docs.anthropic.com/en/docs/claude-code/quickstart
+- `claude` CLI（默认）或 `coco` CLI（字节内部）已安装并登录
 - 一个飞书 / Lark PersonalAgent 应用（首次启动的扫码向导能帮你创建）
+
+## Agent 后端
+
+bridge 支持切换不同的后端 CLI 来执行对话：
+
+| 后端 | CLI 命令 | 说明 |
+|------|----------|------|
+| `claude`（默认） | `claude` | 官方 [Anthropic Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code/quickstart) |
+| `coco` | `coco` | 字节内部 **Trae CLI** — [Trae IDE](https://www.trae.ai/) / Marscode 的命令行版本 |
+
+### 什么是 Coco？
+
+**Coco** 是 Trae AI（前身 Marscode）的命令行版本，字节跳动的 AI 编码助手。它提供与 Trae IDE 插件相同的 Agent 能力（代码生成、编辑、Shell 命令、文件操作等），但以无头模式在终端中运行，非常适合作为本 bridge 的后端。
+
+主要特点：
+- 流式输出结构化 JSON 事件（与 Claude Code 的 `--output-format stream-json` 一致）
+- 支持 `--yolo` 模式自动接受编辑
+- 支持通过 `--resume <session_id>` 恢复会话
+- 字节内部可用；外部用户请使用 `claude` 后端
+
+### 安装 Coco
+
+```bash
+# 内部安装方式
+tnpm i -g @anthropic/traecli
+# 或从内部发布页下载
+
+# 验证安装
+coco --version
+```
+
+> 如果 `coco` 安装在非标准路径或名称不同，可以在配置中指定 `cocoBinary`（见下方）。
+
+### 切换到 Coco 后端
+
+编辑 `~/.lark-channel/config.json`：
+
+```json
+{
+  "preferences": {
+    "agentBackend": "coco",
+    "cocoBinary": "/path/to/coco"
+  }
+}
+```
+
+| 字段 | 必填 | 说明 |
+|------|------|------|
+| `agentBackend` | 是 | 设为 `"coco"` 启用 Coco 后端 |
+| `cocoBinary` | 否 | `coco` 二进制文件的绝对路径，默认 `"coco"`（从 `$PATH` 查找） |
+
+修改后重启 bridge：
+
+```bash
+# 停止当前实例
+lark-channel-bridge stop 1
+# 重新启动
+lark-channel-bridge start
+```
+
+### 验证 Coco 后端是否生效
+
+启动 bridge 后：
+
+1. **看启动日志** — 终端应打印：
+   ```
+   [INFO] Using backend: coco
+   ```
+   如果看到 `✗ 未找到 coco CLI`，说明路径有误或 coco 未安装。
+
+2. **在飞书里发 `/status`** — 返回的卡片会显示当前使用的后端类型。
+
+3. **发任意消息** — 观察终端日志，应看到 `adapter: "coco"` 的 spawn 记录。
+
+### Coco 与 Claude 行为差异
+
+| 维度 | claude | coco |
+|------|--------|------|
+| 权限模式 | `--dangerously-skip-permissions` | `--yolo` |
+| 恢复会话 | `--resume <id>` | `--resume <id>` |
+| 输出格式 | `--output-format stream-json` | `--output-format stream-json` |
+| 系统提示词 | bridge 注入 lark-channel 运行约定 | 同上 |
+| 可用性 | 公开（需 Anthropic 账号） | 内部（字节跳动） |
 
 ## 安装
 

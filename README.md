@@ -25,18 +25,84 @@ A lightweight bot that bridges Feishu / Lark messenger with your local Claude Co
 
 The bridge supports switching between different backend CLIs to run the conversation:
 
-- **`claude`** (default): The official Anthropic Claude Code CLI.
-- **`coco`**: ByteDance internal Trae CLI (`coco`).
+| Backend | CLI | Description |
+|---------|-----|-------------|
+| `claude` (default) | `claude` | The official [Anthropic Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code/quickstart) |
+| `coco` | `coco` | ByteDance internal **Trae CLI** — the coding agent shipped with [Trae IDE](https://www.trae.ai/) / Marscode, exposed as a standalone CLI named `coco` |
 
-To switch backends, set `agentBackend` in your `config.json` (see [Advanced config](#advanced-editing-the-config-file-directly)).
+### What is Coco?
+
+**Coco** is the CLI version of Trae AI (formerly Marscode), ByteDance's AI coding assistant. It provides the same agentic capabilities as the Trae IDE extension — code generation, editing, shell commands, file operations — but runs headlessly in a terminal, making it ideal for use behind this bridge.
+
+Key characteristics:
+- Streams structured JSON events (similar to Claude Code's `--output-format stream-json`)
+- Supports `--yolo` mode for auto-accepting edits
+- Supports session resumption via `--resume <session_id>`
+- Available internally at ByteDance; external users should use `claude` backend
+
+### Installing Coco
+
+```bash
+# Internal: install via company package manager
+tnpm i -g @anthropic/traecli
+# or download from internal release page
+
+# Verify installation
+coco --version
+```
+
+> If your `coco` binary is installed at a non-standard path or named differently, you can specify `cocoBinary` in config (see below).
+
+### Switching to Coco Backend
+
+Edit `~/.lark-channel/config.json`:
 
 ```json
 {
   "preferences": {
-    "agentBackend": "coco"
+    "agentBackend": "coco",
+    "cocoBinary": "/path/to/coco"
   }
 }
 ```
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `agentBackend` | Yes | Set to `"coco"` to use Coco backend |
+| `cocoBinary` | No | Absolute path to the `coco` binary. Defaults to `"coco"` (looks up `/Users/rambo/.local/bin:/Users/rambo/.nvm/versions/node/v22.22.2/bin:/opt/homebrew/opt/go/libexec/bin:/Users/rambo/go/bin:/Users/rambo/Library/pnpm:/Users/rambo/Library/Python/3.9/bin:/opt/homebrew/opt/mysql-client/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/System/Cryptexes/App/usr/bin:/usr/bin:/bin:/usr/sbin:/sbin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/local/bin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/bin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/appleinternal/bin:/pkg/env/global/bin:/usr/local/go/bin:/opt/puppetlabs/bin:/Users/rambo/.aime_pc/bin:/usr/local/sbin`) |
+
+Then restart the bridge:
+
+```bash
+# Stop the running instance
+lark-channel-bridge stop 1
+# Start again
+lark-channel-bridge start
+```
+
+### Verifying Coco Backend is Active
+
+After starting the bridge with `agentBackend: "coco"`:
+
+1. **Check startup log** — terminal should print:
+   ```
+   [INFO] Using backend: coco
+   ```
+   If you see `✗ 未找到 coco CLI`, the binary path is wrong or coco is not installed.
+
+2. **Send `/status` in Feishu** — the response card shows the active backend type.
+
+3. **Send any message** — watch the terminal; you should see `spawn` logs with `adapter: "coco"`.
+
+### Coco vs Claude: Behavioral Differences
+
+| Aspect | claude | coco |
+|--------|--------|------|
+| Permission mode | `--dangerously-skip-permissions` | `--yolo` |
+| Session resume | `--resume <id>` | `--resume <id>` |
+| Output format | `--output-format stream-json` | `--output-format stream-json` |
+| System prompt | bridge injects lark-channel conventions | same |
+| Availability | Public (anyone with Anthropic account) | Internal (ByteDance) |
 
 ## Install
 
