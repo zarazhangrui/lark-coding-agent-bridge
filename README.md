@@ -17,8 +17,26 @@ A lightweight bot that bridges Feishu / Lark messenger with your local Claude Co
 ## Prerequisites
 
 - Node.js **>= 20**
-- `claude` CLI installed and logged in — see https://docs.anthropic.com/en/docs/claude-code/quickstart
+- `claude` CLI (default) or `coco` CLI (internal) installed and logged in.
 - A Lark / Feishu **PersonalAgent** app (the QR-code wizard on first launch can create one for you).
+
+
+## Agent Backends
+
+The bridge supports switching between different backend CLIs to run the conversation:
+
+- **`claude`** (default): The official Anthropic Claude Code CLI.
+- **`coco`**: ByteDance internal Trae CLI (`coco`).
+
+To switch backends, set `agentBackend` in your `config.json` (see [Advanced config](#advanced-editing-the-config-file-directly)).
+
+```json
+{
+  "preferences": {
+    "agentBackend": "coco"
+  }
+}
+```
 
 ## Install
 
@@ -171,6 +189,7 @@ The `/config` form writes to `~/.lark-channel/config.json` under `preferences.ac
 ```json
 {
   "preferences": {
+    "agentBackend": "coco",
     "access": {
       "allowedUsers": ["ou_xxxxxxxxxxxxx"],
       "allowedChats": ["oc_xxxxxxxxxxxxx"],
