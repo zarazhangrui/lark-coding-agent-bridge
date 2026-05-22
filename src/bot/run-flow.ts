@@ -34,6 +34,9 @@ export interface StartRunFlowInput {
   executor: RunExecutor;
   now: number;
   stopGraceMs?: number;
+  /** Per-chat model override resolved by the caller; forwarded to the
+   * executor (and ultimately `agent.run`). Undefined → agent default. */
+  model?: string;
   observability?: {
     profile: string;
     agent: string;
@@ -143,6 +146,7 @@ export async function startRunFlow(input: StartRunFlowInput): Promise<StartRunFl
       policy,
       sessionId,
       threadId,
+      model: input.model,
       images:
         input.capability.agentId === 'codex'
           ? policy.attachments

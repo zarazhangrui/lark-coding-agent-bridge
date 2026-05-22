@@ -30,6 +30,7 @@ import { tryHandleCommand, type Controls } from '../commands';
 import type { AppConfig } from '../config/schema';
 import {
   getAgentStopGraceMs,
+  getDefaultModel,
   getMaxConcurrentRuns,
   getMessageReplyMode,
   getRequireMentionInGroup,
@@ -709,6 +710,10 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
     executor,
     now: Date.now(),
     stopGraceMs: getAgentStopGraceMs(controls.cfg),
+    // Per-chat model: scope override (set via /model) wins over the global
+    // default (`preferences.defaultModel`). Both undefined → the agent picks
+    // its own. Forwarded through startRunFlow → executor.submit → agent.run.
+    model: sessions.getModel(scope) ?? getDefaultModel(controls.cfg),
     observability: {
       profile: controls.profile,
       agent: capability.agentId,
