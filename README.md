@@ -13,8 +13,9 @@ A lightweight bot that bridges Feishu / Lark messenger with your local Claude Co
 - **Per-chat sessions**: each chat keeps its own Claude session, so conversations resume where they left off.
 - **Preempt + batch**: a new message interrupts the running run; rapid-fire messages get coalesced into one request.
 - **Multiple workspaces**: `/ws` switches between named project directories, with sessions tracked per workspace.
+- **Project console**: the bot auto-posts and pins a menu card when added to a group (or `/menu` anytime). Tap buttons to switch / create / add projects — creating and adding both use a button-driven directory browser, so no path typing.
 - **Images and files**: send them to the bot directly — Claude reads the locally downloaded paths.
-- **Interactive cards**: `/help`, `/ws list`, `/status` return cards with buttons you can click.
+- **Interactive cards**: `/menu`, `/help`, `/ws list`, `/status` return cards with buttons you can click.
 
 ## Prerequisites
 
@@ -60,9 +61,12 @@ lark-channel-bridge --help                List all commands
 
 | Command | Effect |
 |---|---|
+| `/menu` | Post & pin the compact "project console" card (switch / create / add project, status) |
 | `/new`, `/reset` | Clear the current chat's session |
 | `/cd <path>` | Switch working directory (resets session) |
 | `/ws list` | List named workspaces (card + buttons) |
+| `/ws new` | Create a project via the directory browser (mkdir + save workspace + switch) |
+| `/ws add` | Add an existing directory as a workspace via the directory browser |
 | `/ws save <name>` | Save current cwd as a named workspace |
 | `/ws use <name>` | Switch to a named workspace |
 | `/ws remove <name>` | Delete a named workspace |

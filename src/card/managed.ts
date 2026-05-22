@@ -77,13 +77,21 @@ export async function updateManagedCard(
   }
   entry.sequence += 1;
   try {
-    await channel.rawClient.cardkit.v1.card.update({
+    const res = (await channel.rawClient.cardkit.v1.card.update({
       path: { card_id: entry.cardId },
       data: {
         card: { type: 'card_json', data: JSON.stringify(card) },
         sequence: entry.sequence,
       },
-    });
+    })) as { code?: number; msg?: string };
+    if (res?.code && res.code !== 0) {
+      log.warn('card', 'managed-update-nonzero', {
+        cardId: entry.cardId,
+        seq: entry.sequence,
+        code: res.code,
+        msg: res.msg,
+      });
+    }
   } catch (err) {
     log.fail('card', err, { step: 'managed-update', cardId: entry.cardId, seq: entry.sequence });
     throw err;

@@ -1,5 +1,6 @@
-import { stat } from 'node:fs/promises';
+import { mkdir, readdir, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
+import { basename, dirname, join } from 'node:path';
 import type { LarkChannel, NormalizedMessage } from '@larksuiteoapi/node-sdk';
 import type { AgentAdapter } from '../agent/types';
 import type { ActiveRuns } from '../bot/active-runs';
@@ -11,7 +12,17 @@ import {
 } from '../card/account-cards';
 import { configCancelledCard, configFormCard, configSavedCard } from '../card/config-card';
 import { forgetManagedCard, sendManagedCard, updateManagedCard } from '../card/managed';
-import { helpCard, resumeCard, statusCard, workspacesCard } from '../card/templates';
+import {
+  helpCard,
+  resumeCard,
+  statusCard,
+  workspacesCard,
+  wsBoundCard,
+  wsBrowseCard,
+  wsCreateCancelledCard,
+  wsCreateFormCard,
+  wsCreatedCard,
+} from '../card/templates';
 import type { AppConfig, MessageReplyMode, TenantBrand } from '../config/schema';
 import {
   getAgentStopGraceMs,
@@ -40,6 +51,7 @@ import type { SessionStore } from '../session/store';
 import { validateAppCredentials } from '../utils/feishu-auth';
 import type { WorkspaceStore } from '../workspace/store';
 import { createBoundChat, defaultChatName } from '../bot/group';
+import { sendAndPinMenu } from '../bot/menu';
 
 export interface Controls {
   /** Restart the bridge in-process: disconnect WS, kill claude runs, reload
@@ -91,6 +103,7 @@ const handlers: Record<string, Handler> = {
   '/reset': handleNew,
   '/cd': handleCd,
   '/ws': handleWs,
+  '/menu': handleMenu,
   '/resume': handleResume,
   '/status': handleStatus,
   '/help': handleHelp,
@@ -289,8 +302,24 @@ async function handleWs(args: string, ctx: CommandContext): Promise<void> {
     case 'remove':
     case 'rm':
       return handleWsRemove(name, ctx);
+    case 'new':
+      return showWsBrowse('new', homedir(), ctx);
+    case 'add':
+      return showWsBrowse('add', homedir(), ctx);
+    case 'browseNew':
+      return showWsBrowse('new', name || homedir(), ctx, true);
+    case 'browseAdd':
+      return showWsBrowse('add', name || homedir(), ctx, true);
+    case 'newat':
+      return showWsCreateForm(name || homedir(), ctx);
+    case 'bind':
+      return bindExisting(name, ctx);
+    case 'create':
+      return submitWsCreate(name, ctx);
+    case 'cancel':
+      return cancelWsCreate(ctx);
     default:
-      await reply(ctx, '用法：`/ws [list|save <name>|use <name>|remove <name>]`');
+      await reply(ctx, '用法：`/ws [list|save <name>|use <name>|remove <name>|new|add]`');
   }
 }
 
@@ -341,6 +370,166 @@ async function handleWsRemove(name: string, ctx: CommandContext): Promise<void> 
     return;
   }
   await reply(ctx, `✓ 已删除工作空间：\`${name}\``);
+}
+
+/**
+ * Render the directory browser for `dir`. `isDrill` is true when navigating
+ * within the browser (up/into a subdir), false when first opening it from the
+ * menu.
+ *
+ * Navigation updates the same card so the chat doesn't fill with cards. The
+ * managed-card registry that enables in-place updates is in-memory, so it's
+ * empty for cards from a previous process (e.g. after a restart). To stay
+ * robust we update in place when the card is live, and otherwise recall the
+ * stale browser card and send a fresh one — never stacking duplicates. The
+ * first open (from the menu) always sends a new card and leaves the menu put.
+ */
+async function showWsBrowse(
+  mode: 'add' | 'new',
+  dir: string,
+  ctx: CommandContext,
+  isDrill = false,
+): Promise<void> {
+  const abs = expandTilde(dir);
+  let subdirs: string[];
+  let truncated: boolean;
+  try {
+    const entries = await readdir(abs, { withFileTypes: true });
+    const all = entries
+      .filter((e) => e.isDirectory() && !e.name.startsWith('.') && e.name !== 'node_modules')
+      .map((e) => e.name)
+      .sort((a, b) => a.localeCompare(b));
+    const CAP = 30;
+    subdirs = all.slice(0, CAP);
+    truncated = all.length > CAP;
+  } catch (err) {
+    await reply(ctx, `❌ 无法读取目录：\`${abs}\`\n${err instanceof Error ? err.message : String(err)}`);
+    return;
+  }
+  const card = wsBrowseCard(mode, abs, dirname(abs), subdirs, truncated);
+  // Navigate by replacing the current browser card (recall + resend) so the
+  // chat doesn't fill with stacked cards. The first open (from the menu) just
+  // sends a new card and leaves the menu in place.
+  if (ctx.fromCardAction && isDrill) await recallMessage(ctx, ctx.msg.messageId);
+  await ctx.channel.send(ctx.msg.chatId, { card });
+}
+
+/** Bind an existing directory as a named workspace (named after its folder)
+ * and switch to it. Triggered by "✅ 添加此目录" in the browser. */
+async function bindExisting(dir: string, ctx: CommandContext): Promise<void> {
+  const abs = expandTilde((dir || '').trim());
+  if (!abs.startsWith('/')) {
+    await reply(ctx, '❌ 路径无效。');
+    return;
+  }
+  try {
+    const st = await stat(abs);
+    if (!st.isDirectory()) {
+      await reply(ctx, `❌ 不是目录：\`${abs}\``);
+      return;
+    }
+  } catch {
+    await reply(ctx, `❌ 目录不存在：\`${abs}\``);
+    return;
+  }
+  const name = basename(abs);
+  ctx.activeRuns.interrupt(ctx.scope);
+  ctx.workspaces.saveNamed(name, abs);
+  ctx.workspaces.setCwd(ctx.scope, abs);
+  ctx.sessions.clear(ctx.scope);
+  log.info('command', 'ws-bind', { name, scope: ctx.scope });
+  // Replace the browser card with a confirmation.
+  if (ctx.fromCardAction) await recallMessage(ctx, ctx.msg.messageId);
+  await sendManagedCard(ctx.channel, ctx.msg.chatId, wsBoundCard(name, abs));
+}
+
+/** Show the project-name form. The parent dir (already chosen via the browser)
+ * is carried on the submit button's value. Triggered by "➕ 在此新建项目". */
+async function showWsCreateForm(parent: string, ctx: CommandContext): Promise<void> {
+  const card = wsCreateFormCard(expandTilde(parent));
+  // Replace the browser card with the name form.
+  if (ctx.fromCardAction) await recallMessage(ctx, ctx.msg.messageId);
+  await sendManagedCard(ctx.channel, ctx.msg.chatId, card);
+}
+
+/** Handle the name-form submit: create `<parent>/<name>`, save it as a named
+ * workspace, and switch to it. `parentArg` is the browsed parent dir. */
+async function submitWsCreate(parentArg: string, ctx: CommandContext): Promise<void> {
+  const fv = ctx.formValue ?? {};
+  const name = String(fv.project_name ?? '').trim();
+  if (!name) {
+    await reply(ctx, '❌ 请填项目名。');
+    return;
+  }
+  if (/[/\\]/.test(name) || name === '.' || name === '..') {
+    await reply(ctx, '❌ 项目名不能包含 `/` `\\` 或为 `.`/`..`，它只是文件夹名。');
+    return;
+  }
+  const parent = expandTilde((parentArg || '').trim() || homedir());
+  if (!parent.startsWith('/')) {
+    await reply(ctx, '❌ 父目录无效。');
+    return;
+  }
+  const target = join(parent, name);
+
+  // An existing directory is reused (just bind it); a non-dir collision errors.
+  try {
+    const st = await stat(target);
+    if (!st.isDirectory()) {
+      await reply(ctx, `❌ 已存在同名文件（非目录）：\`${target}\``);
+      return;
+    }
+  } catch {
+    try {
+      await mkdir(target, { recursive: true });
+    } catch (err) {
+      await reply(ctx, `❌ 创建目录失败：\`${target}\`\n${err instanceof Error ? err.message : String(err)}`);
+      return;
+    }
+  }
+
+  ctx.activeRuns.interrupt(ctx.scope);
+  ctx.workspaces.saveNamed(name, target);
+  ctx.workspaces.setCwd(ctx.scope, target);
+  ctx.sessions.clear(ctx.scope);
+  log.info('command', 'ws-create', { name, scope: ctx.scope });
+
+  if (ctx.fromCardAction) {
+    const formMsgId = ctx.msg.messageId;
+    void (async () => {
+      await new Promise((r) => setTimeout(r, FORM_SETTLE_MS));
+      await updateManagedCard(ctx.channel, formMsgId, wsCreatedCard(name, target)).catch((err) =>
+        log.warn('command', 'ws-create-update-failed', { err: String(err) }),
+      );
+      forgetManagedCard(formMsgId);
+    })();
+  } else {
+    await reply(ctx, `✓ 新建项目 \`${name}\` → ${target}\n（已切换并存为工作空间，session 已重置）`);
+  }
+}
+
+async function cancelWsCreate(ctx: CommandContext): Promise<void> {
+  if (!ctx.fromCardAction) return;
+  const formMsgId = ctx.msg.messageId;
+  void (async () => {
+    await new Promise((r) => setTimeout(r, FORM_SETTLE_MS));
+    await updateManagedCard(ctx.channel, formMsgId, wsCreateCancelledCard()).catch((err) =>
+      log.warn('command', 'ws-cancel-update-failed', { err: String(err) }),
+    );
+    forgetManagedCard(formMsgId);
+  })();
+}
+
+/** `/menu` — (re)post the project-console card and pin it to the top, so the
+ * switch/new-project buttons stay one tap away. Mirrors the auto-pin that
+ * fires when the bot is added to a chat. */
+async function handleMenu(_args: string, ctx: CommandContext): Promise<void> {
+  await sendAndPinMenu(
+    ctx.channel,
+    ctx.workspaces.cwdFor(ctx.scope),
+    ctx.workspaces.listNamed(),
+    ctx.msg.chatId,
+  );
 }
 
 async function handleResume(args: string, ctx: CommandContext): Promise<void> {

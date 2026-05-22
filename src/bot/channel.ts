@@ -38,6 +38,7 @@ import { ActiveRuns, type RunHandle } from './active-runs';
 import { ChatModeCache, type ChatMode } from './chat-mode-cache';
 import { handleCommentMention } from './comments';
 import { expandInteractiveCard } from './interactive-card';
+import { sendAndPinMenu } from './menu';
 import { startKeepalive } from './keepalive';
 import { configureNetwork } from './network-config';
 import { PendingQueue } from './pending-queue';
@@ -256,6 +257,19 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
           log.fail('comment', err),
         );
       }).catch((err) => log.fail('comment', err));
+    },
+    // When the bot is added to a (group) chat, drop a pinned "project console"
+    // card so the menu is one tap away without typing — Feishu's native bot
+    // menu is DM-only, so a pinned card is the group-chat equivalent.
+    botAdded: async (evt) => {
+      await withTrace({ chatId: evt.chatId }, async () => {
+        await sendAndPinMenu(
+          channel,
+          workspaces.cwdFor(evt.chatId),
+          workspaces.listNamed(),
+          evt.chatId,
+        );
+      }).catch((err) => log.fail('botAdded', err));
     },
     reconnecting: () => {
       consecutiveReconnects++;

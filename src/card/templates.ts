@@ -39,10 +39,7 @@ export function workspacesCard(current: string | undefined, named: Record<string
 
   if (entries.length === 0) {
     elements.push(HR);
-    elements.push(divMd('暂无命名工作空间。'));
-    elements.push(
-      divMd('💡 发送 `/ws save <name>` 把当前 cwd 存为命名工作空间'),
-    );
+    elements.push(divMd('暂无命名工作空间。点下方按钮新建一个，或发送 `/ws save <name>` 把当前 cwd 存为工作空间。'));
   } else {
     elements.push(HR);
     entries.forEach(([name, path], i) => {
@@ -58,7 +55,202 @@ export function workspacesCard(current: string | undefined, named: Record<string
     });
   }
 
+  // Footer: two distinct entry points — create a brand-new project, or add an
+  // existing folder. Both open a button-driven directory browser (no typing).
+  elements.push(HR);
+  elements.push(
+    actions([
+      { text: '➕ 新建项目', value: { cmd: 'ws.new' }, style: 'primary' },
+      { text: '📁 添加已有', value: { cmd: 'ws.add' } },
+    ]),
+  );
+
   return shell('📂 工作空间', elements);
+}
+
+/**
+ * Compact "console" card — the one that gets pinned / auto-posted. Keeps the
+ * pinned message short: a couple of status lines plus entry buttons. The full
+ * project list only opens on demand via "切换项目" (→ {@link workspacesCard}).
+ */
+export function menuCard(current: string | undefined, count: number): object {
+  return shell('📂 项目控制台', [
+    divMd(
+      `点下方按钮切换、新建或添加项目，无需打命令。\n` +
+        `_群里跟我说话记得 @ 我；这张卡丢了就发 \`/menu\` 调出。_`,
+    ),
+    HR,
+    divMd(`当前：\`${escapeCode(current ?? '(未设置，使用 $HOME)')}\`\n已保存 ${count} 个项目`),
+    HR,
+    actions([
+      { text: '📂 切换项目', value: { cmd: 'ws.list' }, style: 'primary' },
+      { text: '➕ 新建项目', value: { cmd: 'ws.new' } },
+      { text: '📁 添加已有', value: { cmd: 'ws.add' } },
+      { text: '📊 状态', value: { cmd: 'status' } },
+    ]),
+  ]);
+}
+
+/**
+ * Directory browser. Lets the user drill into folders with buttons instead of
+ * typing paths. `mode` decides the "pick" action: 'add' binds the current dir
+ * as a workspace; 'new' opens the name form to create a project inside it.
+ * `parent` is the dir one level up (computed by the caller). `subdirs` is the
+ * pre-listed, pre-filtered child directory names.
+ *
+ * Built on the same legacy card schema as {@link workspacesCard} (sent via
+ * channel.send), so navigation is plain recall-and-resend — no CardKit entity
+ * updates, which silently reject this button-heavy layout.
+ */
+export function wsBrowseCard(
+  mode: 'add' | 'new',
+  dir: string,
+  parent: string,
+  subdirs: string[],
+  truncated: boolean,
+): object {
+  const browseCmd = mode === 'add' ? 'ws.browseAdd' : 'ws.browseNew';
+  const pick: ButtonSpec =
+    mode === 'add'
+      ? { text: '✅ 添加此目录', value: { cmd: 'ws.bind', arg: dir }, style: 'primary' }
+      : { text: '➕ 在此新建项目', value: { cmd: 'ws.newat', arg: dir }, style: 'primary' };
+  const title = mode === 'add' ? '📁 添加已有项目' : '➕ 新建项目 · 选父目录';
+
+  const elements: object[] = [
+    divMd(`**当前目录**\n\`${escapeCode(dir)}\``),
+    HR,
+    actions([pick, { text: '⬆️ 上级', value: { cmd: browseCmd, arg: parent } }]),
+  ];
+
+  if (subdirs.length > 0) {
+    elements.push(divMd('**子目录**（点进入）'));
+    for (const name of subdirs) {
+      const child = `${dir === '/' ? '' : dir}/${name}`;
+      elements.push(actions([{ text: `📂 ${name}`, value: { cmd: browseCmd, arg: child } }]));
+    }
+    if (truncated) elements.push(divMd('_…子目录较多，仅显示前一部分_'));
+  } else {
+    elements.push(divMd('_（无子目录，可直接选此目录）_'));
+  }
+
+  return shell(title, elements);
+}
+
+/**
+ * CardKit 2.0 form for naming a new project. The parent directory is already
+ * chosen via the browser and carried on the submit button's value, so the
+ * user only types the name.
+ */
+export function wsCreateFormCard(parent: string): object {
+  return {
+    schema: '2.0',
+    config: { summary: { content: '新建项目' } },
+    body: {
+      elements: [
+        {
+          tag: 'markdown',
+          content:
+            '➕ **新建项目**\n\n' +
+            `将在 \`${parent}\` 下创建。填项目名后提交，自动建目录、存为工作空间并切换过去。`,
+        },
+        { tag: 'hr' },
+        {
+          tag: 'form',
+          name: 'ws_new_form',
+          elements: [
+            { tag: 'markdown', content: '**项目名**\n_作为文件夹名和工作空间名_' },
+            {
+              tag: 'input',
+              name: 'project_name',
+              placeholder: { tag: 'plain_text', content: 'my-new-project' },
+              input_type: 'text',
+            },
+            {
+              tag: 'column_set',
+              flex_mode: 'flow',
+              horizontal_spacing: 'small',
+              columns: [
+                {
+                  tag: 'column',
+                  width: 'auto',
+                  elements: [
+                    {
+                      tag: 'button',
+                      name: 'submit_btn',
+                      text: { tag: 'plain_text', content: '创建' },
+                      type: 'primary',
+                      form_action_type: 'submit',
+                      behaviors: [{ type: 'callback', value: { cmd: 'ws.create', arg: parent } }],
+                    },
+                  ],
+                },
+                {
+                  tag: 'column',
+                  width: 'auto',
+                  elements: [
+                    {
+                      tag: 'button',
+                      name: 'cancel_btn',
+                      text: { tag: 'plain_text', content: '取消' },
+                      behaviors: [{ type: 'callback', value: { cmd: 'ws.cancel' } }],
+                    },
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    },
+  };
+}
+
+export function wsCreatedCard(name: string, path: string): object {
+  return {
+    schema: '2.0',
+    config: { summary: { content: '项目已创建' } },
+    body: {
+      elements: [
+        {
+          tag: 'markdown',
+          content:
+            '✅ **项目已创建**\n\n' +
+            `**工作空间**:\`${name}\`\n` +
+            `**目录**:\`${path}\`\n\n` +
+            '已切换到此项目（session 已重置）。直接发消息开始干活。',
+        },
+      ],
+    },
+  };
+}
+
+export function wsBoundCard(name: string, path: string): object {
+  return {
+    schema: '2.0',
+    config: { summary: { content: '已添加项目' } },
+    body: {
+      elements: [
+        {
+          tag: 'markdown',
+          content:
+            '✅ **已添加项目**\n\n' +
+            `**工作空间**:\`${name}\`\n` +
+            `**目录**:\`${path}\`\n\n` +
+            '已切换到此项目（session 已重置）。',
+        },
+      ],
+    },
+  };
+}
+
+export function wsCreateCancelledCard(): object {
+  return {
+    schema: '2.0',
+    config: { summary: { content: '已取消' } },
+    body: {
+      elements: [{ tag: 'markdown', content: '已取消，未做任何改动。' }],
+    },
+  };
 }
 
 export interface StatusInfo {
@@ -147,11 +339,12 @@ export function helpCard(): object {
       [
         '**命令列表**',
         '',
+        '- `/menu` — 弹出并置顶「项目控制台」卡片（切换/新建项目、状态一键直达）',
         '- `/new` `/reset` — 清空当前 chat 的会话',
         '- `/new chat [name]` — 新建群+新会话，自动拉你进群',
         '- `/resume [N]` — 列出并恢复历史会话（最多 N 条）',
         '- `/cd <path>` — 切换工作目录（会重置 session）',
-        '- `/ws list|save <name>|use <name>|remove <name>` — 工作空间',
+        '- `/ws list|save <name>|use <name>|remove <name>|new` — 工作空间（`/ws` 卡片可点按钮切换/新建项目）',
         '- `/account` — 查看当前应用；`/account change` 换 appId/secret 并重连',
         '- `/config` — 调整偏好（消息回复方式、工具调用显示）',
         '- `/status` — 当前状态',
