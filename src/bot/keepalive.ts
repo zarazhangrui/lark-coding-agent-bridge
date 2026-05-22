@@ -39,19 +39,45 @@ export interface KeepaliveDeps {
   domain: string;
   /** Force-reconnect callback. Bridge uses `controls.restart`. */
   forceReconnect: () => Promise<void>;
+  /**
+   * Force reconnect when SDK reports `connected` but no inbound event has
+   * arrived for this long. 0 = disabled (legacy behavior).
+   *
+   * Why: SDK's pingTimeout watchdog only catches TCP-level death. When the
+   * Feishu server keeps the TCP/WS alive but stops pushing application
+   * events ("zombie subscription"), `getConnectionStatus().state` stays
+   * `connected` forever and users see the bot ignore their messages until
+   * a manual restart.
+   */
+  staleEventReconnectMs?: number;
 }
 
 export interface KeepaliveHandle {
   stop(): void;
+  /**
+   * Bump the inbound-activity clock. Wire this into every inbound channel
+   * event handler (message, cardAction, comment, reconnected, etc.) so the
+   * stale-event watchdog sees real-time activity. SDK-level pings are not
+   * exposed at this layer, so this is the bridge's only liveness signal.
+   */
+  recordInbound(): void;
 }
 
 export function startKeepalive(deps: KeepaliveDeps): KeepaliveHandle {
   const { channel, domain, forceReconnect } = deps;
+  const staleEventReconnectMs = deps.staleEventReconnectMs ?? 0;
 
   let lastTick = 0;
   let consecutiveDown = 0;
   let networkDownTicks = 0;
   let stopped = false;
+  // Track the most recent inbound event arrival. Seed at startup so a
+  // freshly-connected bot with no traffic still gets evaluated against the
+  // threshold (otherwise stale-event detection would never fire on a quiet
+  // chat that never received its first message).
+  let lastInboundAt = Date.now();
+  // Suppress repeat reconnects while one is in flight or just completed.
+  let lastStaleReconnectAt = 0;
 
   const tick = async (): Promise<void> => {
     if (stopped) return;
@@ -83,6 +109,31 @@ export function startKeepalive(deps: KeepaliveDeps): KeepaliveHandle {
       }
       consecutiveDown = 0;
       networkDownTicks = 0;
+
+      // App-layer zombie detection — SDK reports `connected` (TCP/ping
+      // alive) but no events have arrived for too long. Cheapest reliable
+      // signal at this layer; SDK's internal ping cadence isn't exposed.
+      if (staleEventReconnectMs > 0) {
+        const sinceInbound = now - lastInboundAt;
+        if (
+          sinceInbound > staleEventReconnectMs &&
+          // Don't immediately re-fire after a reconnect we just triggered
+          // — wait at least one full threshold window for events to arrive.
+          now - lastStaleReconnectAt > staleEventReconnectMs
+        ) {
+          log.warn('keepalive', 'stale-event-reconnect', {
+            sinceInboundMs: sinceInbound,
+            thresholdMs: staleEventReconnectMs,
+          });
+          lastStaleReconnectAt = now;
+          lastInboundAt = now; // reset so the watchdog re-arms post-reconnect
+          try {
+            await forceReconnect();
+          } catch (err) {
+            log.fail('keepalive', err, { step: 'stale-event-reconnect' });
+          }
+        }
+      }
       return;
     }
 
@@ -134,6 +185,9 @@ export function startKeepalive(deps: KeepaliveDeps): KeepaliveHandle {
     stop() {
       stopped = true;
       clearInterval(timer);
+    },
+    recordInbound() {
+      lastInboundAt = Date.now();
     },
   };
 }

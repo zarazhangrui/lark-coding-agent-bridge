@@ -133,6 +133,20 @@ export interface AppPreferences {
   /** Access control — user/chat allowlists + admin gating. See AppAccess. */
   access?: AppAccess;
   /**
+   * Force a WS reconnect when the SDK still reports `connected` but no
+   * inbound event (message, card action, comment, even SDK-level reconnect
+   * notification) has arrived for this long. Guards against application-
+   * layer zombie state: server keeps the TCP connection alive (so SDK
+   * pingTimeout watchdog never fires) but silently stops pushing events.
+   *
+   * Default 1800000 (30 min). Set 0 to disable. Range 60000-86400000.
+   *
+   * Note: legitimate idle periods are normal, but a reconnect is cheap
+   * (~1s blip, no message loss because Feishu queues events server-side)
+   * and far better than the silent-broken state.
+   */
+  wsStaleEventReconnectMs?: number;
+  /**
    * Grace period (ms) between SIGTERM and SIGKILL when killing the claude
    * subprocess. Bumped from a hardcoded 500ms because claude often has its
    * own subprocesses (e.g. lark-cli mid-OAuth) that need a moment to clean
@@ -239,6 +253,19 @@ export function getAgentStopGraceMs(cfg: AppConfig): number {
   const raw = cfg.preferences?.agentStopGraceMs;
   if (typeof raw !== 'number' || !Number.isFinite(raw)) return 5000;
   return Math.min(30_000, Math.max(100, Math.floor(raw)));
+}
+
+/**
+ * Resolve the stale-event-stream force-reconnect threshold in ms.
+ * Returns 0 when disabled. Default 30 min. Clamps to [60_000, 86_400_000]
+ * when set so a typo can't either flap the connection every few seconds
+ * or wait a week.
+ */
+export function getWsStaleEventReconnectMs(cfg: AppConfig): number {
+  const raw = cfg.preferences?.wsStaleEventReconnectMs;
+  if (raw === 0) return 0;
+  if (typeof raw !== 'number' || !Number.isFinite(raw)) return 30 * 60 * 1000;
+  return Math.min(86_400_000, Math.max(60_000, Math.floor(raw)));
 }
 
 /** True when `senderId` may interact with the bot. Empty list = allow all. */

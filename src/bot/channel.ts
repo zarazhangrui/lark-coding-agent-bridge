@@ -26,6 +26,7 @@ import {
   getRequireMentionInGroup,
   getRunIdleTimeoutMs,
   getShowToolCalls,
+  getWsStaleEventReconnectMs,
   isChatAllowed,
   isUserAllowed,
 } from '../config/schema';
@@ -216,8 +217,14 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
   // Counter for stdout reconnect escalation; reset on `reconnected`.
   let consecutiveReconnects = 0;
 
+  // Inbound-activity sensor for the stale-event watchdog. Keepalive is
+  // started after channel.connect(), so we route through a mutable ref —
+  // pre-connect callers see a no-op, post-start they hit the real handle.
+  let recordInbound: () => void = () => {};
+
   channel.on({
     message: async (msg) => {
+      recordInbound();
       await withTrace({ chatId: msg.chatId, msgId: msg.messageId }, () =>
         intakeMessage({
           channel,
@@ -233,9 +240,11 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
       ).catch((err) => log.fail('intake', err));
     },
     reject: (evt) => {
+      recordInbound();
       log.info('intake', 'reject', { chatId: evt.chatId, reason: evt.reason });
     },
     cardAction: async (evt) => {
+      recordInbound();
       await withTrace({ chatId: evt.chatId, msgId: evt.messageId }, async () => {
         await handleCardAction({
           channel,
@@ -251,6 +260,7 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
       }).catch((err) => log.fail('cardAction', err));
     },
     comment: async (evt) => {
+      recordInbound();
       await withTrace({ chatId: 'comment' }, async () => {
         await handleCommentMention({ channel, evt, agent, sessions, workspaces }).catch((err) =>
           log.fail('comment', err),
@@ -268,6 +278,9 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
       }
     },
     reconnected: () => {
+      // Successful reconnect is itself proof of life — re-arm the stale
+      // watchdog so we don't immediately retrigger on the next tick.
+      recordInbound();
       if (consecutiveReconnects > 1) {
         log.info('ws', 'recovered', { afterAttempts: consecutiveReconnects });
       } else {
@@ -314,7 +327,10 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
     channel,
     domain: probeDomain,
     forceReconnect: () => controls.restart(),
+    staleEventReconnectMs: getWsStaleEventReconnectMs(cfg),
   });
+  // Activate the inbound-activity sensor wired into channel.on above.
+  recordInbound = keepalive.recordInbound;
 
   return {
     channel,
