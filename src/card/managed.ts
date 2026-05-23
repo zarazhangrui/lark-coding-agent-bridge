@@ -20,15 +20,23 @@ export interface ManagedCardSendResult {
  * Returns both ids; we keep them in a module-local map so future cardAction
  * events can update the card by its messageId.
  *
- * If `replyTo` is provided, posts via im.v1.message.reply so the card threads
- * under the user's triggering message; otherwise posts as a top-level chat
- * message via im.v1.message.create.
+ * `recipient` controls where the card lands:
+ *   - omitted (default) — send to the chat identified by `recipientId`
+ *     (`receive_id_type: chat_id`). Backwards-compatible with the original
+ *     2-arg `sendManagedCard(channel, chatId, card)` shape.
+ *   - `{ receiveType: 'open_id' }` — send as a direct message to the user
+ *     whose open_id is in `recipientId`. Lark auto-resolves the p2p chat,
+ *     so the caller doesn't need to know its chat_id.
+ *
+ * If `replyTo` is provided, posts via `im.v1.message.reply` so the card
+ * threads under the user's triggering message — only meaningful for
+ * chat-id sends.
  */
 export async function sendManagedCard(
   channel: LarkChannel,
-  chatId: string,
+  recipientId: string,
   card: object,
-  replyTo?: string,
+  opts: { replyTo?: string; receiveType?: 'chat_id' | 'open_id' } = {},
 ): Promise<ManagedCardSendResult> {
   const created = await channel.rawClient.cardkit.v1.card.create({
     data: { type: 'card_json', data: JSON.stringify(card) },
@@ -40,16 +48,17 @@ export async function sendManagedCard(
 
   const content = JSON.stringify({ type: 'card', data: { card_id: cardId } });
   let messageId: string | undefined;
-  if (replyTo) {
+  if (opts.replyTo) {
     const sent = await channel.rawClient.im.v1.message.reply({
-      path: { message_id: replyTo },
+      path: { message_id: opts.replyTo },
       data: { msg_type: 'interactive', content },
     });
     messageId = (sent as { data?: { message_id?: string } }).data?.message_id;
   } else {
+    const receiveType = opts.receiveType ?? 'chat_id';
     const sent = await channel.rawClient.im.v1.message.create({
-      params: { receive_id_type: 'chat_id' },
-      data: { receive_id: chatId, msg_type: 'interactive', content },
+      params: { receive_id_type: receiveType },
+      data: { receive_id: recipientId, msg_type: 'interactive', content },
     });
     messageId = (sent as { data?: { message_id?: string } }).data?.message_id;
   }

@@ -47,6 +47,7 @@ import type { WorkspaceStore } from '../workspace/store';
 import { createBoundChat, defaultChatName } from '../bot/group';
 import {
   type ChatCard,
+  fetchAppMeta,
   fetchChatCards,
   fetchUserCards,
   type KnownChat,
@@ -1080,15 +1081,24 @@ async function handleConfig(args: string, ctx: CommandContext): Promise<void> {
 }
 
 async function showConfigForm(ctx: CommandContext): Promise<void> {
-  // Gate the form on required scopes — without `contact:user.id:readonly`
-  // the email→open_id resolution in the form's text input silently drops
-  // emails, which would mislead the operator. We bounce them to the
-  // scope-apply page first, where the button does the heavy lifting.
-  //
-  // An empty `botGrantedScopes` set could mean either "scopes not probed
-  // yet" or "fetch failed" — to avoid a false-positive on a fresh start,
-  // we only show the auth card when the set is *populated* AND a required
-  // scope is genuinely missing.
+  // Force a fresh scope probe before the gate check. Without this the
+  // operator has to wait up to 30 minutes for the bridge's periodic
+  // refresh to pick up a newly-granted scope — annoying and confusing,
+  // because the dev console says "granted" but the bot still shows the
+  // auth card. The call is one HTTP round trip; /config is rare.
+  try {
+    const meta = await fetchAppMeta(ctx.channel, ctx.controls.cfg.accounts.app.id);
+    if (meta.ownerId) ctx.controls.botOwnerId = meta.ownerId;
+    if (meta.grantedScopes.size > 0) ctx.controls.botGrantedScopes = meta.grantedScopes;
+  } catch {
+    // Refresh failed — fall through with the cached set. If the cache is
+    // empty too, the missing-scope check below treats that as "unknown,
+    // assume granted" to avoid locking the operator out on a network blip.
+  }
+
+  // Gate on required scopes. An empty `botGrantedScopes` set means we
+  // genuinely couldn't probe (initial state + refresh failed), in which
+  // case skip the check rather than risk a false positive.
   if (ctx.controls.botGrantedScopes.size > 0) {
     const missing = REQUIRED_BOT_SCOPES.filter(
       (s) => !ctx.controls.botGrantedScopes.has(s),
@@ -1099,7 +1109,30 @@ async function showConfigForm(ctx: CommandContext): Promise<void> {
         applyUrl: scopeApplyUrl(ctx.controls.cfg.accounts.app.id, missing),
       });
       if (ctx.fromCardAction) await recallMessage(ctx, ctx.msg.messageId);
-      await sendManagedCard(ctx.channel, ctx.msg.chatId, card);
+      // From a group, send the auth card as a DM to the operator instead
+      // of dropping it into the group thread — same reasoning as the
+      // OAuth flow's DM-only constraint: it's an authorization surface
+      // tied to the operator's identity, not group-wide info.
+      if (ctx.chatMode === 'p2p') {
+        await sendManagedCard(ctx.channel, ctx.msg.chatId, card);
+      } else {
+        try {
+          await sendManagedCard(ctx.channel, ctx.msg.senderId, card, {
+            receiveType: 'open_id',
+          });
+          await reply(
+            ctx,
+            '🔐 当前需要授权，已私信你授权卡片，请到私聊里点按钮完成。',
+          );
+        } catch (err) {
+          log.warn('command', 'config-dm-auth-card-failed', {
+            err: err instanceof Error ? err.message : String(err),
+          });
+          // Fall back to in-group card so the operator isn't stuck if the
+          // DM channel fails (e.g. bot can't open a p2p with this user).
+          await sendManagedCard(ctx.channel, ctx.msg.chatId, card);
+        }
+      }
       return;
     }
   }
