@@ -58,7 +58,11 @@ function personPicker(name: string, defaultIds: string[], placeholder: string): 
     tag: 'multi_select_person',
     name,
     placeholder: { tag: 'plain_text', content: placeholder },
-    default_value: defaultIds.map((id) => ({ id })),
+    // CardKit 2.0's multi_select_person accepts `value` as the field name in
+    // default_value entries (same convention as multi_select_static). The
+    // earlier `{ id: ... }` shape rendered the picker but skipped the
+    // pre-selected pill — entries existed in config but invisible in UI.
+    default_value: defaultIds.map((value) => ({ value })),
   };
 }
 
