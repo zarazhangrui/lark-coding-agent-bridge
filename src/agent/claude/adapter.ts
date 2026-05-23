@@ -6,8 +6,22 @@ import { log } from '../../core/logger';
 import type { AgentAdapter, AgentEvent, AgentRun, AgentRunOptions } from '../types';
 import { translateEvent } from './stream-json';
 
+type PermissionModeValue = NonNullable<AgentRunOptions['permissionMode']>;
+
 export interface ClaudeAdapterOptions {
   binary?: string;
+  /**
+   * Default `--permission-mode` when an individual `run()` call doesn't pass
+   * one. Bridge defaults this to `'auto'` (safety classifier on) when
+   * constructed from `start.ts` based on the user's config.
+   */
+  defaultPermissionMode?: PermissionModeValue;
+  /**
+   * Default `--model` when an individual `run()` call doesn't pass one.
+   * Required for `'auto'` permission mode to work (auto mode rejects models
+   * older than Sonnet 4.6 / Opus 4.6 / Opus 4.7).
+   */
+  defaultModel?: string;
 }
 
 type ClaudeChild = ChildProcessByStdio<null, Readable, Readable>;
@@ -106,9 +120,13 @@ export class ClaudeAdapter implements AgentAdapter {
   readonly displayName = 'Claude Code';
 
   private readonly binary: string;
+  private readonly defaultPermissionMode: PermissionModeValue;
+  private readonly defaultModel: string | undefined;
 
   constructor(opts: ClaudeAdapterOptions = {}) {
     this.binary = opts.binary ?? 'claude';
+    this.defaultPermissionMode = opts.defaultPermissionMode ?? 'auto';
+    this.defaultModel = opts.defaultModel;
   }
 
   async isAvailable(): Promise<boolean> {
@@ -120,6 +138,11 @@ export class ClaudeAdapter implements AgentAdapter {
   }
 
   run(opts: AgentRunOptions): AgentRun {
+    // auto mode requires Sonnet 4.6 / Opus 4.6 / Opus 4.7; always pass an
+    // explicit --model so we don't fall onto the CLI's default which may
+    // be an older one. Per-call `opts.model` wins over the adapter default.
+    const model = opts.model ?? this.defaultModel;
+    const permissionMode = opts.permissionMode ?? this.defaultPermissionMode;
     const args = [
       '-p',
       opts.prompt,
@@ -127,12 +150,12 @@ export class ClaudeAdapter implements AgentAdapter {
       'stream-json',
       '--verbose',
       '--permission-mode',
-      opts.permissionMode ?? 'bypassPermissions',
+      permissionMode,
       '--append-system-prompt',
       BRIDGE_SYSTEM_PROMPT,
     ];
     if (opts.sessionId) args.push('--resume', opts.sessionId);
-    if (opts.model) args.push('--model', opts.model);
+    if (model) args.push('--model', model);
 
     const child = spawn(this.binary, args, {
       cwd: opts.cwd,
@@ -145,7 +168,8 @@ export class ClaudeAdapter implements AgentAdapter {
       cwd: opts.cwd ?? process.cwd(),
       hasSession: Boolean(opts.sessionId),
       promptChars: opts.prompt.length,
-      model: opts.model,
+      model,
+      permissionMode,
     });
 
     // Listeners MUST be attached synchronously here, before we return.

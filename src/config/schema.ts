@@ -69,6 +69,28 @@ export interface SecretsConfig {
 export type MessageReplyMode = 'card' | 'markdown' | 'text';
 
 /**
+ * Permission mode passed to the spawned `claude` CLI via `--permission-mode`.
+ *
+ *   - `auto` (the bridge default): Claude Code's safety classifier reviews
+ *     each tool call. Safe ops auto-run; risky ops (curl|bash, mass
+ *     delete, exfil, force-push main, etc.) are blocked and Claude is
+ *     asked to try something else. Requires Sonnet 4.6 / Opus 4.6 / Opus
+ *     4.7 and direct Anthropic API. In headless mode (which is what the
+ *     bridge runs) the session aborts after 3 consecutive or 20
+ *     cumulative blocks — a useful safety net for a remote-driven bot.
+ *   - `bypassPermissions`: pre-auto behavior; skips all permission checks.
+ *   - `acceptEdits`: edits auto-approved, Bash still prompts (and in
+ *     headless mode, gets denied).
+ *   - `default` / `plan`: prompt-based — not useful for a headless bot.
+ */
+export type PermissionMode =
+  | 'default'
+  | 'acceptEdits'
+  | 'bypassPermissions'
+  | 'plan'
+  | 'auto';
+
+/**
  * Access control settings. All three lists default to "no restriction" when
  * empty / undefined, so existing deployments are not broken on upgrade.
  * Operators that want a hardened deployment fill these in via
@@ -141,6 +163,18 @@ export interface AppPreferences {
    * Range 100-30000; out-of-range values fall back to default.
    */
   agentStopGraceMs?: number;
+  /**
+   * Permission mode passed to spawned `claude`. Default `'auto'` (safety
+   * classifier reviews each tool call). See `PermissionMode` for tradeoffs.
+   */
+  permissionMode?: PermissionMode;
+  /**
+   * Model passed to `claude --model`. Default `'claude-opus-4-7'`. Must be
+   * Sonnet 4.6 / Opus 4.6 / Opus 4.7 if `permissionMode` is `'auto'` (older
+   * models reject the auto classifier). Set to a cheaper model (e.g.
+   * `'claude-sonnet-4-6'`) to reduce token spend on a long-running bot.
+   */
+  model?: string;
 }
 
 /**
@@ -239,6 +273,40 @@ export function getAgentStopGraceMs(cfg: AppConfig): number {
   const raw = cfg.preferences?.agentStopGraceMs;
   if (typeof raw !== 'number' || !Number.isFinite(raw)) return 5000;
   return Math.min(30_000, Math.max(100, Math.floor(raw)));
+}
+
+const VALID_PERMISSION_MODES: ReadonlySet<PermissionMode> = new Set([
+  'default',
+  'acceptEdits',
+  'bypassPermissions',
+  'plan',
+  'auto',
+]);
+
+/**
+ * Resolve the permission mode passed to `claude --permission-mode`.
+ * Defaults to `'auto'` so the bridge runs with the safety classifier on
+ * out of the box. Unknown values fall back to the default rather than
+ * silently letting a typo turn into `bypassPermissions`.
+ */
+export function getPermissionMode(cfg: AppConfig): PermissionMode {
+  const raw = cfg.preferences?.permissionMode;
+  if (typeof raw === 'string' && VALID_PERMISSION_MODES.has(raw as PermissionMode)) {
+    return raw as PermissionMode;
+  }
+  return 'auto';
+}
+
+/**
+ * Resolve the model passed to `claude --model`. Defaults to
+ * `'claude-opus-4-7'` — auto mode requires Sonnet 4.6+, and Opus 4.7
+ * matches what most users run locally. Empty/whitespace falls back to
+ * default.
+ */
+export function getAgentModel(cfg: AppConfig): string {
+  const raw = cfg.preferences?.model;
+  if (typeof raw === 'string' && raw.trim().length > 0) return raw.trim();
+  return 'claude-opus-4-7';
 }
 
 /** True when `senderId` may interact with the bot. Empty list = allow all. */

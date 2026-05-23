@@ -13,7 +13,7 @@ export interface AgentRunOptions {
   cwd?: string;
   sessionId?: string;
   model?: string;
-  permissionMode?: 'default' | 'acceptEdits' | 'bypassPermissions' | 'plan';
+  permissionMode?: 'default' | 'acceptEdits' | 'bypassPermissions' | 'plan' | 'auto';
   /**
    * Grace period (ms) between SIGTERM and SIGKILL when stop() is called on
    * the returned run. Lets the agent (and any subprocess it spawned, e.g.

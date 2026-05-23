@@ -8,7 +8,7 @@ import type { Controls } from '../../commands';
 import { setSecret } from '../../config/keystore';
 import { paths } from '../../config/paths';
 import type { AppConfig } from '../../config/schema';
-import { isComplete, secretKeyForApp } from '../../config/schema';
+import { getAgentModel, getPermissionMode, isComplete, secretKeyForApp } from '../../config/schema';
 import {
   buildEncryptedAccountConfig,
   ensureSecretsGetterWrapper,
@@ -76,7 +76,10 @@ export async function runStart(opts: StartOptions): Promise<void> {
 
   await preFlightChecks({ skipCheckLarkCli: opts.skipCheckLarkCli });
 
-  const agent = new ClaudeAdapter();
+  const agent = new ClaudeAdapter({
+    defaultPermissionMode: getPermissionMode(cfg),
+    defaultModel: getAgentModel(cfg),
+  });
   if (!(await agent.isAvailable())) {
     console.error('✗ 未找到 claude CLI。请先安装 Claude Code：');
     console.error('  https://docs.anthropic.com/en/docs/claude-code/quickstart');
