@@ -46,14 +46,10 @@ import { validateAppCredentials } from '../utils/feishu-auth';
 import type { WorkspaceStore } from '../workspace/store';
 import { createBoundChat, defaultChatName } from '../bot/group';
 import {
-  type ChatCard,
   fetchAppMeta,
-  fetchChatCards,
-  fetchUserCards,
   type KnownChat,
   REQUIRED_BOT_SCOPES,
   scopeApplyUrl,
-  type UserCard,
 } from '../bot/lark-info';
 
 export interface Controls {
@@ -938,16 +934,6 @@ async function recallMessage(ctx: CommandContext, messageId: string): Promise<vo
  */
 async function handleInvite(args: string, ctx: CommandContext): Promise<void> {
   const tokens = args.trim().split(/\s+/).filter(Boolean);
-
-  // Card-callback subroute: per-row 移除 button fires cmd: 'invite.remove'
-  // with arg: '<kind>:<id>'. The card dispatcher composes this as
-  // "remove <kind>:<id>", which lands here.
-  if (tokens[0] === 'remove' && tokens[1]) {
-    const [rawKind, ...idParts] = tokens[1].split(':');
-    const id = idParts.join(':');
-    return handleInviteRemoveInternal(ctx, rawKind ?? '', id);
-  }
-
   const kind = tokens.find((t) => /^(user|admin|group)$/i.test(t))?.toLowerCase() as
     | 'user'
     | 'admin'
@@ -1040,30 +1026,6 @@ async function persistAccess(
   });
 }
 
-/**
- * Drop a target from one of the access lists and re-render /config in
- * place. Wired up to the per-row 移除 buttons in the access section.
- */
-async function handleInviteRemoveInternal(
-  ctx: CommandContext,
-  kind: string,
-  id: string,
-): Promise<void> {
-  if (!id || (kind !== 'user' && kind !== 'admin' && kind !== 'chat')) {
-    log.warn('command', 'invite-remove-bad-payload', { kind, id });
-    return;
-  }
-  const access = { ...(ctx.controls.cfg.preferences?.access ?? {}) };
-  const listKey: keyof AppAccess =
-    kind === 'user' ? 'allowedUsers' : kind === 'admin' ? 'admins' : 'allowedChats';
-  const before = new Set(access[listKey] ?? []);
-  before.delete(id);
-  access[listKey] = [...before];
-  await persistAccess(ctx, access);
-  // Re-render the form so the removed row disappears in place.
-  await showConfigForm(ctx);
-}
-
 // ────────────── /config — preferences form ──────────────
 
 async function handleConfig(args: string, ctx: CommandContext): Promise<void> {
@@ -1138,20 +1100,16 @@ async function showConfigForm(ctx: CommandContext): Promise<void> {
   }
   const ms = getRunIdleTimeoutMs(ctx.controls.cfg);
   const access = ctx.controls.cfg.preferences?.access ?? {};
-  const [userCards, chatCards, adminCards] = await Promise.all([
-    fetchUserCards(ctx.channel, access.allowedUsers ?? []),
-    fetchChatCards(ctx.channel, access.allowedChats ?? []),
-    fetchUserCards(ctx.channel, access.admins ?? []),
-  ]);
   const card = configFormCard({
     messageReply: getMessageReplyMode(ctx.controls.cfg),
     showToolCalls: getShowToolCalls(ctx.controls.cfg),
     maxConcurrentRuns: getMaxConcurrentRuns(ctx.controls.cfg),
     runIdleTimeoutMinutes: ms ? Math.round(ms / 60_000) : 0,
     requireMentionInGroup: getRequireMentionInGroup(ctx.controls.cfg),
-    allowedUsers: userCards,
-    allowedChats: chatCards,
-    admins: adminCards,
+    allowedUsers: access.allowedUsers ?? [],
+    allowedChats: access.allowedChats ?? [],
+    admins: access.admins ?? [],
+    knownChats: ctx.controls.knownChats,
   });
   if (ctx.fromCardAction) await recallMessage(ctx, ctx.msg.messageId);
   await sendManagedCard(ctx.channel, ctx.msg.chatId, card);
@@ -1211,16 +1169,34 @@ async function submitConfig(ctx: CommandContext): Promise<void> {
   else if (rawRequireMention === 'no') requireMentionInGroup = false;
   else requireMentionInGroup = getRequireMentionInGroup(ctx.controls.cfg);
 
-  // Access whitelists are no longer edited through the /config form —
-  // additions go through `/invite @user user|admin` / `/invite group`,
-  // removals happen via per-row buttons that fire the `invite.remove`
-  // callback (handled in commands.ts). The form just round-trips the
-  // current lists so non-access settings can be saved without clobbering
-  // them.
-  const access = ctx.controls.cfg.preferences?.access ?? {};
-  const allowedUsers = access.allowedUsers ?? [];
-  const allowedChats = access.allowedChats ?? [];
-  const admins = access.admins ?? [];
+  // Access whitelists are edited by the pickers in the form. Each picker's
+  // selected IDs land in `form_value` as either a `string[]` or
+  // `{id|value: string}[]` depending on CardKit version, so normalize both
+  // shapes. `/invite` slash commands still work as a side channel for
+  // chat-based adding, but for /config-driven changes the pickers are the
+  // single source of truth — removing a pill in the picker = removing
+  // from the list on submit.
+  const normalizeIdArray = (raw: unknown): string[] => {
+    if (!Array.isArray(raw)) return [];
+    return [
+      ...new Set(
+        raw
+          .map((it) => {
+            if (typeof it === 'string') return it;
+            if (it && typeof it === 'object') {
+              const o = it as { id?: unknown; value?: unknown };
+              if (typeof o.id === 'string') return o.id;
+              if (typeof o.value === 'string') return o.value;
+            }
+            return '';
+          })
+          .filter(Boolean),
+      ),
+    ];
+  };
+  const allowedUsers = normalizeIdArray(fv.allowed_users_picker);
+  const allowedChats = normalizeIdArray(fv.allowed_chats_picker);
+  const admins = normalizeIdArray(fv.admins_picker);
 
   // Self-lockout guards moved to /invite + invite.remove handlers. The
   // /config form no longer mutates whitelists, so submitting it can never
@@ -1292,12 +1268,10 @@ async function submitConfig(ctx: CommandContext): Promise<void> {
         maxConcurrentRuns,
         runIdleTimeoutMinutes,
         requireMentionInGroup,
-        // Saved card only renders counts, so stub UserCard/ChatCard arrays
-        // of the right length are enough — no need to round-trip the API
-        // for names/avatars at confirmation time.
-        allowedUsers: allowedUsers.map((openId) => ({ openId })),
-        allowedChats: allowedChats.map((chatId) => ({ chatId })),
-        admins: admins.map((openId) => ({ openId })),
+        allowedUsers,
+        allowedChats,
+        admins,
+        knownChats: ctx.controls.knownChats,
       }),
     ).catch((err) =>
       log.warn('command', 'config-save-update-failed', { err: String(err) }),
