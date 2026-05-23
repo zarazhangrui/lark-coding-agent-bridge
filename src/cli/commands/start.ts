@@ -356,6 +356,31 @@ function needsProviderRewrite(cfg: AppConfig, wrapperPath: string): boolean {
   return false;
 }
 
+/**
+ * Shallow-merge two AppPreferences with deep-merge on the known nested
+ * objects (`access`, `agent`). Used to preserve hand-edited knobs (like
+ * `agent.binary`) across the wizard write, which otherwise builds a fresh
+ * preferences object from scratch and would clobber them.
+ */
+function mergePreferences(
+  existing: import('../../config/schema').AppPreferences | undefined,
+  fresh: import('../../config/schema').AppPreferences | undefined,
+): import('../../config/schema').AppPreferences | undefined {
+  if (!existing && !fresh) return undefined;
+  if (!existing) return fresh;
+  if (!fresh) return existing;
+  return {
+    ...existing,
+    ...fresh,
+    ...(existing.access || fresh.access
+      ? { access: { ...existing.access, ...fresh.access } }
+      : {}),
+    ...(existing.agent || fresh.agent
+      ? { agent: { ...existing.agent, ...fresh.agent } }
+      : {}),
+  };
+}
+
 /** Encrypt the (plaintext) secret from a freshly-wizard'd cfg and persist. */
 async function persistEncrypted(cfg: AppConfig, configPath: string): Promise<AppConfig> {
   const s = cfg.accounts.app.secret;
@@ -364,10 +389,15 @@ async function persistEncrypted(cfg: AppConfig, configPath: string): Promise<App
     await saveConfig(cfg, configPath);
     return cfg;
   }
+  // Pre-wizard the user may have hand-edited preferences (most commonly
+  // `agent.binary` to swap in a wrapper like reclaude). Merge those forward
+  // so the wizard's account-write doesn't clobber pre-set knobs.
+  const existing = await loadConfig(configPath);
+  const mergedPrefs = mergePreferences(existing.preferences, cfg.preferences);
   const next = await buildEncryptedAccountConfig(
     cfg.accounts.app.id,
     cfg.accounts.app.tenant,
-    cfg.preferences,
+    mergedPrefs,
   );
   await setSecret(secretKeyForApp(cfg.accounts.app.id), s);
   await saveConfig(next, configPath);

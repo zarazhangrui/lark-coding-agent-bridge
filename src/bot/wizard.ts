@@ -1,6 +1,27 @@
+import { spawnSync } from 'node:child_process';
 import { registerApp } from '@larksuiteoapi/node-sdk';
 import qrcode from 'qrcode-terminal';
 import type { AppConfig, TenantBrand } from '../config/schema';
+
+/**
+ * Detect a claude-compatible wrapper on PATH and return its name to preset
+ * `preferences.agent.binary`. Currently only `reclaude` is auto-detected;
+ * other wrappers can be set manually in config.json.
+ *
+ * Why auto-detect: the most common deploy is "user already runs reclaude as
+ * an Anthropic auth proxy, then installs this bridge". Skipping this step
+ * leaves them with a bridge that spawns vanilla `claude` and fights with
+ * reclaude's HTTPS_PROXY, which is exactly the pain this fork exists to
+ * avoid. If reclaude isn't installed we silently skip — bridge falls back
+ * to plain `claude` via ClaudeAdapter's default.
+ */
+function detectWrapperBinary(): string | undefined {
+  const r = spawnSync('which', ['reclaude'], { stdio: ['ignore', 'pipe', 'ignore'] });
+  if (r.status === 0 && r.stdout && r.stdout.toString().trim().length > 0) {
+    return 'reclaude';
+  }
+  return undefined;
+}
 
 export async function runRegistrationWizard(): Promise<AppConfig> {
   console.log('\n未检测到飞书应用配置，进入扫码创建向导。\n');
@@ -57,6 +78,15 @@ export async function runRegistrationWizard(): Promise<AppConfig> {
       '  ⚠️ 未拿到扫码用户的 open_id；管理员列表留空 = 所有用户都能跑敏感命令。' +
         '\n     你可以稍后在飞书发 /config 手动设置管理员。',
     );
+  }
+
+  const wrapper = detectWrapperBinary();
+  if (wrapper) {
+    cfg.preferences = {
+      ...(cfg.preferences ?? {}),
+      agent: { binary: wrapper },
+    };
+    console.log(`  Wrapper: 检测到 ${wrapper}，已预设 preferences.agent.binary（绕过 HTTPS_PROXY/CA 死结）`);
   }
 
   console.log('');
