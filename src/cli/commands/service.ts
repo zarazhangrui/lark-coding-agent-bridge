@@ -1,5 +1,5 @@
 import { ClaudeAdapter } from '../../agent/claude/adapter';
-import { isComplete } from '../../config/schema';
+import { getAgentBinary, isComplete } from '../../config/schema';
 import { loadConfig } from '../../config/store';
 import { daemonStderrPath, daemonStdoutPath } from '../../daemon/paths';
 import {
@@ -138,7 +138,7 @@ async function reportConnectAfter(
 
   const entry = await waitForServiceConnect(appId, beforePids);
   if (entry) {
-    const agent = new ClaudeAdapter();
+    const agent = new ClaudeAdapter({ binary: getAgentBinary(cfg) });
     const verbZh = verb === 'started' ? '已启动' : '已重启';
     console.log(
       `✓ ${verbZh}  bot: ${entry.botName} (${entry.appId})  agent: ${agent.displayName} (${agent.id})  进程: ${entry.id}`,

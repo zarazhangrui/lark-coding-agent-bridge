@@ -89,6 +89,28 @@ export interface AppAccess {
   admins?: string[];
 }
 
+/**
+ * Per-agent tunables. Currently only the `binary` override, but lives in
+ * its own namespace so future per-agent knobs (extra args, model, etc.)
+ * land here rather than cluttering top-level preferences.
+ */
+export interface AgentPreferences {
+  /**
+   * Path or name of the claude-compatible binary to spawn. Defaults to
+   * `'claude'` (resolved via PATH). Set to a wrapper like `'reclaude'`,
+   * `'/Users/me/.local/bin/reclaude'`, or any other binary that accepts
+   * the same flags (`-p`, `--output-format stream-json`, `--resume`,
+   * `--model`, `--permission-mode`, `--append-system-prompt`). The wrapper
+   * is responsible for injecting its own env (proxy, CA bundle, auth
+   * token) before exec'ing the real claude — bridge does not look inside.
+   *
+   * Use case: running through a local MITM auth proxy like
+   * https://reclaude.ai without managing ANTHROPIC_BASE_URL /
+   * NODE_EXTRA_CA_CERTS / ANTHROPIC_AUTH_TOKEN inside bridge itself.
+   */
+  binary?: string;
+}
+
 export interface AppPreferences {
   /** Reply rendering mode for IM (group/p2p) messages. Default 'card'. */
   messageReply?: MessageReplyMode;
@@ -132,6 +154,11 @@ export interface AppPreferences {
   requireMentionInGroup?: boolean;
   /** Access control — user/chat allowlists + admin gating. See AppAccess. */
   access?: AppAccess;
+  /**
+   * Per-agent overrides. Currently just `agent.binary` to swap the claude
+   * binary out for a compatible wrapper (e.g. reclaude). See AgentPreferences.
+   */
+  agent?: AgentPreferences;
   /**
    * Grace period (ms) between SIGTERM and SIGKILL when killing the claude
    * subprocess. Bumped from a hardcoded 500ms because claude often has its
@@ -261,6 +288,24 @@ export function isAdmin(cfg: AppConfig, senderId: string): boolean {
   const list = cfg.preferences?.access?.admins;
   if (!list || list.length === 0) return true;
   return list.includes(senderId);
+}
+
+/**
+ * Resolve the agent binary override. Returns `undefined` when unset so
+ * callers can let `ClaudeAdapter`'s own default (`'claude'`) apply.
+ * Empty / whitespace-only strings also return undefined to avoid spawning
+ * `''` and surfacing a confusing ENOENT.
+ *
+ * Accepts a `Partial<AppConfig>` because some callers (service commands)
+ * may operate on an incomplete config (no accounts yet); the resolver
+ * itself only touches the optional `preferences` path so widening the
+ * signature is safe.
+ */
+export function getAgentBinary(cfg: Partial<AppConfig>): string | undefined {
+  const raw = cfg.preferences?.agent?.binary;
+  if (typeof raw !== 'string') return undefined;
+  const trimmed = raw.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
 }
 
 export function getRunIdleTimeoutMs(cfg: AppConfig): number | undefined {

@@ -113,6 +113,26 @@ daemon 的 stdout / stderr 写到 `~/.lark-channel/logs/daemon-stdout.log` 和 `
 
 > 升级自 0.1.11 之前的版本？跑一次 `lark-channel-bridge migrate` —— 自动把 `~/.config/lark-channel-bridge/` 和 `~/.cache/lark-channel-bridge/` 下的内容搬到新位置，并把 `config.json` 升级到新结构。
 
+## 用 wrapper binary 跑 claude（如 reclaude）
+
+默认 spawn 的是 `claude`（从 PATH 解析）。如果你想跑一个 **claude-compatible 的 wrapper**——比如本地 MITM 鉴权代理 [reclaude](https://reclaude.ai)——可以在 `~/.lark-channel/config.json` 里加：
+
+```json
+{
+  "preferences": {
+    "agent": {
+      "binary": "reclaude"
+    }
+  }
+}
+```
+
+也支持绝对路径：`"binary": "/Users/me/.local/bin/reclaude"`。
+
+Bridge 只负责 spawn 这个 binary 并传 claude 的标准 flag（`-p`, `--output-format stream-json`, `--resume`, `--model`, `--permission-mode`, `--append-system-prompt`）。wrapper 自己负责在 exec 真 claude 之前注入它需要的 env（HTTPS_PROXY / NODE_EXTRA_CA_CERTS / ANTHROPIC_AUTH_TOKEN 等）——bridge 不碰这块。
+
+启动时 `agent.isAvailable()` 会跑 `<binary> --version`，wrapper 必须 exit 0 且接受 claude 的命令行参数。
+
 ## 访问控制（可选）
 
 默认 bot 是"开放"的：任何能找到它的人都能私聊它，群里 @bot 就触发响应。**个人自己用 / 给朋友用，这就够了**——但如果想给团队用、或者怕在大群里被滥用，可以在飞书里发 `/config`，调下面三栏中的一栏或几栏。

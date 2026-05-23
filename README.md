@@ -113,6 +113,26 @@ Daemon logs go to `~/.lark-channel/logs/daemon-stdout.log` and `daemon-stderr.lo
 
 > Upgrading from before 0.1.11? Run `lark-channel-bridge migrate` once — it moves anything under `~/.config/lark-channel-bridge/` and `~/.cache/lark-channel-bridge/` to the new location and upgrades `config.json` to the new schema.
 
+## Running through a wrapper binary (e.g. reclaude)
+
+By default the bridge spawns `claude` (resolved via PATH). To swap in a **claude-compatible wrapper** — for example a local MITM auth proxy like [reclaude](https://reclaude.ai) — add this to `~/.lark-channel/config.json`:
+
+```json
+{
+  "preferences": {
+    "agent": {
+      "binary": "reclaude"
+    }
+  }
+}
+```
+
+Absolute paths work too: `"binary": "/Users/me/.local/bin/reclaude"`.
+
+The bridge only spawns the binary with claude's standard flags (`-p`, `--output-format stream-json`, `--resume`, `--model`, `--permission-mode`, `--append-system-prompt`). The wrapper is responsible for injecting any env it needs (HTTPS_PROXY / NODE_EXTRA_CA_CERTS / ANTHROPIC_AUTH_TOKEN, etc.) before exec'ing the real claude — bridge stays out of that.
+
+At startup `agent.isAvailable()` runs `<binary> --version`; the wrapper must exit 0 and accept claude's CLI args.
+
 ## Access control (optional)
 
 Out of the box the bot is **open**: anyone who can find it can DM it, any group member can `@`-mention it to trigger a run, and commands like `/account` or `/cd` are usable by all. **That's fine for personal use** — but for a shared team setup, or anywhere you don't want strangers calling `/cd /`, you can tighten three allowlists by sending `/config` inside Feishu.
