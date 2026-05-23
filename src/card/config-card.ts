@@ -61,6 +61,24 @@ function personPicker(name: string, defaultIds: string[], placeholder: string): 
   };
 }
 
+/**
+ * Plain text input sitting underneath each person picker. The native
+ * `multi_select_person` picker doesn't always return directory search
+ * results in our setup (the Lark client appears to render the component
+ * but not wire its data source through), so this gives operators a second
+ * reliable path: paste comma-separated `ou_xxx` open_ids or emails. The
+ * submit handler resolves emails to open_ids via the contact API.
+ */
+function textInput(name: string, placeholder: string): object {
+  return {
+    tag: 'input',
+    name,
+    default_value: '',
+    placeholder: { tag: 'plain_text', content: placeholder },
+    input_type: 'text',
+  };
+}
+
 /** Group selector populated from the bot's joined chat list. */
 function chatPicker(
   name: string,
@@ -99,7 +117,8 @@ export function configFormCard(opts: ConfigFormOpts): object {
       tag: 'markdown',
       content: '\n**允许私聊的用户**\n_只有这些用户能在私聊里找 bot。_',
     },
-    personPicker('allowed_users_picker', opts.allowedUsers, '输入姓名 / 邮箱 / 手机号搜索'),
+    personPicker('allowed_users_picker', opts.allowedUsers, '从通讯录选择'),
+    textInput('allowed_users_text', '或填邮箱 / open_id，多个用逗号分隔'),
     {
       tag: 'markdown',
       content: `\n**允许响应的群**\n_bot 只在这些群里响应（含话题群）。_${noChatsHint}`,
@@ -116,7 +135,8 @@ export function configFormCard(opts: ConfigFormOpts): object {
         '\n**管理员**\n' +
         '_可以跑敏感命令：`/account` `/config` `/exit` `/reconnect` `/doctor` `/cd` `/ws`。管理员也自动获得私聊权限。_',
     },
-    personPicker('admins_picker', opts.admins, '输入姓名 / 邮箱 / 手机号搜索'),
+    personPicker('admins_picker', opts.admins, '从通讯录选择'),
+    textInput('admins_text', '或填邮箱 / open_id，多个用逗号分隔'),
   ];
 
   return {

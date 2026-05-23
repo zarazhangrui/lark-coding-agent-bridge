@@ -981,31 +981,79 @@ async function submitConfig(ctx: CommandContext): Promise<void> {
   else if (rawRequireMention === 'no') requireMentionInGroup = false;
   else requireMentionInGroup = getRequireMentionInGroup(ctx.controls.cfg);
 
-  // Parse access lists. Each whitelist is a single picker
-  // (`multi_select_person` for users/admins, `multi_select_static` for
-  // chats). The SDK forwards selected IDs either as `string[]` or as
-  // `{id|value: string}[]` depending on CardKit version, so we normalize.
+  // Parse access lists. Each user/admin field has two inputs in the form:
+  //   - `<field>_picker`: a `multi_select_person`. The SDK forwards selected
+  //     IDs as `string[]` or `{id|value: string}[]` depending on CardKit
+  //     version, so we normalize both shapes.
+  //   - `<field>_text`: a plain comma-separated input. Each entry is either
+  //     an open_id (`ou_xxx`) or an email — emails are resolved to open_ids
+  //     via the contact API at submit. This is the only reliable way for
+  //     operators to add someone by email since the native picker's search
+  //     hasn't been working in our environment.
   const normalizeIdArray = (raw: unknown): string[] => {
     if (!Array.isArray(raw)) return [];
-    return [
-      ...new Set(
-        raw
-          .map((it) => {
-            if (typeof it === 'string') return it;
-            if (it && typeof it === 'object') {
-              const o = it as { id?: unknown; value?: unknown };
-              if (typeof o.id === 'string') return o.id;
-              if (typeof o.value === 'string') return o.value;
-            }
-            return '';
-          })
-          .filter(Boolean),
-      ),
-    ];
+    return raw
+      .map((it) => {
+        if (typeof it === 'string') return it;
+        if (it && typeof it === 'object') {
+          const o = it as { id?: unknown; value?: unknown };
+          if (typeof o.id === 'string') return o.id;
+          if (typeof o.value === 'string') return o.value;
+        }
+        return '';
+      })
+      .filter(Boolean);
   };
-  const allowedUsers = normalizeIdArray(fv.allowed_users_picker);
+  const splitText = (raw: unknown): string[] =>
+    String(raw ?? '')
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean);
+  /**
+   * Take a list of mixed `ou_xxx` open_ids and emails and produce a flat
+   * list of open_ids. Emails go through the contact API's `batch_get_id`
+   * endpoint, which needs the `contact:user.id:readonly` scope — if the
+   * scope isn't granted, the call fails and we just drop those entries
+   * with a warn-log (open_ids still pass through).
+   */
+  const resolveEntries = async (entries: string[]): Promise<string[]> => {
+    const openIds: string[] = [];
+    const emails: string[] = [];
+    for (const e of entries) {
+      if (e.startsWith('ou_')) openIds.push(e);
+      else if (e.includes('@')) emails.push(e);
+      else log.warn('command', 'config-unrecognized-id', { input: e });
+    }
+    if (emails.length > 0) {
+      try {
+        const resp = await ctx.channel.rawClient.request({
+          method: 'POST',
+          url: '/open-apis/contact/v3/users/batch_get_id?user_id_type=open_id',
+          data: { emails },
+        });
+        const list = (resp as { data?: { user_list?: Array<{ user_id?: string; email?: string }> } })
+          ?.data?.user_list ?? [];
+        for (const u of list) {
+          if (u.user_id) openIds.push(u.user_id);
+          else log.warn('command', 'config-email-not-found', { email: u.email });
+        }
+      } catch (err) {
+        log.warn('command', 'config-email-resolve-failed', {
+          err: err instanceof Error ? err.message : String(err),
+          hint: 'check that the bot has the contact:user.id:readonly scope granted',
+        });
+      }
+    }
+    return openIds;
+  };
+  const mergeAndResolve = async (pickerKey: string, textKey: string): Promise<string[]> => {
+    const fromPicker = normalizeIdArray(fv[pickerKey]);
+    const fromText = await resolveEntries(splitText(fv[textKey]));
+    return [...new Set([...fromPicker, ...fromText])];
+  };
+  const allowedUsers = await mergeAndResolve('allowed_users_picker', 'allowed_users_text');
   const allowedChats = normalizeIdArray(fv.allowed_chats_picker);
-  const admins = normalizeIdArray(fv.admins_picker);
+  const admins = await mergeAndResolve('admins_picker', 'admins_text');
 
   // Self-lockout guard: post-redesign, the creator (= Lark app owner) is
   // always exempt from every whitelist, so the operator can always
