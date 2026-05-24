@@ -1,0 +1,127 @@
+#!/usr/bin/env bash
+# multi-window-bridge installer.
+#
+# What it does:
+#   1. Backs up ~/.claude/settings.json → settings.json.bak.<ts>
+#   2. Merges MWB hooks (SessionStart/Notification/PreToolUse/Stop/SessionEnd)
+#      into the existing settings.json (does NOT touch other keys)
+#   3. Adds `source ~/.claude/multi-window-bridge/bin/cc-register` to ~/.zshrc
+#      (idempotent — skipped if already present)
+#   4. Installs + loads ~/Library/LaunchAgents/com.local.mwb-watchdog.plist
+#   5. Stage 2 (receiver) plist is COPIED but NOT loaded — enable via:
+#        edit config.json → stage2.enabled = true
+#        launchctl load ~/Library/LaunchAgents/com.local.mwb-receiver.plist
+#
+# Idempotent: rerunning is safe. Re-merges hooks. Re-creates launchd entries.
+
+set -euo pipefail
+
+MWB="$HOME/.claude/multi-window-bridge"
+SETTINGS="$HOME/.claude/settings.json"
+ZSHRC="$HOME/.zshrc"
+LAUNCH_DIR="$HOME/Library/LaunchAgents"
+WATCHDOG_PLIST="com.local.mwb-watchdog.plist"
+RECEIVER_PLIST="com.local.mwb-receiver.plist"
+
+ts="$(date +%s)"
+echo "→ multi-window-bridge install"
+echo "  MWB home:   $MWB"
+echo "  Settings:   $SETTINGS"
+
+# 1. Backup + merge settings.json
+if [[ ! -f "$SETTINGS" ]]; then
+    echo "{}" > "$SETTINGS"
+fi
+cp "$SETTINGS" "$SETTINGS.bak.$ts"
+echo "  backup → $SETTINGS.bak.$ts"
+
+/usr/bin/python3 - <<'PY'
+import json, os
+mwb = os.path.expanduser("~/.claude/multi-window-bridge")
+settings_path = os.path.expanduser("~/.claude/settings.json")
+patch_path = f"{mwb}/settings.patch.json"
+
+with open(settings_path) as fh:
+    cur = json.load(fh)
+with open(patch_path) as fh:
+    # Hook command paths are templated with __HOME__ — substitute real home.
+    patch = json.loads(fh.read().replace("__HOME__", os.path.expanduser("~")))
+
+cur_hooks = cur.get("hooks", {})
+for event, entries in patch["hooks"].items():
+    existing = cur_hooks.get(event, [])
+    # Strip any prior MWB entries (so we can re-run idempotently)
+    pruned = []
+    for grp in existing:
+        keep_hooks = []
+        for h in grp.get("hooks", []):
+            cmd = h.get("command", "")
+            if "/multi-window-bridge/hooks/" not in cmd:
+                keep_hooks.append(h)
+        if keep_hooks:
+            new_grp = dict(grp)
+            new_grp["hooks"] = keep_hooks
+            pruned.append(new_grp)
+    pruned.extend(entries)
+    cur_hooks[event] = pruned
+cur["hooks"] = cur_hooks
+
+with open(settings_path, "w") as fh:
+    json.dump(cur, fh, indent=2, ensure_ascii=False)
+print("  hooks merged into settings.json")
+PY
+
+# 2. zshrc source line (idempotent)
+SOURCE_LINE='[ -f ~/.claude/multi-window-bridge/bin/cc-register ] && source ~/.claude/multi-window-bridge/bin/cc-register'
+if grep -Fq "$SOURCE_LINE" "$ZSHRC" 2>/dev/null; then
+    echo "  ~/.zshrc already sources cc-register — skipping"
+else
+    {
+        printf "\n# multi-window-bridge\n"
+        printf "%s\n" "$SOURCE_LINE"
+    } >> "$ZSHRC"
+    echo "  added cc-register source to ~/.zshrc"
+fi
+
+# 3. launchd plists
+mkdir -p "$LAUNCH_DIR"
+for p in "$WATCHDOG_PLIST" "$RECEIVER_PLIST"; do
+    src="$MWB/launchd/$p"
+    dst="$LAUNCH_DIR/$p"
+    # plists are templated with __HOME__ — substitute real home on install.
+    sed "s#__HOME__#$HOME#g" "$src" > "$dst"
+    echo "  installed $dst"
+done
+
+# 4. Load watchdog only (receiver requires stage2.enabled flip first)
+launchctl unload "$LAUNCH_DIR/$WATCHDOG_PLIST" 2>/dev/null || true
+launchctl load "$LAUNCH_DIR/$WATCHDOG_PLIST"
+echo "  watchdog loaded under launchd"
+
+cat <<'NEXT'
+
+──────────────────────────────────────────────────
+✅ install complete
+
+Try it out:
+  source ~/.zshrc                  # pick up cc-register in current shell
+  cc-register --alias=demo         # start a Claude window named "demo"
+  # in Claude: type /help and Enter — wait for it to finish
+  # → you should get a feishu message "[demo] 已完成"
+
+Smoke test (sends one ping to feishu now):
+  ~/.claude/multi-window-bridge/bin/mwb-test
+
+Stage 2 (replies from feishu drive a new Warp tab):
+  1. edit ~/.claude/multi-window-bridge/config/config.json — set stage2.enabled = true
+  2. launchctl load ~/Library/LaunchAgents/com.local.mwb-receiver.plist
+  3. (optional) set stage2.allowAppleScriptPaste = true AFTER granting
+     Accessibility permission to osascript (System Settings → Privacy → Accessibility)
+
+Logs:
+  tail -f ~/.claude/multi-window-bridge/logs/$(date +%F).log
+
+Uninstall:
+  ~/.claude/multi-window-bridge/bin/mwb-uninstall
+──────────────────────────────────────────────────
+NEXT

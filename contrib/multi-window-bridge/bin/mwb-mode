@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+# 切换 multi-window-bridge 飞书通知模式
+#
+#   mwb-mode               显示当前模式
+#   mwb-mode quiet         切到 quiet (默认): 只 ✅完成 / 🟡用户回复 / ⚠️卡死
+#   mwb-mode verbose       切到 verbose: 加 🔧 每个 Bash/Edit/Write 通知
+
+set -e
+CFG="$HOME/.claude/multi-window-bridge/config/config.json"
+
+case "${1:-show}" in
+    show|"")
+        /usr/bin/python3 -c "
+import json
+c = json.load(open('$CFG'))
+mode = c['notifications'].get('mode', 'quiet')
+on_tool = c['notifications'].get('onToolAuth', False)
+print(f'  当前模式: {mode}')
+print(f'  📢 飞书会收到:')
+print(f'     ✅ 已完成      ({\"on\" if c[\"notifications\"].get(\"onStop\", True) else \"OFF\"})')
+print(f'     🟡 真实需要回复 ({\"on\" if c[\"notifications\"].get(\"onInput\", True) else \"OFF\"})')
+print(f'     ⚠️ 疑似卡死    ({\"on\" if c[\"notifications\"].get(\"onWatchdog\", True) else \"OFF\"})')
+print(f'     🔧 即将执行    ({\"on\" if mode == \"verbose\" and on_tool else \"OFF (mode quiet 默认静音执行过程)\"})')
+"
+        ;;
+    quiet)
+        /usr/bin/python3 -c "
+import json
+p = '$CFG'
+c = json.load(open(p))
+c['notifications']['mode'] = 'quiet'
+c['notifications']['onToolAuth'] = False
+json.dump(c, open(p,'w'), indent=2, ensure_ascii=False)
+print('  ✅ 切到 quiet')
+print('     不再收到 🔧 PreToolUse 执行过程通知')
+"
+        launchctl kickstart -k gui/$(id -u)/com.local.mwb-watchdog 2>/dev/null || true
+        ;;
+    verbose)
+        /usr/bin/python3 -c "
+import json
+p = '$CFG'
+c = json.load(open(p))
+c['notifications']['mode'] = 'verbose'
+c['notifications']['onToolAuth'] = True
+json.dump(c, open(p,'w'), indent=2, ensure_ascii=False)
+print('  ✅ 切到 verbose')
+print('     🔧 Bash/Edit/Write/NotebookEdit 每次执行前都发飞书卡片')
+"
+        launchctl kickstart -k gui/$(id -u)/com.local.mwb-watchdog 2>/dev/null || true
+        ;;
+    *)
+        echo "Usage: mwb-mode [show|quiet|verbose]"
+        exit 2
+        ;;
+esac
