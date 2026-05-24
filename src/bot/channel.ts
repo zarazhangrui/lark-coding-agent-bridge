@@ -497,7 +497,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
   log.info('prompt', 'built', { promptChars: prompt.length, quotes: quotes.length });
 
   const cwd = workspaces.cwdFor(scope) ?? homedir();
-  const resumeFrom = sessions.resumeFor(scope, cwd);
+  const resumeFrom = sessions.resumeFor(scope, cwd, agent.id);
   if (resumeFrom) {
     log.info('session', 'resume', { sessionId: resumeFrom, cwd });
   } else {
@@ -565,7 +565,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
           card: {
             initial: renderCard(initialState),
             producer: async (ctrl) => {
-              await processAgentStream(handle, sessions, scope, cwd, idleTimeoutMs, async (state) => {
+              await processAgentStream(handle, sessions, scope, cwd, agent.id, idleTimeoutMs, async (state) => {
                 await ctrl.update(renderCard(filterForPrefs(state)));
               });
             },
@@ -578,7 +578,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
         chatId,
         {
           markdown: async (ctrl) => {
-            await processAgentStream(handle, sessions, scope, cwd, idleTimeoutMs, async (state) => {
+            await processAgentStream(handle, sessions, scope, cwd, agent.id, idleTimeoutMs, async (state) => {
               await ctrl.setContent(renderText(filterForPrefs(state)));
             });
           },
@@ -590,7 +590,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
       // the run, then post the final rendered text once as a plain markdown
       // (msg_type=post) message — no card, no streaming, no typewriter.
       let finalState: RunState = initialState;
-      await processAgentStream(handle, sessions, scope, cwd, idleTimeoutMs, async (state) => {
+      await processAgentStream(handle, sessions, scope, cwd, agent.id, idleTimeoutMs, async (state) => {
         finalState = state;
       });
       const body = renderText(filterForPrefs(finalState));
@@ -618,6 +618,7 @@ async function processAgentStream(
   sessions: SessionStore,
   scope: string,
   cwd: string,
+  agentId: string,
   idleTimeoutMs: number | undefined,
   flush: (state: RunState) => Promise<void>,
 ): Promise<void> {
@@ -678,7 +679,7 @@ async function processAgentStream(
       if (evt.type === 'system') {
         if (evt.sessionId) {
           const effectiveCwd = evt.cwd ?? cwd;
-          sessions.set(scope, evt.sessionId, effectiveCwd);
+          sessions.set(scope, evt.sessionId, effectiveCwd, agentId);
           log.info('session', 'set', { sessionId: evt.sessionId });
         }
         continue;
@@ -822,4 +823,3 @@ function stripAttachmentRefs(text: string, fileKeys: string[]): string {
   }
   return out.replace(/\n{3,}/g, '\n\n');
 }
-

@@ -55,11 +55,13 @@ lark-channel-bridge run --codex
 
 Codex 模式默认使用 `~/.lark-codex/config.json`，并把 `preferences.agent = "codex"` 写进这份 config。Claude 仍是默认模式，继续使用 `~/.lark-channel/config.json`。
 
-也可以指定自定义 config 路径：
+也可以通过 `-c` 复用已有 config，包括 `~/.lark-channel/config.json`：
 
 ```bash
-lark-channel-bridge run -c ~/.lark-my-agent/config.json --codex
+lark-channel-bridge run -c ~/.lark-channel/config.json --codex
 ```
+
+这会把这份 config 切到 Codex，并写入 `preferences.agent = "codex"`。session 会记录创建它的 agent，所以 Codex 不会从同一个 `sessions.json` 里误恢复旧的 Claude session。
 
 Codex CLI 当前在 `codex exec --json` 下会把最终文本作为整段 `agent_message` 输出，所以文本是一轮结束后一次性出现，不是 token 级打字机效果；工具调用面板仍会根据 Codex JSONL 事件更新。
 

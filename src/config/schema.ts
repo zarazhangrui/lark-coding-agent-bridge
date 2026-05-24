@@ -68,7 +68,12 @@ export interface SecretsConfig {
  */
 export type MessageReplyMode = 'card' | 'markdown' | 'text';
 
-export type AgentKind = 'claude' | 'codex';
+export const AGENT_KINDS = ['claude', 'codex'] as const;
+export type AgentKind = (typeof AGENT_KINDS)[number];
+
+export function isAgentKind(value: unknown): value is AgentKind {
+  return typeof value === 'string' && (AGENT_KINDS as readonly string[]).includes(value);
+}
 
 /**
  * Access control settings. All three lists default to "no restriction" when
@@ -210,7 +215,7 @@ export function getShowToolCalls(cfg: AppConfig): boolean {
 }
 
 export function getAgentKind(cfg: AppConfig): AgentKind {
-  return cfg.preferences?.agent === 'codex' ? 'codex' : 'claude';
+  return isAgentKind(cfg.preferences?.agent) ? cfg.preferences.agent : 'claude';
 }
 
 /** Resolve the max-concurrent-runs preference with default + sanity clamp. */

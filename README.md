@@ -55,11 +55,13 @@ lark-channel-bridge run --codex
 
 Codex mode uses `~/.lark-codex/config.json` by default and persists `preferences.agent = "codex"` into that config. Claude remains the default and continues using `~/.lark-channel/config.json`.
 
-You can also pass a custom config path:
+You can also reuse an existing config, including `~/.lark-channel/config.json`, by passing `-c`:
 
 ```bash
-lark-channel-bridge run -c ~/.lark-my-agent/config.json --codex
+lark-channel-bridge run -c ~/.lark-channel/config.json --codex
 ```
+
+That switches the selected config to Codex by writing `preferences.agent = "codex"`. Sessions are tagged by agent, so Codex will not try to resume old Claude sessions from the same `sessions.json`.
 
 Codex CLI currently emits final assistant text as a whole `agent_message` on `codex exec --json`, so text appears once per turn instead of token-by-token. Tool-call panels still update from Codex JSONL events.
 

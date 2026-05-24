@@ -7,6 +7,11 @@ import { ClaudeAdapter } from './claude/adapter';
 import { CodexAdapter } from './codex/adapter';
 import type { AgentAdapter } from './types';
 
+const AGENT_FACTORIES = {
+  claude: () => new ClaudeAdapter(),
+  codex: () => new CodexAdapter(),
+} satisfies Record<AgentKind, () => AgentAdapter>;
+
 export function createAgent(kind: AgentKind): AgentAdapter {
-  return kind === 'codex' ? new CodexAdapter() : new ClaudeAdapter();
+  return AGENT_FACTORIES[kind]();
 }
