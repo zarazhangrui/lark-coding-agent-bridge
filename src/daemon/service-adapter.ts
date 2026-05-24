@@ -31,7 +31,7 @@ export interface ServiceAdapter {
   servicePath(): string;
 
   /** Write or overwrite the service definition. */
-  install(): Promise<void>;
+  install(runArgs?: string[]): Promise<void>;
 
   /** Start the service (enables autostart where applicable). */
   start(): ServiceResultLike;
@@ -90,8 +90,8 @@ function makeSystemdAdapter(): ServiceAdapter {
     fileExists: systemd.unitExists,
     isRunning: systemd.isActive,
     servicePath: systemdUnitPath,
-    install: async () => {
-      await systemd.writeUnit();
+    install: async (runArgs?: string[]) => {
+      await systemd.writeUnit(runArgs);
       // systemd needs daemon-reload after any unit file change.
       systemd.daemonReload();
     },
@@ -125,8 +125,8 @@ function makeSchtasksAdapter(): ServiceAdapter {
     // registration (queryable via schtasks) and the launcher .cmd we wrote.
     // The task name is what the user would search for in Task Scheduler UI.
     servicePath: () => WINDOWS_TASK_NAME,
-    install: async () => {
-      const r = await schtasks.installTask();
+    install: async (runArgs?: string[]) => {
+      const r = await schtasks.installTask(runArgs);
       if (!r.ok) throw new Error(r.stderr || 'schtasks /Create failed');
     },
     start: schtasks.runTask,

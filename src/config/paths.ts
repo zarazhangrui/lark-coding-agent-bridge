@@ -1,17 +1,33 @@
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
-const appDir = join(homedir(), '.lark-channel');
+let appDir = join(homedir(), '.lark-channel');
 
 export const paths = {
-  appDir,
-  cacheDir: appDir,
-  configFile: join(appDir, 'config.json'),
-  sessionsFile: join(appDir, 'sessions.json'),
-  workspacesFile: join(appDir, 'workspaces.json'),
-  processesFile: join(appDir, 'processes.json'),
-  secretsFile: join(appDir, 'secrets.enc'),
-  keystoreSaltFile: join(appDir, '.keystore.salt'),
+  get appDir(): string {
+    return appDir;
+  },
+  get cacheDir(): string {
+    return appDir;
+  },
+  get configFile(): string {
+    return join(appDir, 'config.json');
+  },
+  get sessionsFile(): string {
+    return join(appDir, 'sessions.json');
+  },
+  get workspacesFile(): string {
+    return join(appDir, 'workspaces.json');
+  },
+  get processesFile(): string {
+    return join(appDir, 'processes.json');
+  },
+  get secretsFile(): string {
+    return join(appDir, 'secrets.enc');
+  },
+  get keystoreSaltFile(): string {
+    return join(appDir, '.keystore.salt');
+  },
   /**
    * Thin shell wrapper that lark-cli (and other openclaw-exec-protocol
    * consumers) invoke to resolve secrets from the bridge's encrypted store.
@@ -20,9 +36,17 @@ export const paths = {
    * symlink or root-owned (`/usr/bin/node`). Wrapper internals do the
    * `node ... secrets get` invocation; lark-cli only audits the wrapper.
    */
-  secretsGetterScript: join(appDir, 'secrets-getter'),
-  mediaDir: join(appDir, 'media'),
+  get secretsGetterScript(): string {
+    return join(appDir, 'secrets-getter');
+  },
+  get mediaDir(): string {
+    return join(appDir, 'media');
+  },
 };
+
+export function configurePaths(dir: string): void {
+  appDir = dir;
+}
 
 /**
  * Pre-0.1.11 paths (XDG-style). Kept here only so the `migrate` command

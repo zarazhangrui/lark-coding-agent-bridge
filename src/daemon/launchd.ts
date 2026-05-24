@@ -20,6 +20,7 @@ export interface PlistInputs {
    * tools (lark-cli, claude) can be resolved by name. launchd defaults
    * to a very minimal PATH otherwise. */
   envPath: string;
+  runArgs?: string[];
 }
 
 export function buildPlist(inputs: PlistInputs): string {
@@ -39,7 +40,7 @@ export function buildPlist(inputs: PlistInputs): string {
     <array>
         <string>${escape(inputs.nodePath)}</string>
         <string>${escape(inputs.bridgeEntryPath)}</string>
-        <string>run</string>
+${(inputs.runArgs ?? ['run']).map((arg) => `        <string>${escape(arg)}</string>`).join('\n')}
     </array>
     <key>RunAtLoad</key>
     <true/>
@@ -59,7 +60,7 @@ export function buildPlist(inputs: PlistInputs): string {
 `;
 }
 
-export async function writePlist(): Promise<void> {
+export async function writePlist(runArgs?: string[]): Promise<void> {
   const bridgeEntryPath = process.argv[1];
   if (!bridgeEntryPath) {
     throw new Error('cannot determine bridge entry path (process.argv[1] is empty)');
@@ -68,6 +69,7 @@ export async function writePlist(): Promise<void> {
     nodePath: process.execPath,
     bridgeEntryPath,
     envPath: process.env.PATH ?? '',
+    runArgs,
   });
   const plistPath = launchAgentPlistPath();
   await mkdir(dirname(plistPath), { recursive: true });

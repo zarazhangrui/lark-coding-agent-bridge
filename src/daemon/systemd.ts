@@ -19,6 +19,7 @@ export interface UnitInputs {
    * tools (lark-cli, claude) can be resolved by name. systemd user units
    * inherit a minimal env otherwise. */
   envPath: string;
+  runArgs?: string[];
 }
 
 /**
@@ -43,7 +44,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart="${escape(inputs.nodePath)}" "${escape(inputs.bridgeEntryPath)}" run
+ExecStart="${escape(inputs.nodePath)}" "${escape(inputs.bridgeEntryPath)}" ${(inputs.runArgs ?? ['run']).map((arg) => `"${escape(arg)}"`).join(' ')}
 Restart=always
 RestartSec=5
 StandardOutput=append:${daemonStdoutPath()}
@@ -55,7 +56,7 @@ WantedBy=default.target
 `;
 }
 
-export async function writeUnit(): Promise<void> {
+export async function writeUnit(runArgs?: string[]): Promise<void> {
   const bridgeEntryPath = process.argv[1];
   if (!bridgeEntryPath) {
     throw new Error('cannot determine bridge entry path (process.argv[1] is empty)');
@@ -64,6 +65,7 @@ export async function writeUnit(): Promise<void> {
     nodePath: process.execPath,
     bridgeEntryPath,
     envPath: process.env.PATH ?? '',
+    runArgs,
   });
   const unitPath = systemdUnitPath();
   await mkdir(dirname(unitPath), { recursive: true });
