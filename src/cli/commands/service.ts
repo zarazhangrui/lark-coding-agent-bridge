@@ -1,5 +1,6 @@
-import { ClaudeAdapter } from '../../agent/claude/adapter';
-import { isComplete } from '../../config/schema';
+import { createAgent } from '../../agent';
+import type { AgentKind } from '../../config/schema';
+import { getAgentKind, isComplete } from '../../config/schema';
 import { loadConfig } from '../../config/store';
 import { daemonStderrPath, daemonStdoutPath } from '../../daemon/paths';
 import {
@@ -8,11 +9,19 @@ import {
   type ServiceResultLike,
 } from '../../daemon/service-adapter';
 import { readAndPrune, type ProcessEntry } from '../../runtime/registry';
+import { applyDataLocation, runArgsForSelection } from '../agent-options';
 import { preFlightChecks } from '../preflight';
 
 export interface ServiceStartOptions {
+  config?: string;
+  agent?: AgentKind;
   /** Skip lark-cli auto-install + bind during `start`. */
   skipCheckLarkCli?: boolean;
+}
+
+export interface ServiceSelectionOptions {
+  config?: string;
+  agent?: AgentKind;
 }
 
 /**
@@ -73,8 +82,8 @@ function printServiceFailure(verb: 'started' | 'restarted', stderr: string): voi
   console.error(cleaned);
 }
 
-async function ensureBridgeConfigured(): Promise<void> {
-  const cfg = await loadConfig();
+async function ensureBridgeConfigured(configPath: string): Promise<void> {
+  const cfg = await loadConfig(configPath);
   if (!isComplete(cfg)) {
     console.error('bot 还没配置 app 凭据。');
     console.error('请先运行 `run` 完成首次扫码向导,再回来 `start`。');
@@ -117,9 +126,10 @@ async function waitForServiceConnect(
  */
 async function reportConnectAfter(
   verb: 'started' | 'restarted',
+  configPath: string,
   fn: () => ServiceResultLike,
 ): Promise<void> {
-  const cfg = await loadConfig();
+  const cfg = await loadConfig(configPath);
   const appId = cfg.accounts?.app?.id ?? '';
   const beforePids = new Set(
     readAndPrune()
@@ -138,10 +148,11 @@ async function reportConnectAfter(
 
   const entry = await waitForServiceConnect(appId, beforePids);
   if (entry) {
-    const agent = new ClaudeAdapter();
+    const agent = isComplete(cfg) ? createAgent(getAgentKind(cfg)) : undefined;
     const verbZh = verb === 'started' ? '已启动' : '已重启';
+    const agentLabel = agent ? `${agent.displayName} (${agent.id})` : 'unknown';
     console.log(
-      `✓ ${verbZh}  bot: ${entry.botName} (${entry.appId})  agent: ${agent.displayName} (${agent.id})  进程: ${entry.id}`,
+      `✓ ${verbZh}  bot: ${entry.botName} (${entry.appId})  agent: ${agentLabel}  进程: ${entry.id}`,
     );
     return;
   }
@@ -158,15 +169,16 @@ async function reportConnectAfter(
  * they've switched runtime versions or updated their PATH since last install.
  */
 export async function runServiceStart(opts: ServiceStartOptions = {}): Promise<void> {
+  const configPath = applyDataLocation(opts);
   const adapter = requireAdapter('start');
-  await ensureBridgeConfigured();
+  await ensureBridgeConfigured(configPath);
   // Run the same lark-cli check as `bridge run` BEFORE writing the
   // service file — the user is in a TTY here and can answer the install
   // prompt. The daemon's own preflight (when launchd / systemd spawns
   // it) will be non-TTY and would silently skip the install.
   await preFlightChecks({ skipCheckLarkCli: opts.skipCheckLarkCli });
 
-  await adapter.install();
+  await adapter.install(runArgsForSelection(opts));
 
   // If already running, stop first so start operations don't race.
   if (adapter.isRunning()) {
@@ -186,7 +198,7 @@ export async function runServiceStart(opts: ServiceStartOptions = {}): Promise<v
     }
   }
 
-  await reportConnectAfter('started', adapter.start);
+  await reportConnectAfter('started', configPath, adapter.start);
 }
 
 /**
@@ -199,7 +211,8 @@ export async function runServiceStart(opts: ServiceStartOptions = {}): Promise<v
  * If the user just wants to bounce the service (keep autostart),
  * `restart` is the right command.
  */
-export async function runServiceStop(): Promise<void> {
+export async function runServiceStop(opts: ServiceSelectionOptions = {}): Promise<void> {
+  const configPath = applyDataLocation(opts);
   const adapter = requireAdapter('stop');
   if (!adapter.fileExists()) {
     console.log('bot 还没在后台运行过,无需停止。');
@@ -213,7 +226,7 @@ export async function runServiceStop(): Promise<void> {
   // Snapshot bot info BEFORE stop so the success message can name
   // exactly which bot got stopped. Reading after would race the
   // unregisterSync the daemon fires on shutdown.
-  const cfg = await loadConfig();
+  const cfg = await loadConfig(configPath);
   const appId = cfg.accounts?.app?.id;
   const entry = appId
     ? readAndPrune().find((e) => e.appId === appId && Boolean(e.botName))
@@ -238,21 +251,23 @@ export async function runServiceStop(): Promise<void> {
  * If the service is not running (stopped or never started), behaves like
  * `start` and goes through the full install + start path.
  */
-export async function runServiceRestart(): Promise<void> {
+export async function runServiceRestart(opts: ServiceSelectionOptions = {}): Promise<void> {
+  const configPath = applyDataLocation(opts);
   const adapter = requireAdapter('restart');
   if (!adapter.fileExists()) {
     console.error('bot 还没在后台运行过。请先运行 `start` 启动。');
     process.exit(1);
   }
   if (adapter.isRunning()) {
-    await reportConnectAfter('restarted', adapter.restart);
+    await reportConnectAfter('restarted', configPath, adapter.restart);
     return;
   }
-  await reportConnectAfter('started', adapter.start);
+  await reportConnectAfter('started', configPath, adapter.start);
 }
 
 /** `bridge status` — report whether the daemon is running, with pid + log paths. */
-export async function runServiceStatus(): Promise<void> {
+export async function runServiceStatus(opts: ServiceSelectionOptions = {}): Promise<void> {
+  applyDataLocation(opts);
   const adapter = requireAdapter('status');
   if (!adapter.fileExists()) {
     console.log('bot 当前没在后台运行(从未启动过)');
@@ -293,7 +308,8 @@ export async function runServiceStatus(): Promise<void> {
  * Idempotent. Leaves ~/.lark-channel/ state untouched (keystore, sessions,
  * logs etc) — that's the user's data, not service-manager hooks.
  */
-export async function runServiceUnregister(): Promise<void> {
+export async function runServiceUnregister(opts: ServiceSelectionOptions = {}): Promise<void> {
+  applyDataLocation(opts);
   const adapter = requireAdapter('unregister');
   if (!adapter.fileExists()) {
     console.log('bot 还没在后台运行过,无需清理。');

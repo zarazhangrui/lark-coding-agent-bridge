@@ -1,14 +1,13 @@
 import dns from 'node:dns';
 import { createInterface } from 'node:readline';
 import pkg from '../../../package.json';
-import { ClaudeAdapter } from '../../agent/claude/adapter';
+import { createAgent } from '../../agent';
 import { startChannel, type BridgeChannel } from '../../bot/channel';
 import { runRegistrationWizard } from '../../bot/wizard';
 import type { Controls } from '../../commands';
 import { setSecret } from '../../config/keystore';
-import { paths } from '../../config/paths';
-import type { AppConfig } from '../../config/schema';
-import { isComplete, secretKeyForApp } from '../../config/schema';
+import type { AgentKind, AppConfig } from '../../config/schema';
+import { getAgentKind, isComplete, secretKeyForApp } from '../../config/schema';
 import {
   buildEncryptedAccountConfig,
   ensureSecretsGetterWrapper,
@@ -28,6 +27,7 @@ import {
 } from '../../runtime/registry';
 import { SessionStore } from '../../session/store';
 import { WorkspaceStore } from '../../workspace/store';
+import { applyDataLocation } from '../agent-options';
 
 // Prefer IPv4 — Node 20+ defaults to "verbatim" which respects whatever
 // the resolver returns first; in IPv6-broken networks (WSL2, certain VPNs,
@@ -51,11 +51,12 @@ const MEDIA_GC_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 
 export interface StartOptions {
   config?: string;
+  agent?: AgentKind;
   skipCheckLarkCli?: boolean;
 }
 
 export async function runStart(opts: StartOptions): Promise<void> {
-  const configPath = opts.config ?? paths.configFile;
+  const configPath = applyDataLocation(opts);
   const existing = await loadConfig(configPath);
 
   let cfg: AppConfig;
@@ -68,18 +69,28 @@ export async function runStart(opts: StartOptions): Promise<void> {
     cfg = await maybeMigratePlaintextSecret(cfg, configPath);
   } else {
     const fresh = await runRegistrationWizard();
+    if (opts.agent) {
+      fresh.preferences = { ...(fresh.preferences ?? {}), agent: opts.agent };
+    }
     // Fresh credentials from the wizard arrive as a plaintext secret;
     // immediately encrypt before persisting so disk never holds the raw value.
     cfg = await persistEncrypted(fresh, configPath);
     console.log(`配置已保存到 ${configPath}\n`);
   }
 
+  cfg = await applyAgentPreference(cfg, configPath, opts.agent);
+
   await preFlightChecks({ skipCheckLarkCli: opts.skipCheckLarkCli });
 
-  const agent = new ClaudeAdapter();
+  const agentKind = getAgentKind(cfg);
+  const agent = createAgent(agentKind);
   if (!(await agent.isAvailable())) {
-    console.error('✗ 未找到 claude CLI。请先安装 Claude Code：');
-    console.error('  https://docs.anthropic.com/en/docs/claude-code/quickstart');
+    if (agentKind === 'codex') {
+      console.error('✗ 未找到 codex CLI。请先安装 OpenAI Codex CLI 并运行 `codex login`。');
+    } else {
+      console.error('✗ 未找到 claude CLI。请先安装 Claude Code：');
+      console.error('  https://docs.anthropic.com/en/docs/claude-code/quickstart');
+    }
     process.exit(1);
   }
 
@@ -213,6 +224,28 @@ export async function runStart(opts: StartOptions): Promise<void> {
 
   // keep the event loop alive until a signal arrives
   await new Promise<void>(() => {});
+}
+
+async function applyAgentPreference(
+  cfg: AppConfig,
+  configPath: string,
+  requested: AgentKind | undefined,
+): Promise<AppConfig> {
+  if (!requested) return cfg;
+  const onDisk = cfg.preferences?.agent;
+  if (onDisk && onDisk !== requested) {
+    console.error(`✗ ${configPath} 里 preferences.agent 是 "${onDisk}"，但你用了 --${requested}。`);
+    console.error(`  改 config 或换 --${onDisk} 启动。`);
+    process.exit(1);
+  }
+  if (onDisk === requested) return cfg;
+  const next = {
+    ...cfg,
+    preferences: { ...(cfg.preferences ?? {}), agent: requested },
+  };
+  await saveConfig(next, configPath);
+  console.log(`已写入 preferences.agent = "${requested}"\n`);
+  return next;
 }
 
 /**
@@ -368,4 +401,3 @@ async function persistEncrypted(cfg: AppConfig, configPath: string): Promise<App
   await saveConfig(next, configPath);
   return next;
 }
-

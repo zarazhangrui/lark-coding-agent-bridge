@@ -68,6 +68,8 @@ export interface SecretsConfig {
  */
 export type MessageReplyMode = 'card' | 'markdown' | 'text';
 
+export type AgentKind = 'claude' | 'codex';
+
 /**
  * Access control settings. All three lists default to "no restriction" when
  * empty / undefined, so existing deployments are not broken on upgrade.
@@ -92,6 +94,8 @@ export interface AppAccess {
 export interface AppPreferences {
   /** Reply rendering mode for IM (group/p2p) messages. Default 'card'. */
   messageReply?: MessageReplyMode;
+  /** Which local coding-agent CLI to bridge to. Default 'claude'. */
+  agent?: AgentKind;
   /**
    * Internal marker: pre-0.1.27 the value `'text'` meant "lightweight
    * streaming markdown card" (what's now called `'markdown'`). On upgrade
@@ -203,6 +207,10 @@ export function getMessageReplyMode(cfg: AppConfig): MessageReplyMode {
 /** Resolve the show-tool-calls preference with default fallback. */
 export function getShowToolCalls(cfg: AppConfig): boolean {
   return cfg.preferences?.showToolCalls !== false;
+}
+
+export function getAgentKind(cfg: AppConfig): AgentKind {
+  return cfg.preferences?.agent === 'codex' ? 'codex' : 'claude';
 }
 
 /** Resolve the max-concurrent-runs preference with default + sanity clamp. */
