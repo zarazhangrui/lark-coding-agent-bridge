@@ -43,6 +43,19 @@ lark-channel-bridge run
 3. 选择 / 创建 PersonalAgent 应用
 4. 成功后凭据写入 `~/.lark-channel/config.json`
 
+## 群聊配置
+
+**重要**：扫码绑定 PersonalAgent 应用后，还需要在飞书开放平台后台配置一个额外设置，才能在群聊中接收未 @ 的消息：
+
+1. 访问 https://open.feishu.cn/ 并登录
+2. 找到你的 PersonalAgent 应用
+3. 进入 **"机器人"** 设置页面
+4. 开启 **"接收群内所有消息"** 开关
+
+如果不开启这个设置，即使你在 `/config` 中设置了 `requireMentionInGroup: false`，bot 也**只能接收到 @ 它的消息**。这是平台层面的限制，不是 bridge 配置问题。
+
+**为什么重要**：飞书 API 只会根据这个平台设置来决定是否把消息推送到 bot 的 WebSocket 连接。bridge 的 `requireMentionInGroup` 配置控制的是 bridge *如何处理*收到的消息，但它无法接收平台根本没推送的消息。
+
 ## 命令速查
 
 ### 宿主 CLI

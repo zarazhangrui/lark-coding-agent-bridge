@@ -43,6 +43,19 @@ The first run detects there's no app configured and **opens a QR-code wizard**:
 3. Pick or create a PersonalAgent app.
 4. Credentials are written to `~/.lark-channel/config.json`.
 
+## Group chat configuration
+
+**Important**: After scanning the QR code and binding your PersonalAgent app, you need to configure one additional setting in the Feishu Open Platform console to receive messages in group chats without being mentioned:
+
+1. Visit https://open.feishu.cn/ and log in
+2. Find your PersonalAgent application
+3. Go to **"Bot"** (机器人) settings
+4. Enable **"Receive all messages in group chats"** (接收群内所有消息)
+
+Without this setting enabled, the bot will **only receive messages where it is @-mentioned**, even if you set `requireMentionInGroup: false` in `/config`. This is a platform-level restriction, not a bridge configuration issue.
+
+**Why this matters**: The Feishu API only pushes messages to your bot's WebSocket connection based on this platform setting. The bridge's `requireMentionInGroup` config controls what the bridge *does* with messages it receives, but it cannot receive messages that the platform never sends.
+
 ## Commands
 
 ### Host CLI
