@@ -113,7 +113,7 @@ export class ClaudeAdapter implements AgentAdapter {
 
   async isAvailable(): Promise<boolean> {
     return new Promise((resolve) => {
-      const child = spawn(this.binary, ['--version'], { stdio: 'ignore' });
+      const child = spawn(this.binary, ['--version'], { stdio: 'ignore', shell: process.platform === 'win32' });
       child.on('error', () => resolve(false));
       child.on('exit', (code) => resolve(code === 0));
     });
@@ -135,6 +135,7 @@ export class ClaudeAdapter implements AgentAdapter {
     if (opts.model) args.push('--model', opts.model);
 
     const child = spawn(this.binary, args, {
+      shell: process.platform === 'win32',
       cwd: opts.cwd,
       env: { ...process.env, LARK_CHANNEL: '1' },
       stdio: ['ignore', 'pipe', 'pipe'],
