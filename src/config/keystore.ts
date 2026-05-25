@@ -121,7 +121,25 @@ export async function getSecret(id: string): Promise<string | undefined> {
   const env = store.entries[id];
   if (!env) return undefined;
   const key = await deriveKey();
-  return decrypt(key, env);
+  try {
+    return decrypt(key, env);
+  } catch (err) {
+    // An AES-GCM auth failure here ("Unsupported state or unable to
+    // authenticate data") almost always means the derived key changed since
+    // the secret was stored: deriveKey() seeds on `hostname()|username`, and
+    // macOS in particular rewrites the hostname on network changes and
+    // duplicate-name resolution (LocalHostName -> "MacBook-Pro-2", etc).
+    // Surface the remedy instead of letting a raw crypto error crash-loop the
+    // daemon under KeepAlive.
+    const appId = id.startsWith('app-') ? id.slice(4) : id;
+    throw new Error(
+      `Failed to decrypt keystore entry "${id}". The keystore key is derived ` +
+        `from this machine's hostname + username; if either changed since the ` +
+        `secret was stored, the entry can no longer be decrypted. Re-store it:\n` +
+        `  lark-channel-bridge secrets set --app-id ${appId}\n` +
+        `(underlying error: ${(err as Error).message})`,
+    );
+  }
 }
 
 /** Store / overwrite the secret for `id`. */
