@@ -203,3 +203,5 @@ After a manual edit, **restart the bridge** or send **`/reconnect`** from any al
 ## License
 
 [MIT](./LICENSE)
+
+<img src="./assets/feedback-group-qr.png" alt="Feedback group QR code" width="360">

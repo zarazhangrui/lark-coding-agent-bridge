@@ -6,6 +6,7 @@ export async function runRegistrationWizard(): Promise<AppConfig> {
   console.log('\n未检测到飞书应用配置，进入扫码创建向导。\n');
 
   const result = await registerApp({
+    source: 'lark-channel-bridge',
     onQRCodeReady: (info) => {
       console.log('请用飞书 App 扫描以下二维码完成应用创建：\n');
       qrcode.generate(info.url, { small: true });
