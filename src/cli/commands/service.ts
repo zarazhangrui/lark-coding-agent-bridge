@@ -267,14 +267,24 @@ export async function runServiceStatus(): Promise<void> {
 
   const cfg = await loadConfig();
   const appId = cfg.accounts?.app?.id;
-  const entry = appId
-    ? readAndPrune().find((e) => e.appId === appId && Boolean(e.botName))
-    : undefined;
+  // readAndPrune() drops entries whose pid is no longer alive, so `liveEntries`
+  // reflects bot processes that are *actually* running right now.
+  const liveEntries = appId
+    ? readAndPrune().filter((e) => e.appId === appId)
+    : readAndPrune();
+  const entry = liveEntries.find((e) => Boolean(e.botName));
 
   const { pid, lastExit } = adapter.parseStatus(adapter.describeStatus());
 
   if (entry) {
     console.log(`✓ bot ${entry.botName} (${entry.appId}) 正在后台运行`);
+  } else if (liveEntries.length === 0) {
+    // launchd reports the service "loaded", but no live bot process exists.
+    // With KeepAlive=true a crash-looping bot keeps the launchd job alive while
+    // nothing is actually serving — don't print a misleading "✓ 正在后台运行".
+    console.log('⚠️  服务已加载,但当前没有存活的 bot 进程 — 可能在崩溃重启。');
+    console.log('   请查看下方 daemon-stderr.log;若是 keystore 解密失败,');
+    console.log('   跑 `lark-channel-bridge secrets set --app-id <你的 app id>` 重存后再 `restart`。');
   } else {
     console.log('✓ bot 正在后台运行');
   }
