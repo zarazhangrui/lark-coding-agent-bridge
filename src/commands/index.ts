@@ -203,19 +203,24 @@ async function handleNew(args: string, ctx: CommandContext): Promise<void> {
     return handleNewChat(rawName, ctx);
   }
 
+  // /new --clean  — new session + permanently delete the current JSONL history
+  const clean = trimmed === '--clean';
+
   const wasRunning = ctx.activeRuns.interrupt(ctx.scope);
 
-  // Delete the JSONL file before clearing the pointer so the sessionId is
-  // still available here. Silently ignores missing files.
-  const prev = ctx.sessions.getRaw(ctx.scope);
-  if (prev?.sessionId && prev.cwd) {
-    await deleteSession(prev.cwd, prev.sessionId).catch((err) => {
-      log.warn('command', '/new delete-session failed', { err: String(err) });
-    });
+  if (clean) {
+    const prev = ctx.sessions.getRaw(ctx.scope);
+    if (prev?.sessionId && prev.cwd) {
+      await deleteSession(prev.cwd, prev.sessionId).catch((err) => {
+        log.warn('command', '/new --clean delete-session failed', { err: String(err) });
+      });
+    }
   }
 
   ctx.sessions.clear(ctx.scope);
-  await reply(ctx, wasRunning ? '已中断当前任务并开始新会话。' : '已开始新会话。');
+
+  const base = wasRunning ? '已中断当前任务并开始新会话。' : '已开始新会话。';
+  await reply(ctx, clean ? `${base}\n_历史对话记录已永久删除。_` : base);
 }
 
 async function handleNewChat(rawName: string, ctx: CommandContext): Promise<void> {
