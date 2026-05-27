@@ -112,7 +112,7 @@ export async function handleCommentMention(deps: CommentDeps): Promise<void> {
   // default in case it does.
   const synthChatId = `doc:${evt.fileToken}`;
   const cwd = workspaces.cwdFor(synthChatId) ?? homedir();
-  const resumeFrom = sessions.resumeFor(synthChatId, cwd);
+  const resumeFrom = sessions.resumeFor(synthChatId, cwd, agent.id);
   log.info('comment', 'session', { synthChatId, resumeFrom: resumeFrom ?? null, cwd });
 
   // Cloud-doc comments have no streaming UI — the user just sees their
@@ -136,7 +136,7 @@ export async function handleCommentMention(deps: CommentDeps): Promise<void> {
         case 'system':
           if (e.sessionId) {
             const effectiveCwd = e.cwd ?? cwd;
-            sessions.set(synthChatId, e.sessionId, effectiveCwd);
+            sessions.set(synthChatId, e.sessionId, effectiveCwd, agent.id);
           }
           break;
         case 'error':

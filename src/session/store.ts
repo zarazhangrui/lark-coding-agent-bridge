@@ -9,6 +9,8 @@ export interface SessionEntry {
   sessionId?: string;
   /** Pinned cwd for the resumable session. Absent for the same reason. */
   cwd?: string;
+  /** Agent adapter id that created this session. Missing legacy entries are Claude sessions. */
+  agent?: string;
   updatedAt: number;
   /** Per-scope idle-timeout override (minutes). 0 = explicitly off for this
    * scope, undefined = follow global default. /new clears the whole entry,
@@ -41,6 +43,7 @@ export class SessionStore {
         // the full pair; but a bare timeout override is fine on its own.
         const sessionId = typeof entry.sessionId === 'string' ? entry.sessionId : undefined;
         const cwd = typeof entry.cwd === 'string' ? entry.cwd : undefined;
+        const agent = typeof entry.agent === 'string' ? entry.agent : undefined;
         const idleTimeoutMinutes =
           typeof entry.idleTimeoutMinutes === 'number' ? entry.idleTimeoutMinutes : undefined;
         const hasSession = sessionId !== undefined && cwd !== undefined;
@@ -48,6 +51,7 @@ export class SessionStore {
         this.data[chatId] = {
           ...(sessionId !== undefined ? { sessionId } : {}),
           ...(cwd !== undefined ? { cwd } : {}),
+          ...(agent !== undefined ? { agent } : {}),
           updatedAt: entry.updatedAt,
           ...(idleTimeoutMinutes !== undefined ? { idleTimeoutMinutes } : {}),
         };
@@ -59,14 +63,15 @@ export class SessionStore {
   }
 
   /**
-   * Return the session id for this chat if it was created in the given cwd.
-   * Sessions recorded in a different cwd are stale — claude can't resume
-   * them from a different working directory.
+   * Return the session id for this chat if it was created in the given cwd
+   * and by the same agent. Legacy entries without an agent marker are
+   * treated as Claude sessions for backward compatibility.
    */
-  resumeFor(chatId: string, cwd: string): string | undefined {
+  resumeFor(chatId: string, cwd: string, agent?: string): string | undefined {
     const entry = this.data[chatId];
     if (!entry) return undefined;
     if (entry.cwd !== cwd) return undefined;
+    if (agent && (entry.agent ?? 'claude') !== agent) return undefined;
     return entry.sessionId;
   }
 
@@ -74,13 +79,14 @@ export class SessionStore {
     return this.data[chatId];
   }
 
-  set(chatId: string, sessionId: string, cwd: string): void {
+  set(chatId: string, sessionId: string, cwd: string, agent?: string): void {
     // Preserve idleTimeoutMinutes across run starts — it's a per-scope
     // preference, not per-run-instance state. /new (clear) wipes it.
     const prev = this.data[chatId];
     this.data[chatId] = {
       sessionId,
       cwd,
+      ...(agent !== undefined ? { agent } : {}),
       updatedAt: Date.now(),
       ...(prev?.idleTimeoutMinutes !== undefined
         ? { idleTimeoutMinutes: prev.idleTimeoutMinutes }

@@ -9,13 +9,7 @@ import { log } from '../core/logger';
 import type { SessionStore } from '../session/store';
 import type { WorkspaceStore } from '../workspace/store';
 
-/** Marker key on a button's value object that flags the cardAction as
- * a callback that should be forwarded back to the agent (Claude) instead
- * of dispatched to a built-in command handler. The double-underscore
- * sigils make it virtually impossible to collide with normal payload
- * fields the agent might set.
- */
-const CLAUDE_CALLBACK_MARKER = '__claude_cb';
+const AGENT_CALLBACK_MARKERS = ['__agent_cb', '__claude_cb', '__codex_cb'] as const;
 
 export interface CardDispatchDeps {
   channel: LarkChannel;
@@ -71,12 +65,9 @@ export async function handleCardAction(deps: CardDispatchDeps): Promise<void> {
     return;
   }
 
-  // Claude-driven callback: the button was rendered by claude itself via
-  // lark-cli, with `__claude_cb` set on the value. Forward the click back
-  // into the scope's pending queue so claude resumes its session and sees
-  // the click as a follow-up message, with full context of what it sent.
-  if (CLAUDE_CALLBACK_MARKER in payload) {
-    forwardToClaude(deps, payload, formValue, scope, threadId);
+  const callbackMarker = findAgentCallbackMarker(payload);
+  if (callbackMarker) {
+    forwardToAgent(deps, payload, callbackMarker, formValue, scope, threadId);
     return;
   }
 
@@ -147,17 +138,22 @@ async function lookupMessageThreadId(
   }
 }
 
-function forwardToClaude(
+function findAgentCallbackMarker(payload: Record<string, unknown>): string | undefined {
+  return AGENT_CALLBACK_MARKERS.find((marker) => marker in payload);
+}
+
+function forwardToAgent(
   deps: CardDispatchDeps,
   payload: Record<string, unknown>,
+  marker: string,
   formValue: Record<string, unknown> | undefined,
   scope: string,
   threadId: string | undefined,
 ): void {
-  // Strip the marker so claude only sees the meaningful fields it set.
-  const { [CLAUDE_CALLBACK_MARKER]: _marker, ...claudePayload } = payload;
-  const merged = formValue ? { ...claudePayload, form_value: formValue } : claudePayload;
-  log.info('cardAction', 'forward-claude', {
+  // Strip the marker so the agent only sees the meaningful fields it set.
+  const { [marker]: _marker, ...agentPayload } = payload;
+  const merged = formValue ? { ...agentPayload, form_value: formValue } : agentPayload;
+  log.info('cardAction', 'forward-agent', {
     scope,
     payload: JSON.stringify(merged).slice(0, 200),
   });

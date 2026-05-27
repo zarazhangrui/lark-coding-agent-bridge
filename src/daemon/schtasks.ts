@@ -17,6 +17,7 @@ export interface LauncherInputs {
   bridgeEntryPath: string;
   /** PATH for the child process; baked into the .cmd via `set PATH=`. */
   envPath: string;
+  runArgs?: string[];
 }
 
 /**
@@ -35,12 +36,12 @@ export function buildLauncherCmd(inputs: LauncherInputs): string {
   return [
     '@echo off',
     `set "PATH=${inputs.envPath}"`,
-    `"${inputs.nodePath}" "${inputs.bridgeEntryPath}" run >> "${daemonStdoutPath()}" 2>> "${daemonStderrPath()}"`,
+    `"${inputs.nodePath}" "${inputs.bridgeEntryPath}" ${(inputs.runArgs ?? ['run']).map((arg) => `"${arg.replace(/"/g, '""')}"`).join(' ')} >> "${daemonStdoutPath()}" 2>> "${daemonStderrPath()}"`,
     '',
   ].join('\r\n');
 }
 
-async function writeLauncherCmd(): Promise<void> {
+async function writeLauncherCmd(runArgs?: string[]): Promise<void> {
   const bridgeEntryPath = process.argv[1];
   if (!bridgeEntryPath) {
     throw new Error('cannot determine bridge entry path (process.argv[1] is empty)');
@@ -49,6 +50,7 @@ async function writeLauncherCmd(): Promise<void> {
     nodePath: process.execPath,
     bridgeEntryPath,
     envPath: process.env.PATH ?? '',
+    runArgs,
   });
   const cmdPath = windowsLauncherCmdPath();
   await mkdir(dirname(cmdPath), { recursive: true });
@@ -79,8 +81,8 @@ function runSchtasks(args: string[]): SchtasksResult {
  * The /TR value is the .cmd wrapper path. Schtasks treats /TR as a command
  * line, so wrapping in quotes keeps spaces in the path intact.
  */
-export async function installTask(): Promise<SchtasksResult> {
-  await writeLauncherCmd();
+export async function installTask(runArgs?: string[]): Promise<SchtasksResult> {
+  await writeLauncherCmd(runArgs);
   return runSchtasks([
     '/Create',
     '/F',

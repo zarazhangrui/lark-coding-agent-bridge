@@ -1,4 +1,6 @@
 import { readAndPrune, resolveTarget, isAlive } from '../../runtime/registry';
+import type { AgentSelectionOptions } from '../agent-options';
+import { applyDataLocation } from '../agent-options';
 
 /**
  * Pretty-print the list of running lark-channel-bridge processes.
@@ -7,7 +9,8 @@ import { readAndPrune, resolveTarget, isAlive } from '../../runtime/registry';
  * fine for a read-only view. Persistence happens on the next `register` /
  * `unregister` / `updateEntry` call.
  */
-export function runPs(): void {
+export function runPs(opts: AgentSelectionOptions = {}): void {
+  applyDataLocation(opts);
   const live = readAndPrune();
   if (live.length === 0) {
     console.log('当前没有 bot 在运行。');
@@ -30,7 +33,11 @@ export function runPs(): void {
   printTable([headers, ...rows]);
 }
 
-export async function runKillCli(target: string | undefined): Promise<void> {
+export async function runKillCli(
+  target: string | undefined,
+  opts: AgentSelectionOptions = {},
+): Promise<void> {
+  applyDataLocation(opts);
   if (!target) {
     console.error('用法: lark-channel-bridge kill <bot id 或序号>');
     process.exit(1);

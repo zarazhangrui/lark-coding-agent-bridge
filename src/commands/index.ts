@@ -344,6 +344,14 @@ async function handleWsRemove(name: string, ctx: CommandContext): Promise<void> 
 }
 
 async function handleResume(args: string, ctx: CommandContext): Promise<void> {
+  if (ctx.agent.id !== 'claude') {
+    await reply(
+      ctx,
+      `当前 agent 是 ${ctx.agent.displayName}，暂不支持 /resume。请用 /new 开始新会话，或切回 Claude Code 后再使用 /resume。`,
+    );
+    return;
+  }
+
   const parts = args.trim().split(/\s+/).filter(Boolean);
   const sub = parts[0] ?? '';
   const rest = parts.slice(1).join(' ').trim();
@@ -373,7 +381,7 @@ async function handleResume(args: string, ctx: CommandContext): Promise<void> {
 async function applyResume(sessionId: string, ctx: CommandContext): Promise<void> {
   const cwd = ctx.workspaces.cwdFor(ctx.scope) ?? homedir();
   ctx.activeRuns.interrupt(ctx.scope);
-  ctx.sessions.set(ctx.scope, sessionId, cwd);
+  ctx.sessions.set(ctx.scope, sessionId, cwd, ctx.agent.id);
   await reply(
     ctx,
     `✓ 已恢复会话 \`${sessionId.slice(0, 8)}…\`。接着发消息就行。`,
