@@ -25,14 +25,18 @@ type CodexChild = ChildProcessByStdio<null, Readable, Readable>;
  * Map the adapter's permission mode onto Codex's sandbox/approval flags.
  * Default (undefined) matches the Claude adapter's default — fully
  * autonomous — since the bridge runs headless with no human to approve.
+ *
+ * `codex exec resume` accepts ONLY the bypass flag, not `-s <mode>` — so on
+ * resume we emit nothing for the sandbox modes and let the persisted session
+ * keep its original policy. (`-C` is likewise exec-only; see buildCodexArgs.)
  */
-function sandboxArgs(mode: AgentRunOptions['permissionMode']): string[] {
+function permissionArgs(mode: AgentRunOptions['permissionMode'], resuming: boolean): string[] {
   switch (mode) {
     case 'plan':
-      return ['-s', 'read-only'];
+      return resuming ? [] : ['-s', 'read-only'];
     case 'acceptEdits':
     case 'default':
-      return ['-s', 'workspace-write'];
+      return resuming ? [] : ['-s', 'workspace-write'];
     default:
       return ['--dangerously-bypass-approvals-and-sandbox'];
   }
@@ -47,16 +51,19 @@ function sandboxArgs(mode: AgentRunOptions['permissionMode']): string[] {
  *              the persisted thread already carries the conventions.
  */
 export function buildCodexArgs(opts: AgentRunOptions, cfg: CodexRunConfig = {}): string[] {
-  const args = opts.sessionId ? ['exec', 'resume', opts.sessionId] : ['exec'];
+  const resuming = Boolean(opts.sessionId);
+  const args = resuming ? ['exec', 'resume', opts.sessionId as string] : ['exec'];
   args.push('--json', '--skip-git-repo-check');
-  if (opts.cwd) args.push('-C', opts.cwd);
-  args.push(...sandboxArgs(opts.permissionMode));
+  // `-C/--cd` is an exec-only flag; `codex exec resume` rejects it. On resume
+  // the working directory comes from the spawned process's cwd instead.
+  if (!resuming && opts.cwd) args.push('-C', opts.cwd);
+  args.push(...permissionArgs(opts.permissionMode, resuming));
   if (opts.model) args.push('-m', opts.model);
   if (cfg.reasoningEffort) {
     args.push('-c', `model_reasoning_effort="${cfg.reasoningEffort}"`);
   }
 
-  const prompt = opts.sessionId ? opts.prompt : `${CODEX_BRIDGE_PROMPT}${opts.prompt}`;
+  const prompt = resuming ? opts.prompt : `${CODEX_BRIDGE_PROMPT}${opts.prompt}`;
   args.push(prompt);
   return args;
 }

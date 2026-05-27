@@ -21,6 +21,21 @@ describe('buildCodexArgs', () => {
     expect(args.at(-1)).toBe('next turn');
   });
 
+  it('does NOT pass -C on resume (codex exec resume rejects it)', () => {
+    const args = buildCodexArgs({ prompt: 'next', sessionId: 'thr-123', cwd: '/work/proj' });
+    expect(args).not.toContain('-C');
+  });
+
+  it('does NOT pass an -s sandbox mode on resume (resume rejects -s)', () => {
+    const args = buildCodexArgs({ prompt: 'next', sessionId: 'thr-123', permissionMode: 'plan' });
+    expect(args).not.toContain('-s');
+  });
+
+  it('still passes the bypass flag on resume (resume accepts it)', () => {
+    const args = buildCodexArgs({ prompt: 'next', sessionId: 'thr-123' });
+    expect(args).toContain('--dangerously-bypass-approvals-and-sandbox');
+  });
+
   it('passes the working directory via -C', () => {
     const args = buildCodexArgs({ prompt: 'x', cwd: '/work/proj' });
     const i = args.indexOf('-C');
