@@ -1165,15 +1165,37 @@ async function showConfigForm(ctx: CommandContext): Promise<void> {
   await sendManagedCard(ctx.channel, ctx.msg.chatId, card);
 }
 
+/**
+ * Replace the form card in place with a result card. The managed-card map
+ * is per-process and wiped on restart (and after the card is forgotten),
+ * so `updateManagedCard` can throw "no managed card registered" for a card
+ * rendered by a previous process — which used to silently swallow the
+ * confirmation and make the user think their submit didn't take (they'd
+ * click again). On any update failure we fall back to posting a fresh
+ * card to the chat so there's always visible feedback after one submit.
+ */
+async function showResultCardInPlace(
+  ctx: CommandContext,
+  formMsgId: string,
+  card: object,
+): Promise<void> {
+  try {
+    await updateManagedCard(ctx.channel, formMsgId, card);
+  } catch (err) {
+    log.warn('command', 'config-card-update-fallback', { err: String(err) });
+    await sendManagedCard(ctx.channel, ctx.msg.chatId, card).catch((e) =>
+      log.warn('command', 'config-card-fallback-send-failed', { err: String(e) }),
+    );
+  }
+  forgetManagedCard(formMsgId);
+}
+
 async function cancelConfig(ctx: CommandContext): Promise<void> {
   if (ctx.fromCardAction) {
     const formMsgId = ctx.msg.messageId;
     void (async () => {
       await new Promise((r) => setTimeout(r, FORM_SETTLE_MS));
-      await updateManagedCard(ctx.channel, formMsgId, configCancelledCard()).catch((err) =>
-        log.warn('command', 'config-cancel-update-failed', { err: String(err) }),
-      );
-      forgetManagedCard(formMsgId);
+      await showResultCardInPlace(ctx, formMsgId, configCancelledCard());
     })();
   }
 }
@@ -1228,7 +1250,6 @@ async function submitConfig(ctx: CommandContext): Promise<void> {
   const admins = access.admins ?? [];
 
   const formMsgId = ctx.msg.messageId;
-  const channel = ctx.channel;
   const configPath = ctx.controls.configPath;
 
   // Detach: same reason as account submit — Lark's client locks the form
@@ -1268,8 +1289,7 @@ async function submitConfig(ctx: CommandContext): Promise<void> {
     } catch (err) {
       log.fail('command', err, { step: 'config.save' });
       await waitForSettle();
-      await updateManagedCard(channel, formMsgId, configCancelledCard()).catch(() => {});
-      forgetManagedCard(formMsgId);
+      await showResultCardInPlace(ctx, formMsgId, configCancelledCard());
       return;
     }
 
@@ -1284,8 +1304,8 @@ async function submitConfig(ctx: CommandContext): Promise<void> {
       adminsCount: admins.length,
     });
     await waitForSettle();
-    await updateManagedCard(
-      channel,
+    await showResultCardInPlace(
+      ctx,
       formMsgId,
       configSavedCard({
         messageReply,
@@ -1298,9 +1318,6 @@ async function submitConfig(ctx: CommandContext): Promise<void> {
         admins,
         knownChats: ctx.controls.knownChats,
       }),
-    ).catch((err) =>
-      log.warn('command', 'config-save-update-failed', { err: String(err) }),
     );
-    forgetManagedCard(formMsgId);
   })();
 }
