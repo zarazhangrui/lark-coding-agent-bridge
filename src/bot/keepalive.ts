@@ -33,6 +33,13 @@ const HTTP_PROBE_TIMEOUT_MS = 5_000;
 const DEAD_THRESHOLD = 3;
 const NETWORK_DOWN_LOG_EVERY = 20; // log roughly every 5min while network is down
 
+// Exponential backoff for force-reconnect. After repeated force-reconnect
+// cycles (each cycle = DEAD_THRESHOLD consecutive ws-stuck ticks), wait
+// progressively longer before triggering the next one. This prevents a
+// reconnect storm from hammering the Feishu WS gateway.
+const FORCE_RECONNECT_BACKOFF_BASE_MS = 30_000; // 30s base
+const FORCE_RECONNECT_BACKOFF_MAX_MS = 300_000; // 5min cap
+
 export interface KeepaliveDeps {
   channel: LarkChannel;
   /** HTTP probe target, typically `https://open.feishu.cn` or lark equivalent. */
@@ -51,6 +58,8 @@ export function startKeepalive(deps: KeepaliveDeps): KeepaliveHandle {
   let lastTick = 0;
   let consecutiveDown = 0;
   let networkDownTicks = 0;
+  let forceReconnectCount = 0;
+  let lastForceReconnectAt = 0;
   let stopped = false;
 
   const tick = async (): Promise<void> => {
@@ -83,6 +92,7 @@ export function startKeepalive(deps: KeepaliveDeps): KeepaliveHandle {
       }
       consecutiveDown = 0;
       networkDownTicks = 0;
+      forceReconnectCount = 0;
       return;
     }
 
@@ -113,10 +123,32 @@ export function startKeepalive(deps: KeepaliveDeps): KeepaliveHandle {
     });
 
     // (5) Counter-based debounce — wait for DEAD_THRESHOLD ticks before
-    //     force-reconnecting.
+    //     force-reconnecting, with exponential backoff between consecutive
+    //     force-reconnect cycles to avoid reconnection storms.
     if (consecutiveDown >= DEAD_THRESHOLD) {
-      log.warn('keepalive', 'force-reconnect', { state: status.state });
       consecutiveDown = 0;
+      forceReconnectCount++;
+      const backoffMs = Math.min(
+        FORCE_RECONNECT_BACKOFF_BASE_MS * Math.pow(2, forceReconnectCount - 1),
+        FORCE_RECONNECT_BACKOFF_MAX_MS,
+      );
+      const sinceLastForce =
+        lastForceReconnectAt > 0 ? Date.now() - lastForceReconnectAt : Infinity;
+      if (sinceLastForce < backoffMs) {
+        log.warn('keepalive', 'force-reconnect-skipped', {
+          state: status.state,
+          forceReconnectCount,
+          backoffMs,
+          waitRemainingMs: backoffMs - sinceLastForce,
+        });
+        return;
+      }
+      log.warn('keepalive', 'force-reconnect', {
+        state: status.state,
+        forceReconnectCount,
+        backoffMs,
+      });
+      lastForceReconnectAt = Date.now();
       try {
         await forceReconnect();
       } catch (err) {

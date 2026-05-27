@@ -164,11 +164,20 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
     wsConfig: {
       // 3s liveness watchdog: if no inbound message arrives within 3s after
       // the last ping, SDK presumes connection dead and forces a reconnect.
-      pingTimeout: 3,
+      // Configurable via WS_PING_TIMEOUT env var (seconds). Default 10s for
+      // more tolerance on mobile/WiFi networks with variable latency.
+      pingTimeout: ((): number => {
+        const v = parseInt(process.env.WS_PING_TIMEOUT || '10', 10);
+        return isNaN(v) || v < 3 ? 10 : v;
+      })(),
     },
     // 8s handshake timeout (replaces hardcoded 15s). Fast-fail + fast-retry
     // beats slow-fail in unstable networks.
-    handshakeTimeoutMs: 8_000,
+    // Configurable via WS_HANDSHAKE_TIMEOUT env var (milliseconds).
+    handshakeTimeoutMs: ((): number => {
+      const v = parseInt(process.env.WS_HANDSHAKE_TIMEOUT || '8000', 10);
+      return isNaN(v) || v < 3000 ? 8000 : v;
+    })(),
     // Optional WS-layer proxy agent (only when HTTPS_PROXY / HTTP_PROXY env set).
     ...(netOverrides.agent ? { agent: netOverrides.agent } : {}),
   };
@@ -215,6 +224,7 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
 
   // Counter for stdout reconnect escalation; reset on `reconnected`.
   let consecutiveReconnects = 0;
+  let lastReconnectAt = 0;
 
   channel.on({
     message: async (msg) => {
@@ -259,12 +269,31 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
     },
     reconnecting: () => {
       consecutiveReconnects++;
-      log.warn('ws', 'reconnecting', { consecutive: consecutiveReconnects });
+      const now = Date.now();
+      if (!lastReconnectAt) lastReconnectAt = now;
+      const reconnectRateMs =
+        consecutiveReconnects > 1
+          ? (now - lastReconnectAt) / (consecutiveReconnects - 1)
+          : 0;
+      lastReconnectAt = now;
+      log.warn('ws', 'reconnecting', {
+        consecutive: consecutiveReconnects,
+        avgIntervalMs: Math.round(reconnectRateMs),
+      });
       // Stdout escalation — surface jitter that's hidden in the file log.
       if (consecutiveReconnects === 3) {
         console.error('⚠️ 已连续重连 3 次,网络可能不稳。');
       } else if (consecutiveReconnects === 10) {
         console.error('❌ 已连续重连 10 次,建议在飞书发 /reconnect 或重启 bot。');
+      }
+      // Detect reconnect-storm: rapid reconnects (<15s avg interval) suggest
+      // the SDK pingTimeout is too aggressive or the network is unstable.
+      if (consecutiveReconnects >= 5 && reconnectRateMs < 15_000) {
+        log.warn('ws', 'reconnect-storm', {
+          consecutive: consecutiveReconnects,
+          avgIntervalMs: Math.round(reconnectRateMs),
+          hint: 'reconnecting too fast; consider setting WS_PING_TIMEOUT to a higher value or checking network stability',
+        });
       }
     },
     reconnected: () => {
