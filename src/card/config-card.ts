@@ -14,7 +14,7 @@ export interface ConfigFormOpts {
   allowedChats: string[];
   /** Current admin open_ids. */
   admins: string[];
-  /** Chats the bot is currently a member of — populates the group picker. */
+  /** Chats the bot is currently a member of — used to resolve chat_id → name. */
   knownChats: KnownChat[];
 }
 
@@ -42,86 +42,65 @@ function collapsedAccessPanel(title: string, elements: object[]): object {
 }
 
 /**
- * CardKit 2.0 person picker. Renders the current `default_value` as person
- * pills (with avatar + name + click-to-jump-to-profile, all native Lark
- * client behavior) and lets the user search the directory to add more.
- * Removing a selection is done by clicking the X on the pill — no extra
- * button required.
- *
- * Requires the bot to have `contact:user.base:readonly` granted AND the
- * relevant contact directory visibility — without those, the picker
- * still renders but its search returns nothing and existing selections
- * show as bare IDs.
+ * Render an open_id list as a markdown line of `<at>` mentions. The Lark
+ * client resolves each id to an avatar + name pill (and makes it tap-to-
+ * profile) entirely client-side — the bridge doesn't fetch anything.
  */
-function personPicker(name: string, defaultIds: string[], placeholder: string): object {
-  return {
-    tag: 'multi_select_person',
-    name,
-    placeholder: { tag: 'plain_text', content: placeholder },
-    // CardKit 2.0's multi_select_person accepts `value` as the field name in
-    // default_value entries (same convention as multi_select_static). The
-    // earlier `{ id: ... }` shape rendered the picker but skipped the
-    // pre-selected pill — entries existed in config but invisible in UI.
-    default_value: defaultIds.map((value) => ({ value })),
-  };
+function atMentionLine(openIds: string[]): string {
+  if (openIds.length === 0) return '_（暂无）_';
+  return openIds.map((id) => `<at id="${id}"></at>`).join('  ');
 }
 
 /**
- * `multi_select_static` populated from the bot's joined chat list. Each
- * option's text shows the chat name + a short id suffix for disambiguation.
+ * Render a chat_id list as a markdown bulleted list. Lark has no group
+ * equivalent of `<at>`, so we resolve names from the cached knownChats
+ * (zero extra API calls); unknown ids fall back to a short id suffix.
  */
-function chatPicker(
-  name: string,
-  options: KnownChat[],
-  defaultIds: string[],
-  placeholder: string,
-): object {
-  return {
-    tag: 'multi_select_static',
-    name,
-    placeholder: { tag: 'plain_text', content: placeholder },
-    default_value: defaultIds.map((value) => ({ value })),
-    options: options.map((c) => ({
-      text: {
-        tag: 'plain_text',
-        content: `${c.name} (…${c.id.slice(-6)})`,
-      },
-      value: c.id,
-    })),
-  };
+function chatList(chatIds: string[], known: KnownChat[]): string {
+  if (chatIds.length === 0) return '_（暂无）_';
+  const nameMap = new Map(known.map((c) => [c.id, c.name]));
+  return chatIds
+    .map((id) => `- 💬 **${nameMap.get(id) ?? '(未知群)'}**（…${id.slice(-6)}）`)
+    .join('\n');
 }
 
 /** Form card for `/config`. */
 export function configFormCard(opts: ConfigFormOpts): object {
-  const noChatsHint =
-    opts.knownChats.length === 0
-      ? '\n_暂时没有可选的群——bot 还没被拉进任何群，或群列表还在加载。_'
-      : '';
-
+  // Access section: read-only markdown. All add/remove goes through slash
+  // commands (/invite + /remove) — the picker was empirically broken in
+  // our environment and removed entirely.
   const accessElements: object[] = [
     {
       tag: 'markdown',
       content:
-        '_控制谁能跟 bot 互动。**留空 = 不响应**_\n\n' +
-        '点选择框里的 X 移除一项；要快速加人也可以在群里发 `/invite user @某人` / `/invite admin @某人` / `/invite group`。',
+        '_控制谁能跟 bot 互动。**留空 = 不响应**。增删走命令，下面是当前状态。_',
     },
-    { tag: 'hr' },
-    { tag: 'markdown', content: '**允许私聊的用户**\n_只有这些用户能在私聊里找 bot。_' },
-    personPicker('allowed_users_picker', opts.allowedUsers, '输入姓名 / 邮箱 / 手机号搜索'),
-    { tag: 'hr' },
-    {
-      tag: 'markdown',
-      content: `**允许响应的群**\n_bot 只在这些群里响应（含话题群）。_${noChatsHint}`,
-    },
-    chatPicker('allowed_chats_picker', opts.knownChats, opts.allowedChats, '从 bot 所在的群里选'),
     { tag: 'hr' },
     {
       tag: 'markdown',
       content:
-        '**管理员**\n' +
-        '_可以跑敏感命令：`/account` `/config` `/exit` `/reconnect` `/doctor` `/cd` `/ws` `/invite`。管理员也自动获得私聊权限。_',
+        `**允许私聊的用户**（共 ${opts.allowedUsers.length} 人）\n` +
+        `${atMentionLine(opts.allowedUsers)}\n\n` +
+        '_加 / 删：_ `/invite user @某人`　`/remove user @某人`',
     },
-    personPicker('admins_picker', opts.admins, '输入姓名 / 邮箱 / 手机号搜索'),
+    { tag: 'hr' },
+    {
+      tag: 'markdown',
+      content:
+        `**允许响应的群**（共 ${opts.allowedChats.length} 个）\n` +
+        `${chatList(opts.allowedChats, opts.knownChats)}\n\n` +
+        '_加 / 删（在目标群里发）：_ `/invite group`　`/remove group`\n' +
+        '_一键加全部 bot 所在的群：_ `/invite all group`',
+    },
+    { tag: 'hr' },
+    {
+      tag: 'markdown',
+      content:
+        `**管理员**（共 ${opts.admins.length} 人）\n` +
+        `${atMentionLine(opts.admins)}\n\n` +
+        '_可以跑敏感命令：`/account` `/config` `/exit` `/reconnect` `/doctor` `/cd` `/ws` `/invite` `/remove`。管理员也自动获得私聊权限。_\n\n' +
+        '_加 / 删：_ `/invite admin @某人`　`/remove admin @某人`',
+    },
   ];
 
   return {
@@ -150,10 +129,7 @@ export function configFormCard(opts: ConfigFormOpts): object {
             {
               tag: 'select_static',
               name: 'message_reply',
-              // 'card' (交互卡片) is hidden from the picker for now; existing
-              // configs with `messageReply: 'card'` still work — showConfigForm
-              // displays them as 'markdown' in the form, but submitting only
-              // overwrites if the user actually picks something.
+              // 'card' is hidden — existing 'card' configs map to 'markdown' on display.
               initial_option: opts.messageReply === 'card' ? 'markdown' : opts.messageReply,
               options: [
                 { text: { tag: 'plain_text', content: '纯文本' }, value: 'text' },
@@ -291,39 +267,6 @@ export function configSavedCard(opts: ConfigFormOpts): object {
             `**允许响应的群**：${summarize(opts.allowedChats)}\n` +
             `**管理员**：${summarize(opts.admins)}\n\n` +
             '下条消息开始生效。',
-        },
-      ],
-    },
-  };
-}
-
-/**
- * Card shown when the operator runs `/config` but the bot is missing one
- * or more required scopes. The button opens Lark's scope-apply page —
- * once granted, re-running /config falls through to the real form.
- */
-export function scopeRequiredCard(opts: {
-  missingScopes: string[];
-  applyUrl: string;
-}): object {
-  const list = opts.missingScopes.map((s) => `\`${s}\``).join('、');
-  return {
-    schema: '2.0',
-    config: { summary: { content: '权限不足，需要去授权' } },
-    body: {
-      elements: [
-        {
-          tag: 'markdown',
-          content:
-            '🔐 **需要授权后才能继续**\n\n' +
-            `Bot 缺少以下权限：${list}\n\n` +
-            '点下方按钮在浏览器里一键申请，授权完成后**重新发 `/config`** 即可。',
-        },
-        {
-          tag: 'button',
-          text: { tag: 'plain_text', content: '🔐 去一键授权' },
-          type: 'primary',
-          behaviors: [{ type: 'open_url', default_url: opts.applyUrl }],
         },
       ],
     },

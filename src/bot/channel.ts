@@ -337,6 +337,35 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
 }
 
 /**
+ * Reply in a non-whitelisted group when the bot is @-mentioned, telling the
+ * operator how to add the group. Threaded under the triggering message;
+ * falls back to a plain chat message if the reply API fails (e.g. parent
+ * expired). Plain text — just pointing at /invite, no card needed.
+ */
+async function sendNonAllowedGroupHint(
+  channel: LarkChannel,
+  chatId: string,
+  replyToMessageId: string,
+): Promise<void> {
+  const content = JSON.stringify({
+    text:
+      '👋 当前群尚未加入响应列表，所以 bot 不会处理消息。\n' +
+      '群主 / 管理员可在本群发 /invite group 加入白名单。',
+  });
+  try {
+    await channel.rawClient.im.v1.message.reply({
+      path: { message_id: replyToMessageId },
+      data: { msg_type: 'text', content },
+    });
+  } catch {
+    await channel.rawClient.im.v1.message.create({
+      params: { receive_id_type: 'chat_id' },
+      data: { receive_id: chatId, msg_type: 'text', content },
+    });
+  }
+}
+
+/**
  * Kick off the initial fetch of app owner + bot's chat list, and set up a
  * 30-minute interval to keep them fresh. The initial fetch is fire-and-forget
  * so a slow Lark API doesn't gate the bridge from accepting messages — until
@@ -428,6 +457,15 @@ async function intakeMessage(deps: IntakeDeps): Promise<void> {
       chatId: msg.chatId.slice(-6),
       sender: msg.senderId.slice(-6),
     });
+    // If the user actually tried to reach the bot (@-mentioned it) in this
+    // non-whitelisted group, leave a one-liner pointing at /invite so they
+    // aren't staring at silence. The `mentionedBot` guard keeps undirected
+    // group chatter silent. Fires every time by design — no rate limit.
+    if (msg.mentionedBot) {
+      void sendNonAllowedGroupHint(channel, msg.chatId, msg.messageId).catch((err) =>
+        log.warn('intake', 'non-allowed-hint-failed', { err: String(err) }),
+      );
+    }
     return;
   }
 

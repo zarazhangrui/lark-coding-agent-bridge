@@ -9,12 +9,7 @@ import {
   accountFormCard,
   accountSuccessCard,
 } from '../card/account-cards';
-import {
-  configCancelledCard,
-  configFormCard,
-  configSavedCard,
-  scopeRequiredCard,
-} from '../card/config-card';
+import { configCancelledCard, configFormCard, configSavedCard } from '../card/config-card';
 import { forgetManagedCard, sendManagedCard, updateManagedCard } from '../card/managed';
 import { helpCard, resumeCard, statusCard, workspacesCard } from '../card/templates';
 import type { AppAccess, AppConfig, MessageReplyMode, TenantBrand } from '../config/schema';
@@ -45,12 +40,7 @@ import type { SessionStore } from '../session/store';
 import { validateAppCredentials } from '../utils/feishu-auth';
 import type { WorkspaceStore } from '../workspace/store';
 import { createBoundChat, defaultChatName } from '../bot/group';
-import {
-  fetchAppMeta,
-  type KnownChat,
-  REQUIRED_BOT_SCOPES,
-  scopeApplyUrl,
-} from '../bot/lark-info';
+import { fetchAppMeta, type KnownChat } from '../bot/lark-info';
 
 export interface Controls {
   /** Restart the bridge in-process: disconnect WS, kill claude runs, reload
@@ -144,6 +134,7 @@ const handlers: Record<string, Handler> = {
   '/doctor': handleDoctor,
   '/reconnect': handleReconnect,
   '/invite': handleInvite,
+  '/remove': handleRemove,
 };
 
 /**
@@ -161,6 +152,7 @@ const ADMIN_COMMANDS = new Set([
   '/cd',
   '/ws',
   '/invite',
+  '/remove',
 ]);
 
 function isAdminCommand(cmd: string): boolean {
@@ -933,8 +925,30 @@ async function recallMessage(ctx: CommandContext, messageId: string): Promise<vo
  * themselves. Removals are done via the per-row buttons in /config.
  */
 async function handleInvite(args: string, ctx: CommandContext): Promise<void> {
-  const tokens = args.trim().split(/\s+/).filter(Boolean);
-  const kind = tokens.find((t) => /^(user|admin|group)$/i.test(t))?.toLowerCase() as
+  const tokens = args.trim().split(/\s+/).filter(Boolean).map((t) => t.toLowerCase());
+
+  // `all group` — add every chat the bot is in, directly (no confirmation).
+  if (tokens.includes('all') && tokens.includes('group')) {
+    const access = { ...(ctx.controls.cfg.preferences?.access ?? {}) };
+    const list = new Set(access.allowedChats ?? []);
+    let added = 0;
+    for (const c of ctx.controls.knownChats) {
+      if (!list.has(c.id)) {
+        list.add(c.id);
+        added += 1;
+      }
+    }
+    access.allowedChats = [...list];
+    await persistAccess(ctx, access);
+    if (ctx.controls.knownChats.length === 0) {
+      await reply(ctx, '当前 bot 还不在任何群里，没有可加入的群。');
+    } else {
+      await reply(ctx, `✅ 已把 bot 所在的 ${added} 个群加入响应群名单（共 ${list.size} 个）。`);
+    }
+    return;
+  }
+
+  const kind = tokens.find((t) => /^(user|admin|group)$/.test(t)) as
     | 'user'
     | 'admin'
     | 'group'
@@ -945,7 +959,8 @@ async function handleInvite(args: string, ctx: CommandContext): Promise<void> {
       '用法：\n' +
         '• `/invite user @某人` — 加入允许私聊\n' +
         '• `/invite admin @某人` — 加入管理员\n' +
-        '• `/invite group` — 把当前群加入响应群名单',
+        '• `/invite group` — 把当前群加入响应群名单\n' +
+        '• `/invite all group` — 把 bot 所在的所有群一键加入',
     );
     return;
   }
@@ -1003,8 +1018,84 @@ async function handleInvite(args: string, ctx: CommandContext): Promise<void> {
 }
 
 /**
- * Mutate cfg.preferences.access in place + persist to disk. Used by both
- * /invite and the invite.remove card callback.
+ * `/remove` is the symmetrical counterpart of `/invite`:
+ *
+ *   /remove user  @某人   → drop from allowedUsers
+ *   /remove admin @某人   → drop from admins
+ *   /remove group         → drop the current chat from allowedChats
+ *
+ * Same admin gate as /invite. Targets that aren't on the list get a
+ * friendly "本来就不在名单里" note rather than an error.
+ */
+async function handleRemove(args: string, ctx: CommandContext): Promise<void> {
+  const tokens = args.trim().split(/\s+/).filter(Boolean).map((t) => t.toLowerCase());
+  const kind = tokens.find((t) => /^(user|admin|group)$/.test(t)) as
+    | 'user'
+    | 'admin'
+    | 'group'
+    | undefined;
+  if (!kind) {
+    await reply(
+      ctx,
+      '用法：\n' +
+        '• `/remove user @某人` — 移出用户白名单\n' +
+        '• `/remove admin @某人` — 移出管理员\n' +
+        '• `/remove group` — 把当前群移出响应群名单',
+    );
+    return;
+  }
+
+  const access = { ...(ctx.controls.cfg.preferences?.access ?? {}) };
+
+  if (kind === 'group') {
+    if (ctx.chatMode === 'p2p') {
+      await reply(ctx, '`/remove group` 请在要移除的群里发——私聊里没有可移除的群。');
+      return;
+    }
+    const chatId = ctx.msg.chatId;
+    const list = new Set(access.allowedChats ?? []);
+    if (!list.has(chatId)) {
+      await reply(ctx, '✅ 当前群本来就不在响应名单里，无需移除。');
+      return;
+    }
+    list.delete(chatId);
+    access.allowedChats = [...list];
+    await persistAccess(ctx, access);
+    await reply(ctx, `✅ 已把当前群移出响应群名单。`);
+    return;
+  }
+
+  const targets = ctx.msg.mentions
+    .filter((m) => !m.isBot && typeof m.openId === 'string' && m.openId.length > 0)
+    .map((m) => ({ openId: m.openId as string, name: m.name }));
+  if (targets.length === 0) {
+    await reply(ctx, `请 @ 上要移除的人，例如：\`/remove ${kind} @某人\`。`);
+    return;
+  }
+  const listKey = kind === 'user' ? 'allowedUsers' : 'admins';
+  const list = new Set(access[listKey] ?? []);
+  const removed: string[] = [];
+  const notThere: string[] = [];
+  for (const t of targets) {
+    if (list.has(t.openId)) {
+      list.delete(t.openId);
+      removed.push(t.name ?? t.openId);
+    } else {
+      notThere.push(t.name ?? t.openId);
+    }
+  }
+  access[listKey] = [...list];
+  await persistAccess(ctx, access);
+  const label = kind === 'user' ? '用户白名单' : '管理员';
+  const parts: string[] = [];
+  if (removed.length > 0) parts.push(`✅ 已把 ${removed.join('、')} 移出${label}。`);
+  if (notThere.length > 0) parts.push(`👌 ${notThere.join('、')} 本来就不在${label}里，无需移除。`);
+  await reply(ctx, parts.join('\n'));
+}
+
+/**
+ * Mutate cfg.preferences.access in place + persist to disk. Shared by
+ * /invite and /remove.
  */
 async function persistAccess(
   ctx: CommandContext,
@@ -1043,61 +1134,20 @@ async function handleConfig(args: string, ctx: CommandContext): Promise<void> {
 }
 
 async function showConfigForm(ctx: CommandContext): Promise<void> {
-  // Force a fresh scope probe before the gate check. Without this the
-  // operator has to wait up to 30 minutes for the bridge's periodic
-  // refresh to pick up a newly-granted scope — annoying and confusing,
-  // because the dev console says "granted" but the bot still shows the
-  // auth card. The call is one HTTP round trip; /config is rare.
+  // Refresh the cached owner from the application API. Cheap (one round
+  // trip), and keeps the creator-bypass current if ownership was
+  // transferred. No scope gate anymore: the access section renders the
+  // whitelists as markdown `<at>` mentions, which the Lark client resolves
+  // to names/avatars client-side, so the bridge needs no contact scope to
+  // display them.
   try {
     const meta = await fetchAppMeta(ctx.channel, ctx.controls.cfg.accounts.app.id);
     if (meta.ownerId) ctx.controls.botOwnerId = meta.ownerId;
     if (meta.grantedScopes.size > 0) ctx.controls.botGrantedScopes = meta.grantedScopes;
   } catch {
-    // Refresh failed — fall through with the cached set. If the cache is
-    // empty too, the missing-scope check below treats that as "unknown,
-    // assume granted" to avoid locking the operator out on a network blip.
+    // Refresh failed — fall through with cached values; not fatal.
   }
 
-  // Gate on required scopes. An empty `botGrantedScopes` set means we
-  // genuinely couldn't probe (initial state + refresh failed), in which
-  // case skip the check rather than risk a false positive.
-  if (ctx.controls.botGrantedScopes.size > 0) {
-    const missing = REQUIRED_BOT_SCOPES.filter(
-      (s) => !ctx.controls.botGrantedScopes.has(s),
-    );
-    if (missing.length > 0) {
-      const card = scopeRequiredCard({
-        missingScopes: missing,
-        applyUrl: scopeApplyUrl(ctx.controls.cfg.accounts.app.id, missing),
-      });
-      if (ctx.fromCardAction) await recallMessage(ctx, ctx.msg.messageId);
-      // From a group, send the auth card as a DM to the operator instead
-      // of dropping it into the group thread — same reasoning as the
-      // OAuth flow's DM-only constraint: it's an authorization surface
-      // tied to the operator's identity, not group-wide info.
-      if (ctx.chatMode === 'p2p') {
-        await sendManagedCard(ctx.channel, ctx.msg.chatId, card);
-      } else {
-        try {
-          await sendManagedCard(ctx.channel, ctx.msg.senderId, card, {
-            receiveType: 'open_id',
-          });
-          await reply(
-            ctx,
-            '🔐 当前需要授权，已私信你授权卡片，请到私聊里点按钮完成。',
-          );
-        } catch (err) {
-          log.warn('command', 'config-dm-auth-card-failed', {
-            err: err instanceof Error ? err.message : String(err),
-          });
-          // Fall back to in-group card so the operator isn't stuck if the
-          // DM channel fails (e.g. bot can't open a p2p with this user).
-          await sendManagedCard(ctx.channel, ctx.msg.chatId, card);
-        }
-      }
-      return;
-    }
-  }
   const ms = getRunIdleTimeoutMs(ctx.controls.cfg);
   const access = ctx.controls.cfg.preferences?.access ?? {};
   const card = configFormCard({
@@ -1169,38 +1219,13 @@ async function submitConfig(ctx: CommandContext): Promise<void> {
   else if (rawRequireMention === 'no') requireMentionInGroup = false;
   else requireMentionInGroup = getRequireMentionInGroup(ctx.controls.cfg);
 
-  // Access whitelists are edited by the pickers in the form. Each picker's
-  // selected IDs land in `form_value` as either a `string[]` or
-  // `{id|value: string}[]` depending on CardKit version, so normalize both
-  // shapes. `/invite` slash commands still work as a side channel for
-  // chat-based adding, but for /config-driven changes the pickers are the
-  // single source of truth — removing a pill in the picker = removing
-  // from the list on submit.
-  const normalizeIdArray = (raw: unknown): string[] => {
-    if (!Array.isArray(raw)) return [];
-    return [
-      ...new Set(
-        raw
-          .map((it) => {
-            if (typeof it === 'string') return it;
-            if (it && typeof it === 'object') {
-              const o = it as { id?: unknown; value?: unknown };
-              if (typeof o.id === 'string') return o.id;
-              if (typeof o.value === 'string') return o.value;
-            }
-            return '';
-          })
-          .filter(Boolean),
-      ),
-    ];
-  };
-  const allowedUsers = normalizeIdArray(fv.allowed_users_picker);
-  const allowedChats = normalizeIdArray(fv.allowed_chats_picker);
-  const admins = normalizeIdArray(fv.admins_picker);
-
-  // Self-lockout guards moved to /invite + invite.remove handlers. The
-  // /config form no longer mutates whitelists, so submitting it can never
-  // change access membership.
+  // Whitelists are managed entirely by /invite and /remove now — the
+  // /config form is read-only for access control. Pass the current values
+  // through unchanged so saving preferences doesn't clobber them.
+  const access = ctx.controls.cfg.preferences?.access ?? {};
+  const allowedUsers = access.allowedUsers ?? [];
+  const allowedChats = access.allowedChats ?? [];
+  const admins = access.admins ?? [];
 
   const formMsgId = ctx.msg.messageId;
   const channel = ctx.channel;
