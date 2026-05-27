@@ -113,64 +113,42 @@ Daemon logs go to `~/.lark-channel/logs/daemon-stdout.log` and `daemon-stderr.lo
 
 > Upgrading from before 0.1.11? Run `lark-channel-bridge migrate` once — it moves anything under `~/.config/lark-channel-bridge/` and `~/.cache/lark-channel-bridge/` to the new location and upgrades `config.json` to the new schema.
 
-## Access control (optional)
+## Access control
 
-Out of the box the bot is **open**: anyone who can find it can DM it, any group member can `@`-mention it to trigger a run, and commands like `/account` or `/cd` are usable by all. **That's fine for personal use** — but for a shared team setup, or anywhere you don't want strangers calling `/cd /`, you can tighten three allowlists by sending `/config` inside Feishu.
+**Private by default: out of the box, only *you* can use the bot.** "You" = whoever created / owns the Feishu app (the person who scanned the QR to set it up). The bot figures out who the app owner is automatically from Feishu, so **solo use needs zero configuration** — you can DM it and `@`-mention it in any group, and everyone else's messages are silently ignored (no "permission denied" reply, which would only confirm the bot exists).
 
-### Common scenarios
+To let other people or groups in, add them to one of three lists. The fastest way is a slash command; the `/config` form works too:
 
-**Just me**
+| List | Controls | Add | Remove |
+|------|----------|-----|--------|
+| **Allowed users** | who can DM the bot | `/invite user @them` | `/remove user @them` |
+| **Allowed chats** | which groups the bot answers in (for **everyone** in them) | `/invite group` (current group) / `/invite all group` (every group the bot is in) | `/remove group` (current group) |
+| **Admins** | who can change settings, and use the bot in any group | `/invite admin @them` | `/remove admin @them` |
 
-In the `/config` form:
-- **Allowed users**: your own `open_id`
-- Leave the other two blank
+> `/invite` and `/remove` can only be run by **you (the creator) and admins**. The `@` in the command points at the *target person* (not the bot) — the bot resolves the mention to their identity, so you never deal with raw IDs.
 
-Messages from anyone else are silently dropped — no denial reply, since that would just confirm the bot exists to outsiders.
+### Two identities that bypass everything
 
-**A small team**
+- **You (the creator)**: subject to no list at all — DMs, any group, every command. You **can never lock yourself out**: even if the lists get messed up, DM the bot and send `/config` to get back in. Transfer the app's ownership in the Feishu console and the bot follows the new owner automatically.
+- **Admins**: can DM, run management commands like `/config`, and **bypass the allowed-chats list** — the bot answers them in any group, listed or not. Good for teammates who co-maintain the bot.
 
-- **Allowed users**: comma-separated `open_id`s of team members
-- Other two blank
+### Common setups
 
-**Bot only responds in specific work groups**
-
-DMs are unaffected; only listed groups trigger responses:
-- **Allowed chats**: comma-separated `chat_id`s of the groups
-- DMs are **always** exempt from this list — so you can always DM the bot to change config later.
-
-**Anyone can chat with the bot, but only I can change settings**
-
-- **Admins**: your own `open_id`
-- Other two blank
-
-Others running `/account`, `/config`, `/exit`, `/reconnect`, `/doctor`, `/cd`, or `/ws` get a `❌ 此命令仅管理员可用` reply. Normal conversation (asking the bot to do things) is unaffected.
-
-**Lock everything down**
-
-Fill all three. The `/config` form catches common mistakes — e.g. if your admin list doesn't include yourself, or your chat allowlist doesn't include the chat you're submitting from, the submit is rejected with a message explaining why, so you can't accidentally lock yourself out.
-
-### Finding `open_id` and `chat_id`
-
-Easiest path: have the target user send the bot a message (or `@`-mention it in the target group), then in your terminal:
-
-```bash
-grep '"event":"enter"' ~/.lark-channel/logs/$(date +%Y-%m-%d).log | tail -5
-```
-
-Every line carries `chatId` (group or DM id) and `senderId` (the user's `open_id`). Copy them from there.
-
-The Feishu open-platform "Get user info" API also works but needs the `contact:user` scope, which is overkill if you just need a couple of IDs.
+- **Just me** → nothing to do; this is the default.
+- **Let a teammate DM the bot** → `/invite user @them`
+- **Open a work group to everyone in it** → send `/invite group` inside that group
+- **First-time setup, onboard every group the bot is already in** → `/invite all group` pulls them all into the list at once; trim with `/remove group` afterwards
+- **Add a co-admin** → `/invite admin @them`
 
 ### Worth knowing
 
 - Changes take effect on the **next message** — no restart needed.
-- An empty field means **unrestricted**, not "nobody allowed".
-- To revert a restricted list back to fully open, clear that field in `/config` and submit.
-- DMs are deliberately exempt from the chat allowlist — meaning if you ever accidentally restrict the bot out of every group, **DM the bot and send `/config`** to recover.
+- **In groups you must `@` the bot first** (DMs don't need it). That's a separate toggle (`/config` → "require @ in groups"), independent of the lists above.
+- Strangers get pure silence — no reply at all. The one exception: if someone `@`-mentions the bot in a group that hasn't been opened up, the bot posts a friendly one-liner telling them an admin can run `/invite group` to enable it.
 
 ### Advanced: editing the config file directly
 
-The `/config` form writes to `~/.lark-channel/config.json` under `preferences.access`:
+If you'd rather not do it inside Feishu, `/invite` and `/config` both write to `preferences.access` in `~/.lark-channel/config.json`:
 
 ```json
 {
@@ -184,7 +162,13 @@ The `/config` form writes to `~/.lark-channel/config.json` under `preferences.ac
 }
 ```
 
-After a manual edit, **restart the bridge** or send **`/reconnect`** from any allowed chat to pick up the changes. The form is usually faster; direct edits make sense mostly for deployment scripts where you want to pre-seed access policy.
+`allowedUsers` / `admins` take user `open_id`s; `allowedChats` takes group `chat_id`s. The easiest way to find an ID by hand: have the person message the bot (or `@` it in the group), then check that day's log:
+
+```bash
+grep '"event":"enter"' ~/.lark-channel/logs/$(date +%Y-%m-%d).log | tail -5
+```
+
+Each line carries `chatId` (group / DM id) and `senderId` (user `open_id`). After a manual edit, **restart the bridge** or send `/reconnect` from any allowed chat to apply it. For day-to-day tweaks `/invite` / `/config` are easier; direct edits are mainly for deployment scripts that pre-seed access.
 
 ## FAQ
 
