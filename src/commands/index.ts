@@ -1199,13 +1199,20 @@ async function showResultCardInPlace(
 }
 
 async function cancelConfig(ctx: CommandContext): Promise<void> {
-  if (ctx.fromCardAction) {
-    const formMsgId = ctx.msg.messageId;
-    void (async () => {
-      await new Promise((r) => setTimeout(r, FORM_SETTLE_MS));
-      await showResultCardInPlace(ctx, formMsgId, configCancelledCard());
-    })();
-  }
+  if (!ctx.fromCardAction) return;
+  // "取消" dismisses the form — nothing is persisted until 提交, so there's
+  // no configuration to cancel. Recall (delete) the card so the panel just
+  // disappears. recallMessage deletes by message_id via im.v1.message.delete,
+  // which — unlike updateManagedCard — does NOT depend on the per-process
+  // `byMessageId` registry, so it still works for a card rendered by an
+  // earlier bridge process (e.g. after a restart). No "not registered"
+  // fallback noise.
+  const formMsgId = ctx.msg.messageId;
+  void (async () => {
+    await new Promise((r) => setTimeout(r, FORM_SETTLE_MS));
+    await recallMessage(ctx, formMsgId);
+    forgetManagedCard(formMsgId);
+  })();
 }
 
 async function submitConfig(ctx: CommandContext): Promise<void> {
