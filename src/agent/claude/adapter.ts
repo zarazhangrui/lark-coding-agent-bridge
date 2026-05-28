@@ -1,5 +1,7 @@
 import type { ChildProcessByStdio } from 'node:child_process';
 import { spawn } from 'node:child_process';
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 import type { Readable } from 'node:stream';
 import { log } from '../../core/logger';
@@ -101,6 +103,20 @@ sender_name: ...
 5. 如果用户中途想取消，他们会发 \`/stop\`——那时被 kill 是预期行为，不用兜底。
 `;
 
+function defaultClaudeBinary(): string {
+  if (process.platform !== 'win32') return 'claude';
+  const packagedExe = join(
+    process.env.APPDATA ?? '',
+    'npm',
+    'node_modules',
+    '@anthropic-ai',
+    'claude-code',
+    'bin',
+    'claude.exe',
+  );
+  return existsSync(packagedExe) ? packagedExe : 'claude';
+}
+
 export class ClaudeAdapter implements AgentAdapter {
   readonly id = 'claude';
   readonly displayName = 'Claude Code';
@@ -108,12 +124,15 @@ export class ClaudeAdapter implements AgentAdapter {
   private readonly binary: string;
 
   constructor(opts: ClaudeAdapterOptions = {}) {
-    this.binary = opts.binary ?? 'claude';
+    this.binary = opts.binary ?? defaultClaudeBinary();
   }
 
   async isAvailable(): Promise<boolean> {
     return new Promise((resolve) => {
-      const child = spawn(this.binary, ['--version'], { stdio: 'ignore' });
+      const child = spawn(this.binary, ['--version'], {
+        stdio: 'ignore',
+        windowsHide: process.platform === 'win32',
+      });
       child.on('error', () => resolve(false));
       child.on('exit', (code) => resolve(code === 0));
     });
@@ -138,6 +157,7 @@ export class ClaudeAdapter implements AgentAdapter {
       cwd: opts.cwd,
       env: { ...process.env, LARK_CHANNEL: '1' },
       stdio: ['ignore', 'pipe', 'pipe'],
+      windowsHide: process.platform === 'win32',
     });
 
     log.info('agent', 'spawn', {

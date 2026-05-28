@@ -137,9 +137,16 @@ async function resolveExecRef(
 }
 
 function isSelfBridgeCommand(command: string, args: string[] | undefined): boolean {
+  const commandMatches = (a: string, b: string): boolean =>
+    process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b;
+  const legacyWrapperPath =
+    process.platform === 'win32' && paths.secretsGetterScript.toLowerCase().endsWith('.cmd')
+      ? paths.secretsGetterScript.slice(0, -4)
+      : '';
   // Canonical form (post-wrapper): command is our own secrets-getter
   // script and args is empty. Match path exactly.
-  if (command === paths.secretsGetterScript) return true;
+  if (commandMatches(command, paths.secretsGetterScript)) return true;
+  if (legacyWrapperPath && commandMatches(command, legacyWrapperPath)) return true;
   // Legacy / hand-edited form: command is node and args end with
   // ['secrets', 'get']. Keep this branch so configs written by older
   // bridge versions, or by power-users editing config.json directly,
@@ -167,10 +174,7 @@ async function spawnExecProvider(pc: ProviderConfig, ref: SecretRef): Promise<st
     }
     if (pc.env) Object.assign(env, pc.env);
 
-    const child = spawn(pc.command!, pc.args ?? [], {
-      env,
-      stdio: ['pipe', 'pipe', 'pipe'],
-    });
+    const child = spawnProviderCommand(pc.command!, pc.args ?? [], env);
 
     let stdout = '';
     let stderr = '';
@@ -241,4 +245,32 @@ async function spawnExecProvider(pc: ProviderConfig, ref: SecretRef): Promise<st
     });
     child.stdin.end(request);
   });
+}
+
+function spawnProviderCommand(
+  command: string,
+  args: string[],
+  env: NodeJS.ProcessEnv,
+) {
+  if (process.platform === 'win32' && /\.(cmd|bat)$/i.test(command)) {
+    const cmd = process.env.ComSpec ?? 'cmd.exe';
+    const line = [command, ...args].map(quoteForCmd).join(' ');
+    return spawn(cmd, ['/d', '/s', '/c', line], {
+      env,
+      stdio: ['pipe', 'pipe', 'pipe'],
+      windowsHide: true,
+    });
+  }
+
+  return spawn(command, args, {
+    env,
+    stdio: ['pipe', 'pipe', 'pipe'],
+    windowsHide: process.platform === 'win32',
+  });
+}
+
+function quoteForCmd(value: string): string {
+  if (!value) return '""';
+  if (!/[\s"&()<>^|%]/.test(value)) return value;
+  return `"${value.replace(/%/g, '%%').replace(/"/g, '""')}"`;
 }

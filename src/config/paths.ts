@@ -20,7 +20,7 @@ export const paths = {
    * symlink or root-owned (`/usr/bin/node`). Wrapper internals do the
    * `node ... secrets get` invocation; lark-cli only audits the wrapper.
    */
-  secretsGetterScript: join(appDir, 'secrets-getter'),
+  secretsGetterScript: join(appDir, process.platform === 'win32' ? 'secrets-getter.cmd' : 'secrets-getter'),
   mediaDir: join(appDir, 'media'),
 };
 
