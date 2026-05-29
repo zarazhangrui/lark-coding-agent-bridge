@@ -1,6 +1,8 @@
 import { homedir } from 'node:os';
 import type { CommentEvent, LarkChannel } from '@larksuiteoapi/node-sdk';
 import type { AgentAdapter } from '../agent/types';
+import type { Controls } from '../commands';
+import { isUserAllowed } from '../config/schema';
 import { log } from '../core/logger';
 import type { SessionStore } from '../session/store';
 import type { WorkspaceStore } from '../workspace/store';
@@ -12,6 +14,7 @@ export interface CommentDeps {
   agent: AgentAdapter;
   sessions: SessionStore;
   workspaces: WorkspaceStore;
+  controls: Controls;
 }
 
 // File types supported by drive.v1.fileComment.get; other types (slides,
@@ -59,7 +62,7 @@ interface CommentContext {
  * a reply in the same comment thread.
  */
 export async function handleCommentMention(deps: CommentDeps): Promise<void> {
-  const { channel, evt, agent, sessions, workspaces } = deps;
+  const { channel, evt, agent, sessions, workspaces, controls } = deps;
   // Log every comment event we receive, regardless of whether we'll act on it.
   // `mentionedBot` and `replyId` here let us tell apart top-level comments
   // from thread replies (the latter requires SDK ≥ 1.65.0-alpha.0).
@@ -73,6 +76,12 @@ export async function handleCommentMention(deps: CommentDeps): Promise<void> {
   });
   if (!evt.mentionedBot) {
     log.info('comment', 'skip', { reason: 'not-mentioned' });
+    return;
+  }
+  if (!isUserAllowed(controls, evt.operator.openId, true)) {
+    log.info('comment', 'skip-not-allowed-user', {
+      sender: evt.operator.openId.slice(-6),
+    });
     return;
   }
   if (!SUPPORTED_FILE_TYPES.has(evt.fileType)) {
