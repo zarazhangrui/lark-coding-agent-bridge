@@ -12,7 +12,7 @@ export interface SessionSummary {
 }
 
 function encodeCwd(cwd: string): string {
-  return cwd.replace(/\//g, '-');
+  return cwd.replace(/[^a-zA-Z0-9]/g, '-');
 }
 
 function claudeProjectDir(cwd: string): string {
