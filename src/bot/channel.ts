@@ -33,6 +33,7 @@ import {
 import { resolveAppSecret } from '../config/secret-resolver';
 import { log, reportMetric, withTrace } from '../core/logger';
 import { MediaCache, type LocalAttachment } from '../media/cache';
+import { makeClaudeSessionCliResumable } from '../session/claude-journal';
 import type { SessionStore } from '../session/store';
 import type { WorkspaceStore } from '../workspace/store';
 import { ActiveRuns, type RunHandle } from './active-runs';
@@ -720,6 +721,7 @@ async function processAgentStream(
   let idleFired = false;
   let timer: NodeJS.Timeout | undefined;
   const inFlightTools = new Set<string>();
+  let activeSession: { sessionId: string; cwd: string } | undefined;
   const armOrPauseIdle = (): void => {
     if (!idleTimeoutMs) return;
     if (timer) clearTimeout(timer);
@@ -758,6 +760,7 @@ async function processAgentStream(
       if (evt.type === 'system') {
         if (evt.sessionId) {
           const effectiveCwd = evt.cwd ?? cwd;
+          activeSession = { sessionId: evt.sessionId, cwd: effectiveCwd };
           sessions.set(scope, evt.sessionId, effectiveCwd);
           log.info('session', 'set', { sessionId: evt.sessionId });
         }
@@ -776,6 +779,9 @@ async function processAgentStream(
           if (outputTokens !== undefined) reportMetric('tokens_out', outputTokens);
         }
         continue;
+      }
+      if (evt.type === 'done' && evt.sessionId) {
+        activeSession = { sessionId: evt.sessionId, cwd: activeSession?.cwd ?? cwd };
       }
 
       const prevTerminal = state.terminal;
@@ -823,6 +829,26 @@ async function processAgentStream(
     if (!exited) {
       log.warn('agent', 'post-done-timeout', { graceMs: POST_DONE_EXIT_GRACE_MS });
       await handle.run.stop();
+    }
+  }
+
+  if (activeSession) {
+    try {
+      const result = await makeClaudeSessionCliResumable(
+        activeSession.cwd,
+        activeSession.sessionId,
+      );
+      if (result.changed) {
+        log.info('session', 'cli-resumable', {
+          sessionId: activeSession.sessionId,
+          rewrittenEntries: result.rewrittenEntries,
+        });
+      }
+    } catch (err) {
+      log.fail('session', err, {
+        step: 'cli-resumable',
+        sessionId: activeSession.sessionId,
+      });
     }
   }
 }
@@ -911,4 +937,3 @@ function stripAttachmentRefs(text: string, fileKeys: string[]): string {
   }
   return out.replace(/\n{3,}/g, '\n\n');
 }
-
