@@ -1,22 +1,14 @@
 import { createReadStream } from 'node:fs';
 import { readdir, stat } from 'node:fs/promises';
-import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline';
+import { claudeProjectDir } from './claude-paths';
 
 export interface SessionSummary {
   sessionId: string;
   mtime: number;
   preview: string;
   lineCount: number;
-}
-
-function encodeCwd(cwd: string): string {
-  return cwd.replace(/\//g, '-');
-}
-
-function claudeProjectDir(cwd: string): string {
-  return join(homedir(), '.claude', 'projects', encodeCwd(cwd));
 }
 
 /** Return the most recent `limit` jsonl sessions for the given cwd, newest first. */
