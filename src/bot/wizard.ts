@@ -2,6 +2,8 @@ import { registerApp } from '@larksuiteoapi/node-sdk';
 import qrcode from 'qrcode-terminal';
 import type { AppConfig, TenantBrand } from '../config/schema';
 
+const GROUP_MESSAGE_SCOPE = 'im:message.group_msg';
+
 export async function runRegistrationWizard(): Promise<AppConfig> {
   console.log('\n未检测到飞书应用配置，进入扫码创建向导。\n');
 
@@ -43,6 +45,8 @@ export async function runRegistrationWizard(): Promise<AppConfig> {
       '  ⚠️ 未拿到扫码用户的 open_id；首次启动时 bridge 会自行调 application/v6 API 解析当前 owner。',
     );
   }
+
+  console.log(`  群聊使用需确认应用权限包含: ${GROUP_MESSAGE_SCOPE}`);
 
   const cfg: AppConfig = {
     accounts: {
