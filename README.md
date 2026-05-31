@@ -40,7 +40,7 @@ The first run detects there's no app configured and **opens a QR-code wizard**:
 
 1. A QR code renders in your terminal.
 2. Scan it with the Feishu / Lark app.
-3. Pick or create a PersonalAgent app.
+3. Pick or create a PersonalAgent app, and confirm its scopes include `im:message.group_msg`.
 4. Credentials are written to `~/.lark-channel/config.json`.
 
 ## Commands

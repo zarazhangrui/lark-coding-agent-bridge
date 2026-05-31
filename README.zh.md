@@ -40,7 +40,7 @@ lark-channel-bridge run
 
 1. 终端渲染一个二维码
 2. 用飞书 App 扫码
-3. 选择 / 创建 PersonalAgent 应用
+3. 选择 / 创建 PersonalAgent 应用，并确认权限里包含 `im:message.group_msg`
 4. 成功后凭据写入 `~/.lark-channel/config.json`
 
 ## 命令速查
