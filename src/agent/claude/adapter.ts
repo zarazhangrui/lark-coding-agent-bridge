@@ -151,6 +151,27 @@ lark-cli im +messages-send --chat-id <bridge_context.chat_id> --msg-type interac
 你前台阻塞期间，用户发的新消息 bridge 会自动排队，**不会打断你**；等你 tool_result 一回来，下一批消息再进来。放心阻塞。如果用户中途想取消，他们会发 \`/stop\`——那时被 kill 是预期行为，不用兜底。
 `;
 
+/**
+ * On Windows, npm-installed CLIs are `.cmd` wrappers that require `shell:true`
+ * to execute via Node's spawn. Using `shell:true` for the full agent run breaks
+ * argument passing (cmd.exe concatenates args, mangling long prompts and special
+ * characters). Instead we resolve the actual `.exe` that the wrapper calls.
+ *
+ * The Claude Code npm package always ships a native binary at:
+ *   <npm-global-prefix>\node_modules\@anthropic-ai\claude-code\bin\claude.exe
+ *
+ * The default npm global prefix on Windows is %APPDATA%\npm.
+ */
+function resolveDefaultBinary(): string {
+  if (process.platform === 'win32') {
+    const appData = process.env.APPDATA;
+    if (appData) {
+      return `${appData}\\npm\\node_modules\\@anthropic-ai\\claude-code\\bin\\claude.exe`;
+    }
+  }
+  return 'claude';
+}
+
 export class ClaudeAdapter implements AgentAdapter {
   readonly id = 'claude';
   readonly displayName = 'Claude Code';
@@ -158,7 +179,7 @@ export class ClaudeAdapter implements AgentAdapter {
   private readonly binary: string;
 
   constructor(opts: ClaudeAdapterOptions = {}) {
-    this.binary = opts.binary ?? 'claude';
+    this.binary = opts.binary ?? resolveDefaultBinary();
   }
 
   async isAvailable(): Promise<boolean> {

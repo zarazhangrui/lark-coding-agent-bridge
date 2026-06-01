@@ -1,5 +1,6 @@
 import { stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
+import { isAbsolute } from 'node:path';
 import type { LarkChannel, NormalizedMessage } from '@larksuiteoapi/node-sdk';
 import type { AgentAdapter } from '../agent/types';
 import type { ActiveRuns } from '../bot/active-runs';
@@ -281,7 +282,7 @@ async function handleCd(args: string, ctx: CommandContext): Promise<void> {
     await reply(ctx, '用法：`/cd <绝对路径>` 或 `/cd ~/xxx`');
     return;
   }
-  if (!input.startsWith('/') && !input.startsWith('~')) {
+  if (!isAbsolute(input) && !input.startsWith('~')) {
     await reply(ctx, '请使用绝对路径，或 `~/xxx` 表示 home 下的子路径。');
     return;
   }
