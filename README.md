@@ -15,12 +15,16 @@ A lightweight bot that bridges Feishu / Lark messenger with your local Claude Co
 - **Multiple workspaces**: `/ws` switches between named project directories, with sessions tracked per workspace.
 - **Images and files**: send them to the bot directly — Claude reads the locally downloaded paths.
 - **Interactive cards**: `/help`, `/ws list`, `/status` return cards with buttons you can click.
+- **Per-session reasoning effort**: use `low` for quick fitness/check-in chats and `xhigh` / `max` for code or AI research sessions.
+- **Empty-output fallback**: if Claude only emits thinking/tool activity and no visible text, the bridge renders an explicit fallback and logs it.
+- **Optional local GUI automation**: Claude runs spawned from Feishu load the `gui` MCP declared in `bridge-mcp.json`, enabling screenshots, clicks, typing, and other desktop actions.
 
 ## Prerequisites
 
 - Node.js **>= 20**
 - `claude` CLI installed and logged in — see https://docs.anthropic.com/en/docs/claude-code/quickstart
 - A Lark / Feishu **PersonalAgent** app (the QR-code wizard on first launch can create one for you).
+- For GUI automation from Feishu: keep the Mac awake, logged in, and grant the required Accessibility / Screen Recording permissions.
 
 ## Install
 
@@ -101,6 +105,26 @@ Daemon logs go to `~/.lark-channel/logs/daemon-stdout.log` and `daemon-stderr.lo
 
 **Reply policy**: in a DM, the bot replies to anything. In a **group (including topic groups), the bot only replies when `@`-mentioned** (default since 0.1.22); unmentioned messages are ignored. `@all` is never answered. Cloud-doc comments must mention the bot. To restore the older "always answer in groups" behaviour: `/config` → "Require @bot in groups" → No.
 
+### Session effort semantics
+
+The local Claude Code CLI supports these `--effort` values: `low` / `medium` / `high` / `xhigh` / `max`. The bridge also accepts user-friendly aliases: `extra high` / `extra-high` / `x_high` normalize to `xhigh`; `ultra` / `ultra high` normalize to `max`.
+
+Priority:
+
+1. Current chat/topic `/effort` override wins and is persisted in `~/.lark-channel/sessions.json`.
+2. Without a session override, the global `/config` value (`preferences.effort`) is used.
+3. Missing or invalid global values fall back to `xhigh`.
+
+Common flows:
+
+- `/effort low`: keep the current context, but make future runs in this session low effort.
+- `/effort default`: clear the current session override and return to the global default.
+- `/new low`: in the **current chat/topic**, clear the Claude session and start the new session with low effort.
+- `/new`: in the current chat/topic, clear the Claude session without setting effort.
+- `/new chat [name]`: create a new Feishu / Lark group chat. This is distinct from `/new low`; if the source chat already has an `/effort` override, the new group inherits it.
+
+`/status` shows the effective effort and whether it comes from a session override or the global default.
+
 ## Data directories
 
 | Path | Content |
@@ -111,8 +135,27 @@ Daemon logs go to `~/.lark-channel/logs/daemon-stdout.log` and `daemon-stderr.lo
 | `~/.lark-channel/processes.json` | Process registry for live `start` instances (used by `ps`/`stop`); dead PIDs are auto-pruned |
 | `~/.lark-channel/media/<chatId>/` | Downloaded images / files, cleaned up after 24h |
 | `~/.lark-channel/logs/YYYY-MM-DD.log` | Structured run logs (JSONL), rotated daily; older than 7 days are pruned at startup (`LARK_CHANNEL_LOG_DAYS` env var overrides). `/doctor` reads these. |
+| `bridge-mcp.json` | Bridge-local MCP config that lets `claude -p` print mode load the local GUI automation server. |
 
 > Upgrading from before 0.1.11? Run `lark-channel-bridge migrate` once — it moves anything under `~/.config/lark-channel-bridge/` and `~/.cache/lark-channel-bridge/` to the new location and upgrades `config.json` to the new schema.
+
+## GUI automation
+
+The ClaudeAdapter appends these arguments whenever it spawns `claude -p`:
+
+- `--mcp-config /Users/charlesli/code/feishu-claude-code-bridge/bridge-mcp.json`
+- a set of `--allowed-tools mcp__gui__...` entries
+
+That lets Claude runs triggered from Feishu use the `gui` MCP for screenshots, clicks, typing, scrolling, clipboard access, and related desktop actions. This is intended for workflows that cannot be done through CLI/API alone, such as scanning WeCom mail or driving a local desktop client.
+
+Runtime requirements:
+
+- The machine must stay awake; system sleep breaks GUI automation.
+- Keep the user session logged in and preferably unlocked. Locked-screen or clamshell workflows are usually unreliable.
+- First use may require approving macOS Accessibility and Screen Recording permissions.
+- Target apps must be visible and operable in the current user session.
+
+Security note: GUI MCP means anyone allowed to message the bot can potentially drive this Mac's screen, mouse, and keyboard through Claude. Tighten `allowedUsers` / `allowedChats` / `admins` before relying on it. The executable path in `bridge-mcp.json` includes the Codex plugin version; after a Codex update, refresh that path if GUI tools stop loading, then rebuild and restart.
 
 ## Access control (optional)
 
@@ -193,7 +236,35 @@ After a manual edit, **restart the bridge** or send **`/reconnect`** from any al
 
 **Claude subprocess looks frozen (card stuck on the last frame).** Since 0.1.20 there's an idle watchdog: if Claude emits nothing for N minutes the process is killed and the card is annotated `⏱ N min no response, auto-terminated`. Disabled by default. Enable with `/config` (global, in minutes), or `/timeout 10` to set it on the current session; `/timeout off` disables for the session; `/timeout default` clears the session override.
 
+**Feishu says Claude returned no visible text.** This usually means Claude only emitted thinking / tool activity / an empty result. The bridge renders a fallback message and writes `agent.empty-output` to structured logs. Retry the message, or send `/reset` to start a fresh session.
+
+**GUI automation does nothing or screenshots are black.** Check that the Mac is not sleeping or locked, the target app is visible, and computer-use permissions are granted. For long-running remote GUI work, `caffeinate -dimsu` is a practical way to keep the system and display available.
+
 **Claude says it can't see the image I sent.** Upgrade to the latest version — releases before 0.1.0 had a filename-dedup bug.
+
+## Development / handoff checklist
+
+Key files:
+
+- `src/commands/index.ts`: Feishu slash command handlers, including `/effort`, `/new low`, and `/config`.
+- `src/session/store.ts`: per chat/topic session id, cwd, timeout override, and effort override persistence.
+- `src/bot/channel.ts`: message batching, effective effort resolution, and `agent.run()` invocation.
+- `src/agent/claude/adapter.ts`: spawns `claude -p` with `--model`, `--effort`, `--mcp-config`, and allowed tools.
+- `src/card/templates.ts`, `src/card/config-card.ts`: `/status`, `/help`, and `/config` cards.
+- `test/effort.test.ts`: effort normalization and session override persistence coverage.
+
+Recommended pre-release checks:
+
+```bash
+./node_modules/.bin/vitest run
+./node_modules/.bin/tsc --noEmit
+./node_modules/.bin/tsup
+git diff --check
+lark-channel-bridge restart
+lark-channel-bridge status
+```
+
+Some environments do not have global `pnpm`; using `./node_modules/.bin/...` is the most reliable local path. After restart, inspect `~/.lark-channel/logs/$(date +%F).log` and confirm the latest line includes `phase=ws event=connected`.
 
 ## License
 

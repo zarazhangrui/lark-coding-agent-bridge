@@ -15,12 +15,16 @@
 - **多工作空间**：`/ws` 切换不同项目，session 自己重置
 - **图片 / 文件**：直接发给 bot，Claude 会读本地下载的文件路径
 - **卡片按钮**：`/help` `/ws list` `/status` 返回交互卡片，点按钮直接操作
+- **按 session 调 reasoning effort**：健身/随口聊天用 `low`，代码/AI 研究用 `xhigh` 或 `max`
+- **空回复兜底**：如果 Claude 只产出 thinking / tool call 而没有可见文本，bridge 会显示明确提示并写日志
+- **本机 GUI 自动化（可选）**：bridge 启动 Claude 时会挂载 `bridge-mcp.json` 里的 `gui` MCP，可从飞书触发截图、点击、输入等桌面操作
 
 ## 前置条件
 
 - Node.js **≥ 20**
 - `claude` CLI 已安装并登录：https://docs.anthropic.com/en/docs/claude-code/quickstart
 - 一个飞书 / Lark PersonalAgent 应用（首次启动的扫码向导能帮你创建）
+- 如果要从飞书触发 GUI 操作：Mac 需要保持唤醒、已登录且相关辅助功能 / 屏幕录制权限已授权
 
 ## 安装
 
@@ -101,6 +105,26 @@ daemon 的 stdout / stderr 写到 `~/.lark-channel/logs/daemon-stdout.log` 和 `
 
 **消息策略**：私聊 = 不需要 @，任何消息都回；**群（含话题群）= 默认要 @bot 才回**（0.1.22 起的新默认），不 @ 时 bot 完全沉默；@全员永远不响应；云文档评论必须 @bot。要恢复"群里也不强制 @"的老行为：`/config` → "群里需要 @ bot" → 选"否"。
 
+### Session effort 语义
+
+Claude Code 本机支持的 `--effort` 值是 `low` / `medium` / `high` / `xhigh` / `max`。bridge 额外接受一些口语别名：`extra high` / `extra-high` / `x_high` 会规范化成 `xhigh`，`ultra` / `ultra high` 会规范化成 `max`。
+
+优先级：
+
+1. 当前 chat / topic 的 `/effort` 覆盖优先，写入 `~/.lark-channel/sessions.json`
+2. 没有 session 覆盖时，使用 `/config` 表单里的全局默认 `preferences.effort`
+3. 全局默认缺失或非法时，回退到 `xhigh`
+
+常用模式：
+
+- `/effort low`：不清空上下文，只让当前 session 后续 run 用低 effort
+- `/effort default`：清除当前 session 覆盖，回到全局默认
+- `/new low`：在**当前 chat/topic** 里清空 Claude session，并把新 session 设为低 effort
+- `/new`：在当前 chat/topic 里清空 Claude session，不指定 effort
+- `/new chat [name]`：新建一个飞书群聊。它不是 `/new low`；如果当前 chat 已经有 `/effort` 覆盖，新群会继承这个覆盖
+
+`/status` 会显示当前生效的 effort，并标注来源是 session 覆盖还是全局默认。
+
 ## 数据目录
 
 | 路径 | 内容 |
@@ -111,8 +135,27 @@ daemon 的 stdout / stderr 写到 `~/.lark-channel/logs/daemon-stdout.log` 和 `
 | `~/.lark-channel/processes.json` | 当前在跑的 start 进程注册中心（`ps`/`stop` 用），死进程会被自动清理 |
 | `~/.lark-channel/media/<chatId>/` | 下载的图片 / 文件，24h 自动清理 |
 | `~/.lark-channel/logs/YYYY-MM-DD.log` | 结构化运行日志（JSON line），按天滚动；启动时清理超过 7 天的老文件（`LARK_CHANNEL_LOG_DAYS` 环境变量可改）；`/doctor` 命令读它做诊断 |
+| `bridge-mcp.json` | bridge 专用 MCP 配置，让 `claude -p` print 模式也能加载本机 GUI 自动化 server |
 
 > 升级自 0.1.11 之前的版本？跑一次 `lark-channel-bridge migrate` —— 自动把 `~/.config/lark-channel-bridge/` 和 `~/.cache/lark-channel-bridge/` 下的内容搬到新位置，并把 `config.json` 升级到新结构。
+
+## GUI 自动化能力
+
+bridge 的 ClaudeAdapter 会在每次 spawn `claude -p` 时追加：
+
+- `--mcp-config /Users/charlesli/code/feishu-claude-code-bridge/bridge-mcp.json`
+- 一组 `--allowed-tools mcp__gui__...`
+
+这样从飞书来的 Claude run 可以使用 `gui` MCP 做截图、点击、输入、滚动、读写剪贴板等桌面操作。这个能力适合扫企业微信邮件、操作本地客户端、处理必须靠 GUI 的流程。
+
+运行条件：
+
+- 电脑必须保持系统唤醒，不能 sleep
+- 最好保持已登录、未锁屏；锁屏或合盖后 GUI 自动化通常不可靠
+- 首次使用可能需要在 macOS 上批准辅助功能和屏幕录制权限
+- 目标 app 要在当前用户会话里可见、可操作
+
+安全提醒：GUI MCP 等于允许飞书 allowlist 内的人远程驱动这台 Mac 的屏幕、鼠标和键盘。生产使用前务必配置好 `allowedUsers` / `allowedChats` / `admins`。`bridge-mcp.json` 里的 computer-use 可执行路径带 Codex 插件版本号，Codex 更新后如果路径失效，需要同步更新这个文件并 rebuild/restart。
 
 ## 访问控制（可选）
 
@@ -193,7 +236,35 @@ grep '"event":"enter"' ~/.lark-channel/logs/$(date +%Y-%m-%d).log | tail -5
 
 **Claude 子进程假死（卡片停在最后一帧不动）**：从 0.1.20 起支持 idle 探活：claude 一段时间没输出就被 SIGTERM kill，卡片末尾会标 "⏱ N 分钟无响应，已自动终止"。默认关闭。开启方式：`/config` 设全局值（分钟），或 `/timeout 10` 只对当前 session 生效；`/timeout off` 关掉某个 session 的探活；`/timeout default` 清掉 session 覆盖回退到全局。
 
+**飞书里显示 Claude 没有返回可见文本**：这通常说明 Claude 本轮只产出了 thinking / tool call / 空结果。bridge 会显示兜底提示并在结构化日志里写 `agent.empty-output`。可以直接重发，或者 `/reset` 开新 session 后重试。
+
+**GUI 自动化没反应或截图黑屏**：先确认 Mac 没有 sleep / 锁屏，目标 app 在当前桌面可见，computer-use 相关权限已授权。长时间远程跑 GUI 任务时可以用 `caffeinate -dimsu` 保持系统和显示可用。
+
 **图片发过去 Claude 说看不到**：升级到最新版，0.1.0 之前的版本有文件名去重 bug。
+
+## 开发 / 接手检查清单
+
+关键文件：
+
+- `src/commands/index.ts`：飞书 slash command handler，`/effort` / `/new low` / `/config` 都在这里
+- `src/session/store.ts`：每个 chat/topic 的 session id、cwd、timeout override、effort override 持久化
+- `src/bot/channel.ts`：批处理消息、计算最终 effort、调用 `agent.run()`
+- `src/agent/claude/adapter.ts`：spawn `claude -p`，传 `--model` / `--effort` / `--mcp-config` / `--allowed-tools`
+- `src/card/templates.ts`、`src/card/config-card.ts`：`/status`、`/help`、`/config` 卡片
+- `test/effort.test.ts`：effort 规范化和 session override 持久化测试
+
+上线前建议跑：
+
+```bash
+./node_modules/.bin/vitest run
+./node_modules/.bin/tsc --noEmit
+./node_modules/.bin/tsup
+git diff --check
+lark-channel-bridge restart
+lark-channel-bridge status
+```
+
+有些环境没有全局 `pnpm`，直接用 `./node_modules/.bin/...` 更稳。重启后看 `~/.lark-channel/logs/$(date +%F).log`，确认最后有 `phase=ws event=connected`。
 
 ## 许可
 
