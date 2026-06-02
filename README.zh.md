@@ -124,6 +124,7 @@ lark-channel-bridge profile list
 lark-channel-bridge profile use <name>
 lark-channel-bridge profile remove <name>
 lark-channel-bridge profile remove <name> --purge --yes
+lark-channel-bridge profile repin <name>
 lark-channel-bridge profile export <name> [--output ./profile.json] [--force]
 lark-channel-bridge profile export <name> --include-secrets --yes
 ```
@@ -295,7 +296,7 @@ grep '"event":"enter"' ~/.lark-channel/profiles/<profile>/logs/bridge-$(date +%Y
 
 ## Codex CLI 安全校验
 
-Codex profile 会记录 binary pin，包括 `binaryPath`、`realpath`、`version` 和 `sha256`。bridge 每次 Codex run 前都会复核 pin；二进制被替换时会拒绝继续运行。bridge 不开放任意 `codex.flags` 配置，Codex argv 由 bridge 固定生成。
+Codex profile 会记录 binary pin，包括 `binaryPath`、`realpath`、`version` 和 `sha256`。bridge 每次 Codex run 前都会复核 pin；二进制被替换时会拒绝继续运行。bridge 不开放任意 `codex.flags` 配置，Codex argv 由 bridge 固定生成。主动升级 Codex 之后，跑 `profile repin <name>` 用磁盘上现行 binary 刷新 pin；命令会打印发生变化的字段，无需额外参数。
 
 ## 测试与 CI
 

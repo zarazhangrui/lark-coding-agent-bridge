@@ -14,6 +14,7 @@ import {
   runProfileExport,
   runProfileList,
   runProfileRemove,
+  runProfileRepin,
   runProfileUse,
 } from './commands/profile';
 import {
@@ -111,6 +112,13 @@ profile
   .option('--yes', 'confirm destructive profile deletion')
   .action(async (name: string, opts: { purge?: boolean; yes?: boolean }) => {
     await runProfileRemove(name, { purge: opts.purge, yes: opts.yes });
+  });
+
+profile
+  .command('repin <name>')
+  .description('Refresh the codex binary pin from the current binary on disk')
+  .action(async (name: string) => {
+    await runProfileRepin(name);
   });
 
 profile

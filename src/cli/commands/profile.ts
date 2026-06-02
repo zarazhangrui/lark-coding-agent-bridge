@@ -1,5 +1,6 @@
 import { existsSync } from 'node:fs';
 import { rm } from 'node:fs/promises';
+import { createCodexBinaryPin } from '../../agent/codex/binary';
 import { resolveAppPaths } from '../../config/app-paths';
 import { paths } from '../../config/paths';
 import {
@@ -15,7 +16,7 @@ import {
   withConfigFileLock,
   writeActiveProfile,
 } from '../../config/profile-store';
-import type { RootConfig } from '../../config/profile-schema';
+import type { CodexConfig, RootConfig } from '../../config/profile-schema';
 import { resolveAppSecret } from '../../config/secret-resolver';
 import { writeFileAtomic } from '../../platform/atomic-write';
 import { acquireProfileRuntimeLock, checkRuntimeLock } from '../../runtime/locks';
@@ -47,6 +48,8 @@ export interface ProfileExportOptions extends ProfileCommandOptions {
   includeSecrets?: boolean;
   yes?: boolean;
 }
+
+export interface ProfileRepinOptions extends ProfileCommandOptions {}
 
 export async function runProfileList(opts: ProfileCommandOptions = {}): Promise<void> {
   const rootDir = opts.rootDir ?? paths.rootDir;
@@ -273,4 +276,75 @@ export async function runProfileExport(
 
 function cloneJson<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
+}
+
+export async function runProfileRepin(
+  name: string,
+  opts: ProfileRepinOptions = {},
+): Promise<void> {
+  const rootDir = opts.rootDir ?? paths.rootDir;
+  const configFile = resolveAppPaths({ rootDir }).configFile;
+  await withConfigFileLock(configFile, async () => {
+    const root = await loadRootConfig(configFile);
+    if (!root) throw new Error('config not initialized');
+    const profile = root.profiles[name];
+    if (!profile) throw new Error(`profile not found: ${name}`);
+    if (profile.agentKind !== 'codex') {
+      throw new Error(
+        `profile ${name} is not a codex profile (agentKind: ${profile.agentKind}); ` +
+          `only codex profiles have binary pins`,
+      );
+    }
+    const oldCodex = profile.codex;
+    const binaryPath =
+      oldCodex?.binaryPath ?? process.env.LARK_CHANNEL_CODEX_BIN ?? 'codex';
+    const newPin = await createCodexBinaryPin(binaryPath);
+
+    const diffLines = diffCodexPin(oldCodex, newPin);
+    if (diffLines.length === 0) {
+      console.log('(no changes)');
+      return;
+    }
+    for (const line of diffLines) console.log(line);
+
+    const updatedCodex: CodexConfig = {
+      ...(oldCodex ?? {}),
+      binaryPath: newPin.binaryPath,
+      realpath: newPin.realpath,
+      version: newPin.version,
+      sha256: newPin.sha256,
+      ...(newPin.owner !== undefined ? { owner: newPin.owner } : {}),
+      ...(newPin.mode !== undefined ? { mode: newPin.mode } : {}),
+    };
+    profile.codex = updatedCodex;
+    await saveRootConfig(root, configFile);
+    console.log(`✓ codex pin updated for profile "${name}". Restart daemon to pick up the new pin.`);
+  });
+}
+
+function diffCodexPin(
+  oldCodex: CodexConfig | undefined,
+  newPin: { binaryPath: string; realpath: string; version: string; sha256: string; owner?: number; mode?: number },
+): string[] {
+  const fields: Array<'binaryPath' | 'realpath' | 'version' | 'sha256' | 'owner' | 'mode'> = [
+    'binaryPath',
+    'realpath',
+    'version',
+    'sha256',
+    'owner',
+    'mode',
+  ];
+  const lines: string[] = [];
+  for (const field of fields) {
+    const oldVal = oldCodex?.[field];
+    const newVal = newPin[field];
+    if (oldVal === newVal) continue;
+    const fmt = (value: string | number | undefined): string => {
+      if (value === undefined) return '(unset)';
+      if (field === 'sha256' && typeof value === 'string') return `${value.slice(0, 8)}...`;
+      return String(value);
+    };
+    lines.push(`  ${field}: ${fmt(oldVal)} → ${fmt(newVal)}`);
+  }
+  return lines;
 }

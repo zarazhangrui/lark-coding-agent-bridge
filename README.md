@@ -124,6 +124,7 @@ lark-channel-bridge profile list
 lark-channel-bridge profile use <name>
 lark-channel-bridge profile remove <name>
 lark-channel-bridge profile remove <name> --purge --yes
+lark-channel-bridge profile repin <name>
 lark-channel-bridge profile export <name> [--output ./profile.json] [--force]
 lark-channel-bridge profile export <name> --include-secrets --yes
 ```
@@ -295,7 +296,7 @@ Cloud-doc comments do not need a separate workspace binding or document allowlis
 
 ## Codex CLI verification
 
-Codex profiles store a binary pin with `binaryPath`, `realpath`, `version`, and `sha256`. The bridge verifies the pin before every Codex run and refuses to continue if the binary changes. Arbitrary `codex.flags` are not exposed; bridge-owned Codex argv is fixed.
+Codex profiles store a binary pin with `binaryPath`, `realpath`, `version`, and `sha256`. The bridge verifies the pin before every Codex run and refuses to continue if the binary changes. Arbitrary `codex.flags` are not exposed; bridge-owned Codex argv is fixed. When you intentionally upgrade Codex, run `profile repin <name>` to refresh the pin from the current binary; the command prints which fields changed and requires no flags.
 
 ## Testing and CI
 
