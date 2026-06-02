@@ -13,6 +13,8 @@ export interface AgentRunOptions {
   cwd?: string;
   sessionId?: string;
   model?: string;
+  /** Reasoning effort passed to `claude --effort`: low/medium/high/xhigh/max. */
+  effort?: string;
   permissionMode?: 'default' | 'acceptEdits' | 'bypassPermissions' | 'plan' | 'auto';
   /**
    * Grace period (ms) between SIGTERM and SIGKILL when stop() is called on

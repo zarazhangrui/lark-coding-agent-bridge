@@ -1,4 +1,5 @@
 import type { Block, FooterStatus, RunState, ToolEntry } from './run-state';
+import { EMPTY_AGENT_OUTPUT_TEXT } from './text-renderer';
 import { toolBodyMd, toolHeaderText } from './tool-render';
 
 const REASONING_MAX = 1500;
@@ -39,7 +40,7 @@ export function renderCard(state: RunState): object {
   } else if (state.terminal === 'error' && state.errorMsg) {
     elements.push(noteMd(`⚠️ agent 失败：${state.errorMsg}`));
   } else if (state.terminal === 'done' && elements.length === 0) {
-    elements.push(noteMd('_（未返回内容）_'));
+    elements.push(noteMd(EMPTY_AGENT_OUTPUT_TEXT));
   }
 
   if (state.terminal === 'running') {

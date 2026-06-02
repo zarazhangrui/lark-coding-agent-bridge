@@ -1,3 +1,5 @@
+import type { AgentEffort } from '../config/schema';
+
 interface ButtonSpec {
   text: string;
   value: Record<string, unknown>;
@@ -70,6 +72,8 @@ export interface StatusInfo {
   scope: string;
   /** Chat mode — used to label scope. */
   chatMode: 'p2p' | 'group' | 'topic';
+  effort: AgentEffort;
+  effortSource: 'session' | 'global';
 }
 
 export function statusCard(info: StatusInfo): object {
@@ -82,10 +86,13 @@ export function statusCard(info: StatusInfo): object {
     info.chatMode === 'topic'
       ? `\`${escapeCode(info.scope)}\` _（话题独立 session）_`
       : `\`${escapeCode(info.scope)}\``;
+  const effortSource =
+    info.effortSource === 'session' ? '_（session 覆盖）_' : '_（全局默认）_';
   const lines = [
     `🧭 **scope**: ${scopeLine}`,
     `📁 **cwd**: \`${escapeCode(info.cwd)}\``,
     `🔗 **session**: ${sessionLine}`,
+    `🧠 **effort**: \`${info.effort}\` ${effortSource}`,
     `🤖 **agent**: ${escapeMd(info.agentName)}`,
   ];
   return shell('📊 当前状态', [
@@ -156,6 +163,7 @@ export function helpCard(): object {
         '- `/config` — 调整偏好（消息回复方式、工具调用显示）',
         '- `/status` — 当前状态',
         '- `/stop` — 结束当前正在跑的任务（也可点卡片底部 ⏹ 终止 按钮）',
+        '- `/effort [low|medium|high|xhigh|max|default]` — 当前 session 的 reasoning effort；`/new low` 可新会话同时设低 effort',
         '- `/timeout [N|off|default]` — 当前 session 的探活分钟数,`/config` 改全局默认',
         '- `/ps` — 列出本机所有 bot,标识当前正在回复的那个',
         '- `/exit <id|#>` — 关掉指定 bot(用 `/ps` 看 id/序号)',

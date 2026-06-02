@@ -90,6 +90,8 @@ export type PermissionMode =
   | 'plan'
   | 'auto';
 
+export type AgentEffort = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+
 /**
  * Access control settings. All three lists default to "no restriction" when
  * empty / undefined, so existing deployments are not broken on upgrade.
@@ -175,6 +177,12 @@ export interface AppPreferences {
    * `'claude-sonnet-4-6'`) to reduce token spend on a long-running bot.
    */
   model?: string;
+  /**
+   * Reasoning effort passed to `claude --effort`. One of
+   * `low` / `medium` / `high` / `xhigh` / `max`. Default `'xhigh'`.
+   * Higher = more thinking budget per turn (stronger reasoning, more tokens).
+   */
+  effort?: string;
 }
 
 /**
@@ -307,6 +315,47 @@ export function getAgentModel(cfg: AppConfig): string {
   const raw = cfg.preferences?.model;
   if (typeof raw === 'string' && raw.trim().length > 0) return raw.trim();
   return 'claude-opus-4-7';
+}
+
+const VALID_EFFORT_LEVELS: ReadonlySet<AgentEffort> = new Set([
+  'low',
+  'medium',
+  'high',
+  'xhigh',
+  'max',
+]);
+
+const EFFORT_ALIASES: Record<string, AgentEffort> = {
+  xh: 'xhigh',
+  'x-high': 'xhigh',
+  xhigh: 'xhigh',
+  extra: 'xhigh',
+  extrahigh: 'xhigh',
+  'extra-high': 'xhigh',
+  ultrahigh: 'max',
+  'ultra-high': 'max',
+  ultra: 'max',
+};
+
+export function normalizeAgentEffort(raw: string): AgentEffort | undefined {
+  const normalized = raw.trim().toLowerCase().replace(/[\s_]+/g, '-');
+  if (!normalized) return undefined;
+  if (VALID_EFFORT_LEVELS.has(normalized as AgentEffort)) {
+    return normalized as AgentEffort;
+  }
+  return EFFORT_ALIASES[normalized] ?? EFFORT_ALIASES[normalized.replace(/-/g, '')];
+}
+
+/**
+ * Resolve the reasoning effort passed to `claude --effort`. Defaults to
+ * `'xhigh'` (extra-high — one notch below `max`) so the bridge reasons hard
+ * out of the box. Unknown values fall back to the default rather than letting
+ * a typo silently weaken reasoning.
+ */
+export function getAgentEffort(cfg: AppConfig): AgentEffort {
+  const raw = cfg.preferences?.effort;
+  if (typeof raw === 'string') return normalizeAgentEffort(raw) ?? 'xhigh';
+  return 'xhigh';
 }
 
 /** True when `senderId` may interact with the bot. Empty list = allow all. */

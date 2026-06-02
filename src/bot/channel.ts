@@ -20,6 +20,7 @@ import { renderText } from '../card/text-renderer';
 import { tryHandleCommand, type Controls } from '../commands';
 import type { AppConfig } from '../config/schema';
 import {
+  getAgentEffort,
   getAgentStopGraceMs,
   getMaxConcurrentRuns,
   getMessageReplyMode,
@@ -510,10 +511,18 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
     }
   }
 
+  const scopeEffort = sessions.getEffort(scope);
+  const effort = scopeEffort ?? getAgentEffort(controls.cfg);
+  log.info('flush', 'effort', {
+    effort,
+    source: scopeEffort ? 'session' : 'global',
+  });
+
   const run = agent.run({
     prompt,
     sessionId: resumeFrom,
     cwd,
+    effort,
     stopGraceMs: getAgentStopGraceMs(controls.cfg),
   });
   const handle = activeRuns.register(scope, run);
@@ -720,8 +729,15 @@ async function processAgentStream(
     }
   }
   log.info('card', 'final', { terminal: state.terminal, interrupted: handle.interrupted });
+  if (state.terminal === 'done' && !hasVisibleOutput(state)) {
+    log.warn('agent', 'empty-output', {
+      scope,
+      blocks: state.blocks.length,
+      reasoningChars: state.reasoning.content.length,
+    });
+  }
   await flush(state);
-    // Reap the subprocess. Two regimes:
+  // Reap the subprocess. Two regimes:
   //  - Interrupted (user /stop, idle watchdog, disconnect): stop() was already
   //    fire-and-forgotten by whoever set handle.interrupted; this awaits it.
   //  - Natural done: stream-json emits `result` ~1ms before claude actually
@@ -745,6 +761,13 @@ async function processAgentStream(
  * a stall (the card has already rendered terminal state by this point).
  */
 const POST_DONE_EXIT_GRACE_MS = 2000;
+
+function hasVisibleOutput(state: RunState): boolean {
+  return state.blocks.some((b) => {
+    if (b.kind === 'text') return b.content.trim().length > 0;
+    return true;
+  });
+}
 
 /**
  * For interactive-card messages the SDK flattens to text-bearing nodes or
@@ -822,4 +845,3 @@ function stripAttachmentRefs(text: string, fileKeys: string[]): string {
   }
   return out.replace(/\n{3,}/g, '\n\n');
 }
-

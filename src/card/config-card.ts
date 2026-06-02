@@ -1,4 +1,4 @@
-import type { MessageReplyMode } from '../config/schema';
+import type { AgentEffort, MessageReplyMode } from '../config/schema';
 
 export interface ConfigFormOpts {
   messageReply: MessageReplyMode;
@@ -6,6 +6,8 @@ export interface ConfigFormOpts {
   maxConcurrentRuns: number;
   /** 0 means "disabled". */
   runIdleTimeoutMinutes: number;
+  /** Global default reasoning effort. */
+  effort: AgentEffort;
   requireMentionInGroup: boolean;
   /** Comma-separated open_id allowlist; empty string = unrestricted. */
   allowedUsers: string;
@@ -96,6 +98,24 @@ export function configFormCard(opts: ConfigFormOpts): object {
               default_value: String(opts.runIdleTimeoutMinutes),
               placeholder: { tag: 'plain_text', content: '0' },
               input_type: 'text',
+            },
+            {
+              tag: 'markdown',
+              content:
+                '\n**reasoning effort 默认值**\n' +
+                '_控制 Claude Code 每轮思考预算。低 effort 更快更省,高 effort 更适合复杂代码/研究。可被 `/effort` 在单个 session 覆盖_',
+            },
+            {
+              tag: 'select_static',
+              name: 'effort',
+              initial_option: opts.effort,
+              options: [
+                { text: { tag: 'plain_text', content: 'low - 快速/低 reasoning' }, value: 'low' },
+                { text: { tag: 'plain_text', content: 'medium' }, value: 'medium' },
+                { text: { tag: 'plain_text', content: 'high' }, value: 'high' },
+                { text: { tag: 'plain_text', content: 'xhigh - extra high(默认)' }, value: 'xhigh' },
+                { text: { tag: 'plain_text', content: 'max - 最高档' }, value: 'max' },
+              ],
             },
             {
               tag: 'markdown',
@@ -227,6 +247,7 @@ export function configSavedCard(opts: ConfigFormOpts): object {
             `**工具调用显示**:\`${opts.showToolCalls ? 'show' : 'hide'}\`\n` +
             `**并发上限**:\`${opts.maxConcurrentRuns}\`\n` +
             `**run 探活**:\`${opts.runIdleTimeoutMinutes > 0 ? `${opts.runIdleTimeoutMinutes} 分钟` : '关闭'}\`\n` +
+            `**reasoning effort 默认值**:\`${opts.effort}\`\n` +
             `**群里需要 @ bot**:\`${opts.requireMentionInGroup ? '是' : '否'}\`\n\n` +
             '🔒 **访问控制**\n' +
             `**用户白名单**:${summarizeList(opts.allowedUsers)}\n` +

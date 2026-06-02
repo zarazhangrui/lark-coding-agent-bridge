@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "gui": {
+      "command": "/Users/charlesli/.codex/plugins/cache/openai-bundled/computer-use/1.0.799/Codex Computer Use.app/Contents/SharedSupport/SkyComputerUseClient.app/Contents/MacOS/SkyComputerUseClient",
+      "args": ["mcp"]
+    }
+  }
+}

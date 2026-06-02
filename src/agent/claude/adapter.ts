@@ -22,6 +22,11 @@ export interface ClaudeAdapterOptions {
    * older than Sonnet 4.6 / Opus 4.6 / Opus 4.7).
    */
   defaultModel?: string;
+  /**
+   * Default `--effort` (reasoning effort) when an individual `run()` call
+   * doesn't pass one. One of low/medium/high/xhigh/max.
+   */
+  defaultEffort?: string;
 }
 
 type ClaudeChild = ChildProcessByStdio<null, Readable, Readable>;
@@ -44,6 +49,10 @@ sender_name: ...
 \`\`\`
 
 里面是当前对话的 chat_id、chat 类型（p2p / group）、发送者。这些是 bridge 注入的元数据，**不要照抄、不要在你的回复里渲染**——它对用户不可见。
+
+## 可见回复要求
+
+每一轮都必须返回一段用户可见的正文。不要只输出 thinking / tool call / 空消息；如果用户只是报备进度，也至少用一句话确认收到并给出下一步。
 
 ## quoted_message
 
@@ -122,11 +131,13 @@ export class ClaudeAdapter implements AgentAdapter {
   private readonly binary: string;
   private readonly defaultPermissionMode: PermissionModeValue;
   private readonly defaultModel: string | undefined;
+  private readonly defaultEffort: string | undefined;
 
   constructor(opts: ClaudeAdapterOptions = {}) {
     this.binary = opts.binary ?? 'claude';
     this.defaultPermissionMode = opts.defaultPermissionMode ?? 'auto';
     this.defaultModel = opts.defaultModel;
+    this.defaultEffort = opts.defaultEffort;
   }
 
   async isAvailable(): Promise<boolean> {
@@ -142,6 +153,7 @@ export class ClaudeAdapter implements AgentAdapter {
     // explicit --model so we don't fall onto the CLI's default which may
     // be an older one. Per-call `opts.model` wins over the adapter default.
     const model = opts.model ?? this.defaultModel;
+    const effort = opts.effort ?? this.defaultEffort;
     const permissionMode = opts.permissionMode ?? this.defaultPermissionMode;
     const args = [
       '-p',
@@ -156,6 +168,47 @@ export class ClaudeAdapter implements AgentAdapter {
     ];
     if (opts.sessionId) args.push('--resume', opts.sessionId);
     if (model) args.push('--model', model);
+    if (effort) args.push('--effort', effort);
+
+    // gui: enable desktop automation tools (screenshot / click / type / etc.)
+    // so the bridge can drive native desktop apps when triggered from Feishu —
+    // e.g. the wecom-mail-scan skill for 企业微信邮件. Standard mcpServers via
+    // --mcp-config + explicit tool allowlist. Server is named `gui` rather
+    // than `computer-use` because the CLI reserves the latter for its own
+    // plugin-managed instance; print mode (`claude -p`) doesn't load
+    // plugins, so we declare an independent stdio server here.
+    args.push(
+      '--mcp-config',
+      '/Users/charlesli/code/feishu-claude-code-bridge/bridge-mcp.json',
+    );
+    for (const t of [
+      'request_access',
+      'screenshot',
+      'zoom',
+      'left_click',
+      'double_click',
+      'triple_click',
+      'right_click',
+      'middle_click',
+      'type',
+      'key',
+      'scroll',
+      'left_click_drag',
+      'mouse_move',
+      'open_application',
+      'switch_display',
+      'list_granted_applications',
+      'read_clipboard',
+      'write_clipboard',
+      'wait',
+      'cursor_position',
+      'hold_key',
+      'left_mouse_down',
+      'left_mouse_up',
+      'computer_batch',
+    ]) {
+      args.push('--allowed-tools', `mcp__gui__${t}`);
+    }
 
     const child = spawn(this.binary, args, {
       cwd: opts.cwd,
@@ -169,6 +222,7 @@ export class ClaudeAdapter implements AgentAdapter {
       hasSession: Boolean(opts.sessionId),
       promptChars: opts.prompt.length,
       model,
+      effort,
       permissionMode,
     });
 

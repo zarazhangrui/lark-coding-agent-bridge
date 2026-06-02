@@ -8,7 +8,7 @@ import type { Controls } from '../../commands';
 import { setSecret } from '../../config/keystore';
 import { paths } from '../../config/paths';
 import type { AppConfig } from '../../config/schema';
-import { getAgentModel, getPermissionMode, isComplete, secretKeyForApp } from '../../config/schema';
+import { getAgentEffort, getAgentModel, getPermissionMode, isComplete, secretKeyForApp } from '../../config/schema';
 import {
   buildEncryptedAccountConfig,
   ensureSecretsGetterWrapper,
@@ -79,6 +79,7 @@ export async function runStart(opts: StartOptions): Promise<void> {
   const agent = new ClaudeAdapter({
     defaultPermissionMode: getPermissionMode(cfg),
     defaultModel: getAgentModel(cfg),
+    defaultEffort: getAgentEffort(cfg),
   });
   if (!(await agent.isAvailable())) {
     console.error('✗ 未找到 claude CLI。请先安装 Claude Code：');

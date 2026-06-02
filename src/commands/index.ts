@@ -12,8 +12,9 @@ import {
 import { configCancelledCard, configFormCard, configSavedCard } from '../card/config-card';
 import { forgetManagedCard, sendManagedCard, updateManagedCard } from '../card/managed';
 import { helpCard, resumeCard, statusCard, workspacesCard } from '../card/templates';
-import type { AppConfig, MessageReplyMode, TenantBrand } from '../config/schema';
+import type { AgentEffort, AppConfig, MessageReplyMode, TenantBrand } from '../config/schema';
 import {
+  getAgentEffort,
   getAgentStopGraceMs,
   getMaxConcurrentRuns,
   getMessageReplyMode,
@@ -21,6 +22,7 @@ import {
   getRunIdleTimeoutMs,
   getShowToolCalls,
   isAdmin,
+  normalizeAgentEffort,
   secretKeyForApp,
 } from '../config/schema';
 import { setSecret } from '../config/keystore';
@@ -97,6 +99,7 @@ const handlers: Record<string, Handler> = {
   '/account': handleAccount,
   '/config': handleConfig,
   '/stop': handleStop,
+  '/effort': handleEffort,
   '/timeout': handleTimeout,
   '/ps': handlePs,
   '/exit': handleExit,
@@ -194,22 +197,85 @@ function expandTilde(p: string): string {
   return p;
 }
 
+const EFFORT_USAGE =
+  '用法:`/effort [low|medium|high|xhigh|max|default]` 或 `/new [low|medium|high|xhigh|max]`';
+
+function formatEffort(effort: AgentEffort): string {
+  switch (effort) {
+    case 'low':
+      return '`low`（最快/最低 reasoning）';
+    case 'medium':
+      return '`medium`';
+    case 'high':
+      return '`high`';
+    case 'xhigh':
+      return '`xhigh`（extra high）';
+    case 'max':
+      return '`max`（本机 Claude Code 最高档）';
+  }
+}
+
+function effortAliasNote(raw: string, effort: AgentEffort): string {
+  const normalized = raw.trim().toLowerCase().replace(/[\s_]+/g, '-');
+  return normalized && normalized !== effort ? `（已将 \`${raw.trim()}\` 映射为 \`${effort}\`）` : '';
+}
+
+function parseNewEffortArg(trimmed: string): {
+  effort?: AgentEffort;
+  explicitDefault?: boolean;
+  invalid?: boolean;
+  raw?: string;
+} {
+  if (!trimmed) return {};
+  const lower = trimmed.toLowerCase();
+  const raw = lower === 'effort' || lower.startsWith('effort ')
+    ? trimmed.slice('effort'.length).trim()
+    : trimmed;
+  if (!raw) return { invalid: true, raw };
+  if (raw.toLowerCase() === 'default') return { explicitDefault: true, raw };
+  const effort = normalizeAgentEffort(raw);
+  return effort ? { effort, raw } : { invalid: true, raw };
+}
+
 async function handleNew(args: string, ctx: CommandContext): Promise<void> {
   const trimmed = args.trim();
+  const lower = trimmed.toLowerCase();
 
   // /new chat [name]  — spin up a fresh group chat bound to a fresh session
-  if (trimmed === 'chat' || trimmed.startsWith('chat ')) {
+  if (lower === 'chat' || lower.startsWith('chat ')) {
     const rawName = trimmed === 'chat' ? '' : trimmed.slice(5).trim();
     return handleNewChat(rawName, ctx);
   }
 
+  const requestedEffort = parseNewEffortArg(trimmed);
+  if (requestedEffort.invalid) {
+    await reply(ctx, `❌ ${EFFORT_USAGE}\n\n示例:\`/new low\`、\`/new effort max\`、\`/new\``);
+    return;
+  }
+
   const wasRunning = ctx.activeRuns.interrupt(ctx.scope);
   ctx.sessions.clear(ctx.scope);
-  await reply(ctx, wasRunning ? '已中断当前任务并开始新会话。' : '已开始新会话。');
+  if (requestedEffort.effort) {
+    ctx.sessions.setEffort(ctx.scope, requestedEffort.effort);
+    log.info('command', 'new-effort-set', {
+      scope: ctx.scope,
+      effort: requestedEffort.effort,
+    });
+  }
+  const effortLine = requestedEffort.effort
+    ? `\neffort: ${formatEffort(requestedEffort.effort)}${effortAliasNote(requestedEffort.raw ?? '', requestedEffort.effort)}`
+    : requestedEffort.explicitDefault
+      ? `\neffort: 跟随全局(${formatEffort(getAgentEffort(ctx.controls.cfg))})`
+      : '';
+  await reply(
+    ctx,
+    `${wasRunning ? '已中断当前任务并开始新会话。' : '已开始新会话。'}${effortLine}`,
+  );
 }
 
 async function handleNewChat(rawName: string, ctx: CommandContext): Promise<void> {
   const sourceCwd = ctx.workspaces.cwdFor(ctx.scope);
+  const sourceEffort = ctx.sessions.getEffort(ctx.scope);
   const name = rawName || defaultChatName();
 
   let created;
@@ -230,13 +296,17 @@ async function handleNewChat(rawName: string, ctx: CommandContext): Promise<void
   if (sourceCwd) {
     ctx.workspaces.setCwd(created.chatId, sourceCwd);
   }
+  if (sourceEffort) {
+    ctx.sessions.setEffort(created.chatId, sourceEffort);
+  }
 
   // Welcome the user inside the new group with a hint about how to start.
+  const effortLine = sourceEffort ? `\neffort 继承为 ${formatEffort(sourceEffort)}` : '';
   const welcome = sourceCwd
     ? `🎉 群已建好，cwd 继承自原群：\`${sourceCwd}\`\n\n@我 + 任意消息开始对话。`
     : '🎉 群已建好。\n\n@我 + 任意消息开始对话。';
   try {
-    await ctx.channel.send(created.chatId, { markdown: welcome });
+    await ctx.channel.send(created.chatId, { markdown: `${welcome}${effortLine}` });
   } catch (err) {
     console.warn('[new-chat] welcome message failed:', err);
   }
@@ -383,6 +453,7 @@ async function applyResume(sessionId: string, ctx: CommandContext): Promise<void
 async function handleStatus(_args: string, ctx: CommandContext): Promise<void> {
   const cwd = ctx.workspaces.cwdFor(ctx.scope) ?? homedir();
   const sess = ctx.sessions.getRaw(ctx.scope);
+  const sessionEffort = ctx.sessions.getEffort(ctx.scope);
   const card = statusCard({
     cwd,
     sessionId: sess?.sessionId,
@@ -390,6 +461,8 @@ async function handleStatus(_args: string, ctx: CommandContext): Promise<void> {
     agentName: ctx.agent.displayName,
     scope: ctx.scope,
     chatMode: ctx.chatMode,
+    effort: sessionEffort ?? getAgentEffort(ctx.controls.cfg),
+    effortSource: sessionEffort ? 'session' : 'global',
   });
   await ctx.channel.send(ctx.msg.chatId, { card }, { replyTo: ctx.msg.messageId });
 }
@@ -399,6 +472,61 @@ async function handleStop(_args: string, ctx: CommandContext): Promise<void> {
   log.info('command', 'stop', { interrupted: ok });
   // No reply: if there was a run, its in-flight render loop will mark the
   // card as 'interrupted' and re-render (`_⏹ 已被中断_`).
+}
+
+async function handleEffort(args: string, ctx: CommandContext): Promise<void> {
+  const raw = args.trim();
+  const trimmed = raw.toLowerCase();
+  const globalEffort = getAgentEffort(ctx.controls.cfg);
+
+  if (!trimmed) {
+    const sessionEffort = ctx.sessions.getEffort(ctx.scope);
+    const usage = [
+      '',
+      '用法:',
+      '- `/effort low` 当前 session 设低 reasoning,适合快速聊天/健身记录',
+      '- `/effort high` 或 `/effort xhigh` 当前 session 提高 reasoning',
+      '- `/effort max` 当前 session 使用本机最高档',
+      '- `/effort default` 清除 session 覆盖,回退全局',
+      '- `/new low` 新会话并同时设低 effort',
+      '',
+      '_别名:`extra high` → `xhigh`;`ultra` → `max`_',
+    ].join('\n');
+    if (sessionEffort) {
+      await reply(
+        ctx,
+        `🧠 当前 session effort:${formatEffort(sessionEffort)}\n全局默认:${formatEffort(globalEffort)}${usage}`,
+      );
+      return;
+    }
+    await reply(ctx, `🧠 当前 session effort:跟随全局(${formatEffort(globalEffort)})${usage}`);
+    return;
+  }
+
+  if (trimmed === 'default') {
+    const cleared = ctx.sessions.clearEffortOverride(ctx.scope);
+    log.info('command', 'effort-clear', { scope: ctx.scope, cleared });
+    await reply(
+      ctx,
+      cleared
+        ? `✅ 已清除 session effort 覆盖,回退到全局(${formatEffort(globalEffort)})。`
+        : `当前 session 本来就没设过 effort 覆盖,跟随全局(${formatEffort(globalEffort)})。`,
+    );
+    return;
+  }
+
+  const effort = normalizeAgentEffort(raw);
+  if (!effort) {
+    await reply(ctx, `❌ ${EFFORT_USAGE}\n\n别名:\`extra high\` = \`xhigh\`,\`ultra\` = \`max\``);
+    return;
+  }
+
+  ctx.sessions.setEffort(ctx.scope, effort);
+  log.info('command', 'effort-set', { scope: ctx.scope, effort });
+  await reply(
+    ctx,
+    `✅ 当前 session effort 已设为 ${formatEffort(effort)}${effortAliasNote(raw, effort)}。\n下条消息开始生效。`,
+  );
 }
 
 async function handleTimeout(args: string, ctx: CommandContext): Promise<void> {
@@ -625,6 +753,7 @@ async function handleDoctor(args: string, ctx: CommandContext): Promise<void> {
   const run = ctx.agent.run({
     prompt,
     cwd: homedir(),
+    effort: getAgentEffort(ctx.controls.cfg),
     stopGraceMs: getAgentStopGraceMs(ctx.controls.cfg),
   });
   const handle = ctx.activeRuns.register(ctx.scope, run);
@@ -896,6 +1025,7 @@ async function showConfigForm(ctx: CommandContext): Promise<void> {
     showToolCalls: getShowToolCalls(ctx.controls.cfg),
     maxConcurrentRuns: getMaxConcurrentRuns(ctx.controls.cfg),
     runIdleTimeoutMinutes: ms ? Math.round(ms / 60_000) : 0,
+    effort: getAgentEffort(ctx.controls.cfg),
     requireMentionInGroup: getRequireMentionInGroup(ctx.controls.cfg),
     allowedUsers: (access.allowedUsers ?? []).join(', '),
     allowedChats: (access.allowedChats ?? []).join(', '),
@@ -958,6 +1088,10 @@ async function submitConfig(ctx: CommandContext): Promise<void> {
   if (rawRequireMention === 'yes') requireMentionInGroup = true;
   else if (rawRequireMention === 'no') requireMentionInGroup = false;
   else requireMentionInGroup = getRequireMentionInGroup(ctx.controls.cfg);
+  // Parse global default effort. Empty / unexpected keeps current.
+  const rawEffort = String(fv.effort ?? '').trim();
+  const currentEffort = getAgentEffort(ctx.controls.cfg);
+  const effort = rawEffort ? normalizeAgentEffort(rawEffort) ?? currentEffort : currentEffort;
 
   // Parse access lists. Comma-separated; trim each, drop empties, dedupe.
   // Empty list = unrestricted (back-compat).
@@ -1044,6 +1178,7 @@ async function submitConfig(ctx: CommandContext): Promise<void> {
       showToolCalls,
       maxConcurrentRuns,
       runIdleTimeoutMinutes,
+      effort,
       requireMentionInGroup,
       // Empty arrays serialize fine but read identically to omitted ones
       // (isUserAllowed / isAdmin both treat length===0 as unrestricted).
@@ -1065,6 +1200,7 @@ async function submitConfig(ctx: CommandContext): Promise<void> {
       showToolCalls,
       maxConcurrentRuns,
       runIdleTimeoutMinutes,
+      effort,
       requireMentionInGroup,
       allowedUsersCount: allowedUsers.length,
       allowedChatsCount: allowedChats.length,
@@ -1079,6 +1215,7 @@ async function submitConfig(ctx: CommandContext): Promise<void> {
         showToolCalls,
         maxConcurrentRuns,
         runIdleTimeoutMinutes,
+        effort,
         requireMentionInGroup,
         allowedUsers: allowedUsers.join(', '),
         allowedChats: allowedChats.join(', '),

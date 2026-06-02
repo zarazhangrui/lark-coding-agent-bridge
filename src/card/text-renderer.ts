@@ -1,6 +1,9 @@
 import type { Block, RunState, ToolEntry } from './run-state';
 import { toolHeaderText } from './tool-render';
 
+export const EMPTY_AGENT_OUTPUT_TEXT =
+  '⚠️ Claude 本轮没有返回可见文本。bridge 已收到你的消息,可以直接重发或发 `/reset` 开新会话后重试。';
+
 /**
  * Render `RunState` as plain markdown text — used in `messageReply: 'text'`
  * mode where we stream a markdown message instead of a card.
@@ -26,6 +29,8 @@ export function renderText(state: RunState): string {
     parts.push(`_⏱ ${mins} 分钟无响应,已自动终止_`);
   } else if (state.terminal === 'error' && state.errorMsg) {
     parts.push(`⚠️ agent 失败:${state.errorMsg}`);
+  } else if (state.terminal === 'done' && parts.length === 0) {
+    parts.push(EMPTY_AGENT_OUTPUT_TEXT);
   } else if (state.terminal === 'running' && state.footer) {
     parts.push(footerLine(state.footer));
   }

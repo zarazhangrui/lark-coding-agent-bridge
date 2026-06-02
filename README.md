@@ -81,7 +81,7 @@ Daemon logs go to `~/.lark-channel/logs/daemon-stdout.log` and `daemon-stderr.lo
 
 | Command | Effect |
 |---|---|
-| `/new`, `/reset` | Clear the current chat's session |
+| `/new [effort]`, `/reset [effort]` | Clear the current chat's session; `/new low` starts fresh with low reasoning |
 | `/cd <path>` | Switch working directory (resets session) |
 | `/ws list` | List named workspaces (card + buttons) |
 | `/ws save <name>` | Save current cwd as a named workspace |
@@ -90,6 +90,7 @@ Daemon logs go to `~/.lark-channel/logs/daemon-stdout.log` and `daemon-stderr.lo
 | `/status` | Current cwd / session / agent (card + buttons) |
 | `/config` | Adjust preferences (reply style, tool-call display, ...) |
 | `/stop` | Stop the run in progress (also the `⏹` button on the card) |
+| `/effort [low\|medium\|high\|xhigh\|max\|default]` | Claude Code reasoning effort for the current session. `extra high` maps to `xhigh`; `ultra` maps to `max`. |
 | `/timeout [N\|off\|default]` | Idle-watchdog (minutes) for the current session. `/config` sets the global default. See FAQ below. |
 | `/ps` | List all `start` processes on this host, marking the one replying |
 | `/exit <id\|#>` | Stop a `start` process (your own → graceful; another's → SIGTERM) |
@@ -105,7 +106,7 @@ Daemon logs go to `~/.lark-channel/logs/daemon-stdout.log` and `daemon-stderr.lo
 | Path | Content |
 |---|---|
 | `~/.lark-channel/config.json` | App credentials (App ID / Secret), mode 600 |
-| `~/.lark-channel/sessions.json` | Claude session id + cwd per chat / topic (+ optional `/timeout` override) |
+| `~/.lark-channel/sessions.json` | Claude session id + cwd per chat / topic (+ optional `/timeout` / `/effort` override) |
 | `~/.lark-channel/workspaces.json` | Named-workspace map |
 | `~/.lark-channel/processes.json` | Process registry for live `start` instances (used by `ps`/`stop`); dead PIDs are auto-pruned |
 | `~/.lark-channel/media/<chatId>/` | Downloaded images / files, cleaned up after 24h |

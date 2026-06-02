@@ -81,7 +81,7 @@ daemon 的 stdout / stderr 写到 `~/.lark-channel/logs/daemon-stdout.log` 和 `
 
 | 命令 | 作用 |
 |---|---|
-| `/new` `/reset` | 清空当前 chat 的会话 |
+| `/new [effort]` `/reset [effort]` | 清空当前 chat 的会话；可用 `/new low` 新会话同时设低 reasoning |
 | `/cd <path>` | 切换工作目录（会重置 session） |
 | `/ws list` | 列所有命名工作空间（卡片 + 按钮） |
 | `/ws save <name>` | 把当前 cwd 存为命名工作空间 |
@@ -90,6 +90,7 @@ daemon 的 stdout / stderr 写到 `~/.lark-channel/logs/daemon-stdout.log` 和 `
 | `/status` | 当前 cwd / session / agent（卡片 + 按钮） |
 | `/config` | 调整偏好（消息回复方式、工具调用显示等） |
 | `/stop` | 终止当前正在跑的 run（也可点卡片底部 ⏹ 终止 按钮） |
+| `/effort [low\|medium\|high\|xhigh\|max\|default]` | 当前 session 的 Claude Code reasoning effort；`extra high` 会映射为 `xhigh`，`ultra` 会映射为 `max` |
 | `/timeout [N\|off\|default]` | 当前 session 的 idle 探活（分钟）；`/config` 改全局默认。详见下方"常见问题 — Claude 子进程假死" |
 | `/ps` | 列出本机所有 start 进程，标识当前回复的是哪个 |
 | `/exit <id\|#>` | 终止指定 start 进程（自己 = graceful 退出；他人 = SIGTERM） |
@@ -105,7 +106,7 @@ daemon 的 stdout / stderr 写到 `~/.lark-channel/logs/daemon-stdout.log` 和 `
 | 路径 | 内容 |
 |---|---|
 | `~/.lark-channel/config.json` | 应用凭据（App ID / Secret），权限 600 |
-| `~/.lark-channel/sessions.json` | 每个 chat / 话题 的 Claude session id + cwd（+ 可选的 `/timeout` 覆盖） |
+| `~/.lark-channel/sessions.json` | 每个 chat / 话题 的 Claude session id + cwd（+ 可选的 `/timeout` / `/effort` 覆盖） |
 | `~/.lark-channel/workspaces.json` | 工作空间映射 |
 | `~/.lark-channel/processes.json` | 当前在跑的 start 进程注册中心（`ps`/`stop` 用），死进程会被自动清理 |
 | `~/.lark-channel/media/<chatId>/` | 下载的图片 / 文件，24h 自动清理 |
