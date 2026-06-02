@@ -16,4 +16,11 @@ describe('CLI command registration', () => {
     const appSecretOptions = source.match(/--app-secret <secret>/g) ?? [];
     expect(appSecretOptions.length).toBeGreaterThanOrEqual(3);
   });
+
+  it('registers the profile repin command', async () => {
+    const source = await readFile(join(process.cwd(), 'src', 'cli', 'index.ts'), 'utf8');
+
+    expect(source).toMatch(/\.command\(['"]repin <name>['"]\)/);
+    expect(source).toContain('runProfileRepin');
+  });
 });
