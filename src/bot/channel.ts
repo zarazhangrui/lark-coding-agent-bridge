@@ -128,9 +128,13 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
   // so /config bumps take effect for the next run.
   const pool = new ProcessPool(() => getMaxConcurrentRuns(controls.cfg));
 
+  const apiDomain =
+    cfg.accounts.app.tenant === 'lark'
+      ? 'https://open.larksuite.com'
+      : 'https://open.feishu.cn';
   // Apply network-layer overrides (HTTP timeout + proxy from env). Idempotent;
   // safe to call on every startChannel (used by /account change hot-reload too).
-  const netOverrides = configureNetwork();
+  const netOverrides = configureNetwork({ apiHost: apiDomain });
 
   // Resolve the App Secret to plaintext. The config field can be a literal
   // string, a "${VAR}" template, or a {source, id} SecretRef referencing
@@ -307,13 +311,9 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
   // App-level keepalive: 15s probe + wake-up detection + HTTP reachability.
   // Defense-in-depth — the SDK's pingTimeout watchdog handles half-dead WS,
   // this catches anything that the SDK misses (silent state stuck, etc.).
-  const probeDomain =
-    cfg.accounts.app.tenant === 'lark'
-      ? 'https://open.larksuite.com'
-      : 'https://open.feishu.cn';
   const keepalive = startKeepalive({
     channel,
-    domain: probeDomain,
+    domain: apiDomain,
     forceReconnect: () => controls.restart(),
   });
 
