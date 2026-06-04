@@ -143,6 +143,8 @@ If a profile was created with the wrong agent kind, stop or unregister any match
 | `/ws use <name>` | Switch to a named workspace |
 | `/ws remove <name>` | Delete a named workspace |
 | `/resume` | Resume compatible history for the same agent, working directory, and permission mode |
+| `/model [model-id\|default]` | Set or clear the current chat's model override for the active agent |
+| `/effort [level\|default]` | Set or clear the current chat's effort override. Claude Code uses `--effort` (`low`, `medium`, `high`, `xhigh`, `max`); Codex uses `model_reasoning_effort` (`low`, `medium`, `high`, `xhigh`) |
 | `/status` | Show profile, agent, working directory, session, and run state |
 | `/config` | Adjust presentation preferences and view the access panel |
 | `/invite user @name` | Allow a user to use the bot in DMs |

@@ -50,6 +50,8 @@ describe('IM run flow', () => {
     const workspaceRealpath = await realpath(h.tmp.workspace);
     h.workspaces.setCwd('chat-1', h.tmp.workspace);
     h.sessions.set('chat-1', 'sess-1', workspaceRealpath);
+    h.sessions.setModel('chat-1', 'sonnet');
+    h.sessions.setEffort('chat-1', 'high');
 
     const result = await startRunFlow({
       scopeId: 'chat-1',
@@ -73,6 +75,8 @@ describe('IM run flow', () => {
       runId: 'run-1',
       cwd: workspaceRealpath,
       sessionId: 'sess-1',
+      model: 'sonnet',
+      effort: 'high',
     });
   });
 

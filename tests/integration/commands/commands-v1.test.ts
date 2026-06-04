@@ -31,6 +31,10 @@ interface Harness {
   run(content: string, overrides?: RunOverrides): Promise<boolean>;
 }
 
+interface HarnessOptions {
+  agentKind?: 'claude' | 'codex';
+}
+
 const cleanups: Array<() => Promise<void>> = [];
 
 describe('Bridge command contracts', () => {
@@ -238,6 +242,76 @@ describe('Bridge command contracts', () => {
     expect(status).toContain(jsonStringFragment(await realpath(h.tmp.workspace)));
   });
 
+  it('sets and clears per-scope model and effort overrides', async () => {
+    const h = await createHarness();
+
+    await expect(h.run('/model sonnet')).resolves.toBe(true);
+    expect(lastMarkdown(h.channel)).toContain('model 已设为 `sonnet`');
+    expect(h.sessions.getModel('chat-1')).toBe('sonnet');
+
+    await expect(h.run('/effort high')).resolves.toBe(true);
+    expect(lastMarkdown(h.channel)).toContain('effort 已设为 `high`');
+    expect(h.sessions.getEffort('chat-1')).toBe('high');
+
+    await expect(h.run('/model')).resolves.toBe(true);
+    expect(lastMarkdown(h.channel)).toContain('`sonnet`');
+
+    await expect(h.run('/effort')).resolves.toBe(true);
+    expect(lastMarkdown(h.channel)).toContain('`high`');
+
+    await expect(h.run('/model default')).resolves.toBe(true);
+    expect(h.sessions.getModel('chat-1')).toBeUndefined();
+
+    await expect(h.run('/effort default')).resolves.toBe(true);
+    expect(h.sessions.getEffort('chat-1')).toBeUndefined();
+  });
+
+  it('uses agent-specific effort levels and help text', async () => {
+    const claude = await createHarness({ agentKind: 'claude' });
+
+    await expect(claude.run('/effort max')).resolves.toBe(true);
+    expect(claude.sessions.getEffort('chat-1')).toBe('max');
+
+    await expect(claude.run('/effort ultracode')).resolves.toBe(true);
+    expect(lastMarkdown(claude.channel)).toContain('不是 Claude Code `--effort` 的合法值');
+    expect(claude.sessions.getEffort('chat-1')).toBe('max');
+
+    await expect(claude.run('/help')).resolves.toBe(true);
+    const claudeHelp = JSON.stringify(lastContent(claude.channel));
+    expect(claudeHelp).toContain('Claude Code 原生 effort');
+    expect(claudeHelp).toContain('--effort');
+    expect(claudeHelp).not.toContain('model_reasoning_effort');
+
+    const codex = await createHarness({ agentKind: 'codex' });
+
+    await expect(codex.run('/effort xhigh')).resolves.toBe(true);
+    expect(codex.sessions.getEffort('chat-1')).toBe('xhigh');
+
+    await expect(codex.run('/effort max')).resolves.toBe(true);
+    expect(lastMarkdown(codex.channel)).toContain('Codex `model_reasoning_effort` 可选值');
+    expect(codex.sessions.getEffort('chat-1')).toBe('xhigh');
+
+    await expect(codex.run('/help')).resolves.toBe(true);
+    const codexHelp = JSON.stringify(lastContent(codex.channel));
+    expect(codexHelp).toContain('model_reasoning_effort');
+    expect(codexHelp).toContain('/effort [low|medium|high|xhigh|default]');
+    expect(codexHelp).not.toContain('/effort [low|medium|high|xhigh|max|default]');
+  });
+
+  it('shows per-scope model and effort overrides in /status', async () => {
+    const h = await createHarness();
+    h.sessions.setModel('chat-1', 'sonnet');
+    h.sessions.setEffort('chat-1', 'high');
+
+    await expect(h.run('/status')).resolves.toBe(true);
+
+    const status = JSON.stringify(lastContent(h.channel));
+    expect(status).toContain('**model**');
+    expect(status).toContain('sonnet');
+    expect(status).toContain('**effort**');
+    expect(status).toContain('high');
+  });
+
   it('shows workspace paths in group-visible /status replies', async () => {
     const h = await createHarness();
 
@@ -313,7 +387,7 @@ describe('Bridge command contracts', () => {
   });
 });
 
-async function createHarness(): Promise<Harness> {
+async function createHarness(options: HarnessOptions = {}): Promise<Harness> {
   const tmp = await createTmpProfile('commands-v1-');
   const channel = createFakeChannel();
   const sessions = new SessionStore(join(tmp.profile, 'sessions.json'));
@@ -321,11 +395,12 @@ async function createHarness(): Promise<Harness> {
   const activeRuns = new ActiveRuns();
   const agent = createFakeAgent();
   const workspaceRealpath = await realpath(tmp.workspace);
-  const profileConfig = appConfig(workspaceRealpath);
+  const agentKind = options.agentKind ?? 'claude';
+  const profileConfig = appConfig(workspaceRealpath, agentKind);
   const configPath = join(tmp.root, 'config.json');
-  await saveRootConfig(createRootConfig('claude', profileConfig), configPath);
+  await saveRootConfig(createRootConfig(agentKind, profileConfig), configPath);
   const controls = {
-    profile: 'claude',
+    profile: agentKind,
     profileConfig,
     botOwnerId: 'ou-owner',
     ownerRefreshState: 'ok',
@@ -368,13 +443,14 @@ async function createHarness(): Promise<Harness> {
   return { tmp, channel, sessions, workspaces, activeRuns, agent, controls, run };
 }
 
-function appConfig(defaultWorkspace: string): ProfileConfig {
+function appConfig(defaultWorkspace: string, agentKind: 'claude' | 'codex' = 'claude'): ProfileConfig {
   const config = createDefaultProfileConfig({
-    agentKind: 'claude',
+    agentKind,
     accounts: { app: { id: 'app-id', secret: 'secret', tenant: 'feishu' } },
     access: { admins: ['ou-admin'] },
     sandbox: { defaultMode: 'read-only', maxMode: 'workspace-write' },
     preferences: { maxConcurrentRuns: 2 },
+    ...(agentKind === 'codex' ? { codex: { binaryPath: 'codex' } } : {}),
   });
   config.workspaces.default = defaultWorkspace;
   return config;

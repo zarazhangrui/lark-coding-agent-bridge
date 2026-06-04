@@ -147,7 +147,7 @@ describe('CodexAdapter process contract', () => {
     expect(record.env.CODEX_HOME).toBeUndefined();
   });
 
-  it('passes image paths and resume thread through the Codex argv contract', async () => {
+  it('passes image paths, resume thread, model, and effort through the Codex argv contract', async () => {
     const fake = await createFakeCodex({
       lines: [{ type: 'turn.completed' }],
     });
@@ -164,6 +164,8 @@ describe('CodexAdapter process contract', () => {
       prompt: 'continue',
       cwd,
       threadId: 'thread-old',
+      model: 'gpt-5.5',
+      effort: 'xhigh',
       images: [image],
     });
 
@@ -176,6 +178,8 @@ describe('CodexAdapter process contract', () => {
         cwd,
         sandbox: 'workspace-write',
         threadId: 'thread-old',
+        model: 'gpt-5.5',
+        effort: 'xhigh',
         images: [image],
       }),
     );

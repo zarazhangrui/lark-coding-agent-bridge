@@ -34,6 +34,7 @@ export interface AgentRunOptions {
   sessionId?: string;
   threadId?: string;
   model?: string;
+  effort?: string;
   images?: readonly string[];
   sandbox?: CodexSandboxMode;
   permissionMode?: ClaudePermissionMode;

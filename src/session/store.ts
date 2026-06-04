@@ -14,6 +14,10 @@ export interface SessionEntry {
    * scope, undefined = follow global default. Session resets preserve this
    * scope preference while removing the resumable session id/cwd. */
   idleTimeoutMinutes?: number;
+  /** Per-scope model override passed to the local CLI on the next run. */
+  model?: string;
+  /** Per-scope effort override passed to the local CLI on the next run. */
+  effort?: string;
 }
 
 type SessionMap = Record<string, SessionEntry>;
@@ -43,13 +47,23 @@ export class SessionStore {
         const cwd = typeof entry.cwd === 'string' ? entry.cwd : undefined;
         const idleTimeoutMinutes =
           typeof entry.idleTimeoutMinutes === 'number' ? entry.idleTimeoutMinutes : undefined;
+        const model = typeof entry.model === 'string' && entry.model.trim()
+          ? entry.model.trim()
+          : undefined;
+        const effort = typeof entry.effort === 'string' && entry.effort.trim()
+          ? entry.effort.trim()
+          : undefined;
         const hasSession = sessionId !== undefined && cwd !== undefined;
-        if (!hasSession && idleTimeoutMinutes === undefined) continue;
+        if (!hasSession && idleTimeoutMinutes === undefined && model === undefined && effort === undefined) {
+          continue;
+        }
         this.data[chatId] = {
           ...(sessionId !== undefined ? { sessionId } : {}),
           ...(cwd !== undefined ? { cwd } : {}),
           updatedAt: entry.updatedAt,
           ...(idleTimeoutMinutes !== undefined ? { idleTimeoutMinutes } : {}),
+          ...(model !== undefined ? { model } : {}),
+          ...(effort !== undefined ? { effort } : {}),
         };
       }
     } catch (err) {
@@ -85,6 +99,8 @@ export class SessionStore {
       ...(prev?.idleTimeoutMinutes !== undefined
         ? { idleTimeoutMinutes: prev.idleTimeoutMinutes }
         : {}),
+      ...(prev?.model !== undefined ? { model: prev.model } : {}),
+      ...(prev?.effort !== undefined ? { effort: prev.effort } : {}),
     };
     this.schedulePersist();
   }
@@ -92,15 +108,79 @@ export class SessionStore {
   clear(chatId: string): void {
     const prev = this.data[chatId];
     if (!prev) return;
-    if (prev.idleTimeoutMinutes !== undefined) {
+    if (
+      prev.idleTimeoutMinutes !== undefined ||
+      prev.model !== undefined ||
+      prev.effort !== undefined
+    ) {
       this.data[chatId] = {
-        idleTimeoutMinutes: prev.idleTimeoutMinutes,
         updatedAt: Date.now(),
+        ...(prev.idleTimeoutMinutes !== undefined ? { idleTimeoutMinutes: prev.idleTimeoutMinutes } : {}),
+        ...(prev.model !== undefined ? { model: prev.model } : {}),
+        ...(prev.effort !== undefined ? { effort: prev.effort } : {}),
       };
     } else {
       delete this.data[chatId];
     }
     this.schedulePersist();
+  }
+
+  getModel(chatId: string): string | undefined {
+    return this.data[chatId]?.model;
+  }
+
+  setModel(chatId: string, model: string): void {
+    const value = model.trim();
+    if (!value) {
+      this.clearModelOverride(chatId);
+      return;
+    }
+    const prev = this.data[chatId];
+    this.data[chatId] = {
+      ...(prev ?? { updatedAt: Date.now() }),
+      model: value,
+      updatedAt: Date.now(),
+    };
+    this.schedulePersist();
+  }
+
+  clearModelOverride(chatId: string): boolean {
+    const prev = this.data[chatId];
+    if (!prev || prev.model === undefined) return false;
+    const { model: _, ...rest } = prev;
+    this.data[chatId] = { ...rest, updatedAt: Date.now() };
+    this.pruneEmptyPreferenceOnlyEntry(chatId);
+    this.schedulePersist();
+    return true;
+  }
+
+  getEffort(chatId: string): string | undefined {
+    return this.data[chatId]?.effort;
+  }
+
+  setEffort(chatId: string, effort: string): void {
+    const value = effort.trim();
+    if (!value) {
+      this.clearEffortOverride(chatId);
+      return;
+    }
+    const prev = this.data[chatId];
+    this.data[chatId] = {
+      ...(prev ?? { updatedAt: Date.now() }),
+      effort: value,
+      updatedAt: Date.now(),
+    };
+    this.schedulePersist();
+  }
+
+  clearEffortOverride(chatId: string): boolean {
+    const prev = this.data[chatId];
+    if (!prev || prev.effort === undefined) return false;
+    const { effort: _, ...rest } = prev;
+    this.data[chatId] = { ...rest, updatedAt: Date.now() };
+    this.pruneEmptyPreferenceOnlyEntry(chatId);
+    this.schedulePersist();
+    return true;
   }
 
   /** Per-scope idle-timeout override. `undefined` means no override set. */
@@ -126,6 +206,7 @@ export class SessionStore {
     if (!prev || prev.idleTimeoutMinutes === undefined) return false;
     const { idleTimeoutMinutes: _, ...rest } = prev;
     this.data[chatId] = { ...rest, updatedAt: Date.now() };
+    this.pruneEmptyPreferenceOnlyEntry(chatId);
     this.schedulePersist();
     return true;
   }
@@ -144,5 +225,19 @@ export class SessionStore {
       .catch((err: unknown) => {
         log.fail('session', err, { step: 'persist' });
       });
+  }
+
+  private pruneEmptyPreferenceOnlyEntry(chatId: string): void {
+    const entry = this.data[chatId];
+    if (!entry) return;
+    if (
+      entry.sessionId === undefined &&
+      entry.cwd === undefined &&
+      entry.idleTimeoutMinutes === undefined &&
+      entry.model === undefined &&
+      entry.effort === undefined
+    ) {
+      delete this.data[chatId];
+    }
   }
 }

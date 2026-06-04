@@ -152,6 +152,8 @@ const handlers: Record<string, Handler> = {
   '/cd': handleCd,
   '/ws': handleWs,
   '/resume': handleResume,
+  '/model': handleModel,
+  '/effort': handleEffort,
   '/status': handleStatus,
   '/help': handleHelp,
   '/account': handleAccount,
@@ -300,6 +302,11 @@ async function handleNew(args: string, ctx: CommandContext): Promise<void> {
     return handleNewChat(rawName, ctx);
   }
 
+  const wasRunning = resetCurrentScopeSession(ctx);
+  await reply(ctx, wasRunning ? '已中断当前任务并开始新会话。' : '已开始新会话。');
+}
+
+function resetCurrentScopeSession(ctx: CommandContext): boolean {
   const wasRunning = ctx.activeRuns.interrupt(ctx.scope);
   if (ctx.sessionCatalog && ctx.sessionCatalogIdentity) {
     ctx.sessionCatalog.archiveActive({
@@ -308,7 +315,7 @@ async function handleNew(args: string, ctx: CommandContext): Promise<void> {
     });
   }
   ctx.sessions.clear(ctx.scope);
-  await reply(ctx, wasRunning ? '已中断当前任务并开始新会话。' : '已开始新会话。');
+  return wasRunning;
 }
 
 async function handleNewChat(rawName: string, ctx: CommandContext): Promise<void> {
@@ -348,6 +355,87 @@ async function handleNewChat(rawName: string, ctx: CommandContext): Promise<void
     ctx,
     `✓ 已创建群 **${created.name}**，去新群里继续。`,
   );
+}
+
+const MODEL_ARG_RE = /^[A-Za-z0-9][A-Za-z0-9._:@/+,-]*$/;
+const CLAUDE_EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
+const CODEX_EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh'] as const;
+const CLEAR_SETTING_ARGS = new Set(['default', 'reset', 'clear', 'off']);
+
+async function handleModel(args: string, ctx: CommandContext): Promise<void> {
+  const input = args.trim();
+  const current = ctx.sessions.getModel(ctx.scope);
+  if (!input) {
+    await reply(
+      ctx,
+      `当前 model：${current ? `\`${current}\`` : '(默认)'}\n用法：\`/model <model-id>\` 或 \`/model default\`。`,
+    );
+    return;
+  }
+  const normalized = input.toLowerCase();
+  if (CLEAR_SETTING_ARGS.has(normalized)) {
+    const changed = ctx.sessions.clearModelOverride(ctx.scope);
+    if (changed) resetCurrentScopeSession(ctx);
+    await reply(ctx, changed ? '✓ 已清除当前会话的 model 覆盖，并开始新会话。' : '当前会话没有 model 覆盖。');
+    return;
+  }
+  if (!MODEL_ARG_RE.test(input)) {
+    await reply(ctx, 'model 只能包含字母、数字、`.`、`-`、`_`、`:`、`/`、`@`、`+`、`,`。');
+    return;
+  }
+  ctx.sessions.setModel(ctx.scope, input);
+  resetCurrentScopeSession(ctx);
+  await reply(ctx, `✓ 当前会话 model 已设为 \`${input}\`，下一条消息会用新模型启动。`);
+}
+
+async function handleEffort(args: string, ctx: CommandContext): Promise<void> {
+  const input = args.trim().toLowerCase();
+  const current = ctx.sessions.getEffort(ctx.scope);
+  const backend = effortBackendDescription(ctx);
+  const usage = effortUsage(ctx);
+  if (!input) {
+    await reply(
+      ctx,
+      `当前 effort：${current ? `\`${current}\`` : '(默认)'}\n用法：${usage}。\n当前后端：${backend}。`,
+    );
+    return;
+  }
+  if (CLEAR_SETTING_ARGS.has(input)) {
+    const changed = ctx.sessions.clearEffortOverride(ctx.scope);
+    if (changed) resetCurrentScopeSession(ctx);
+    await reply(ctx, changed ? '✓ 已清除当前会话的 effort 覆盖，并开始新会话。' : '当前会话没有 effort 覆盖。');
+    return;
+  }
+  if (!effortLevels(ctx).includes(input)) {
+    const note = ctx.controls.profileConfig.agentKind === 'claude' && input === 'ultracode'
+      ? '\n`ultracode` 是 xhigh + workflows 的组合模式，不是 Claude Code `--effort` 的合法值。'
+      : '';
+    await reply(ctx, `${backend} 可选值：${formatEffortLevels(ctx)}。${note}`);
+    return;
+  }
+  ctx.sessions.setEffort(ctx.scope, input);
+  resetCurrentScopeSession(ctx);
+  await reply(ctx, `✓ 当前会话 effort 已设为 \`${input}\`（${backend}），下一条消息会用新设置启动。`);
+}
+
+function effortLevels(ctx: CommandContext): readonly string[] {
+  return ctx.controls.profileConfig.agentKind === 'codex'
+    ? CODEX_EFFORT_LEVELS
+    : CLAUDE_EFFORT_LEVELS;
+}
+
+function formatEffortLevels(ctx: CommandContext): string {
+  return effortLevels(ctx).map((level) => `\`${level}\``).join('、');
+}
+
+function effortUsage(ctx: CommandContext): string {
+  return `\`/effort ${effortLevels(ctx).join('|')}\` 或 \`/effort default\``;
+}
+
+function effortBackendDescription(ctx: CommandContext): string {
+  return ctx.controls.profileConfig.agentKind === 'codex'
+    ? 'Codex `model_reasoning_effort`'
+    : 'Claude Code `--effort`';
 }
 
 async function handleCd(args: string, ctx: CommandContext): Promise<void> {
@@ -761,6 +849,8 @@ async function handleStatus(_args: string, ctx: CommandContext): Promise<void> {
     emptySessionText: isCodex ? '(未建立)' : undefined,
     sessionStale: !isCodex && Boolean(cwd && sess && sess.cwd !== cwd),
     agentName: ctx.agent.displayName,
+    model: ctx.sessions.getModel(ctx.scope),
+    effort: ctx.sessions.getEffort(ctx.scope),
     runtimeAccess: runtimeAccessStatus(ctx.controls.profileConfig),
     activeRun: Boolean(ctx.activeRuns.get(ctx.scope)),
     activeCommentScopes: ctx.activeRuns.scopes().filter((scope) => scope.startsWith('comment:')),
@@ -1272,7 +1362,7 @@ function formatDoctorEchoStatus(echoText: string, state: RunState): string {
 }
 
 async function handleHelp(_args: string, ctx: CommandContext): Promise<void> {
-  const card = helpCard(ctx.agent.displayName);
+  const card = helpCard(ctx.agent.displayName, ctx.controls.profileConfig.agentKind);
   await ctx.channel.send(ctx.msg.chatId, { card }, { replyTo: ctx.msg.messageId });
 }
 

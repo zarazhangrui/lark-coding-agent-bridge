@@ -4,6 +4,8 @@ export interface BuildCodexArgsInput {
   cwd: string;
   sandbox: SandboxMode;
   threadId?: string;
+  model?: string;
+  effort?: string;
   images?: readonly string[];
   ignoreUserConfig?: boolean;
   ignoreRules?: boolean;
@@ -27,6 +29,10 @@ export function buildCodexArgs(input: BuildCodexArgsInput): string[] {
     'shell_environment_policy.inherit="all"',
     ...(input.ignoreUserConfig === true ? ['--ignore-user-config'] : []),
     ...(input.ignoreRules === false ? [] : ['--ignore-rules']),
+    ...(input.model ? ['--model', input.model] : []),
+    ...(input.effort
+      ? ['-c', `model_reasoning_effort=${tomlString(input.effort)}`]
+      : []),
     '--skip-git-repo-check',
     '-C',
     input.cwd,
@@ -54,4 +60,8 @@ export function buildCodexArgs(input: BuildCodexArgsInput): string[] {
     ...(imageFlags.length > 0 ? ['--'] : []),
     '-',
   ];
+}
+
+function tomlString(value: string): string {
+  return JSON.stringify(value);
 }

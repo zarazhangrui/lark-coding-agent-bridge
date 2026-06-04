@@ -68,6 +68,8 @@ export interface StatusInfo {
   emptySessionText?: string;
   sessionStale: boolean;
   agentName: string;
+  model?: string;
+  effort?: string;
   runtimeAccess: {
     label: string;
     value: string;
@@ -102,6 +104,8 @@ export function statusCard(info: StatusInfo): object {
     `📁 **cwd**: ${cwdLine}`,
     `🔗 **session**: ${sessionLine}`,
     `🤖 **agent**: ${escapeMd(info.agentName)}`,
+    `🧠 **model**: ${info.model ? `\`${escapeCode(info.model)}\`` : '(默认)'}`,
+    `⚙️ **effort**: ${info.effort ? `\`${escapeCode(info.effort)}\`` : '(默认)'}`,
     `🛡 **${escapeMd(info.runtimeAccess.label)}**: ${escapeMd(info.runtimeAccess.value)}`,
     `🏃 **active run**: ${info.activeRun ? 'yes' : 'no'}`,
     ...(info.activeCommentScopes && info.activeCommentScopes.length > 0
@@ -169,8 +173,14 @@ export function resumeCard(cwd: string, entries: ResumeEntry[]): object {
   return shell('🔁 恢复历史会话', elements);
 }
 
-export function helpCard(agentName = 'Agent'): object {
+export function helpCard(agentName = 'Agent', agentKind: 'claude' | 'codex' = 'claude'): object {
   const escapedAgentName = escapeMd(agentName);
+  const modelLine = agentKind === 'codex'
+    ? '- `/model [model-id|default]` — 当前 chat 的 Codex 模型覆盖（传给 `--model`）'
+    : '- `/model [model-id|default]` — 当前 chat 的 Claude 模型覆盖（传给 `--model`）';
+  const effortLine = agentKind === 'codex'
+    ? '- `/effort [low|medium|high|xhigh|default]` — 当前 chat 的 Codex 推理投入覆盖（写入 `model_reasoning_effort`）'
+    : '- `/effort [low|medium|high|xhigh|max|default]` — 当前 chat 的 Claude Code 原生 effort 覆盖（传给 `--effort`）';
   return shell('💡 使用帮助', [
     divMd(
       [
@@ -179,6 +189,8 @@ export function helpCard(agentName = 'Agent'): object {
         '- `/new` `/reset` — 清空当前 chat 的会话',
         '- `/new chat [name]` — 新建群+新会话，自动拉你进群',
         '- `/resume [N]` — 列出并恢复历史会话（最多 N 条）',
+        modelLine,
+        effortLine,
         '- `/cd <path>` — 切换工作目录（会重置 session）',
         '- `/ws list|save <name>|use <name>|remove <name>` — 工作目录',
         '- `/account` — 查看当前应用；`/account change` 换 appId/secret 并重连',

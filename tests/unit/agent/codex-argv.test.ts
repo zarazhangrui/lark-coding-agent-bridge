@@ -118,4 +118,32 @@ describe('Codex argv contract', () => {
     ).toContain('--ignore-user-config');
   });
 
+  it('passes model and effort overrides as Codex CLI flags', () => {
+    expect(
+      buildCodexArgs({
+        cwd: '/repo',
+        sandbox: 'danger-full-access',
+        model: 'gpt-5.5',
+        effort: 'xhigh',
+      }),
+    ).toEqual([
+      'exec',
+      '--json',
+      '--sandbox',
+      'danger-full-access',
+      '-c',
+      'approval_policy="never"',
+      '-c',
+      'shell_environment_policy.inherit="all"',
+      '--ignore-rules',
+      '--model',
+      'gpt-5.5',
+      '-c',
+      'model_reasoning_effort="xhigh"',
+      '--skip-git-repo-check',
+      '-C',
+      '/repo',
+      '-',
+    ]);
+  });
 });

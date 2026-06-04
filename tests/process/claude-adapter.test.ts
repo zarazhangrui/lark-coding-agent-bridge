@@ -100,7 +100,7 @@ describe('ClaudeAdapter process contract', () => {
     });
   });
 
-  it('passes resume and model after the base CLI contract', async () => {
+  it('passes resume, model, and effort after the base CLI contract', async () => {
     const fake = await createFakeClaude({
       lines: [{ type: 'result', session_id: 'sess-resumed' }],
     });
@@ -112,6 +112,7 @@ describe('ClaudeAdapter process contract', () => {
       cwd: fake.dir,
       sessionId: 'sess-old',
       model: 'sonnet',
+      effort: 'high',
     });
 
     expect(await collect(run.events)).toEqual([
@@ -119,7 +120,14 @@ describe('ClaudeAdapter process contract', () => {
     ]);
     const record = await readRecord(fake.recordPath);
 
-    expect(record.argv.slice(-4)).toEqual(['--resume', 'sess-old', '--model', 'sonnet']);
+    expect(record.argv.slice(-6)).toEqual([
+      '--resume',
+      'sess-old',
+      '--model',
+      'sonnet',
+      '--effort',
+      'high',
+    ]);
     expect(record.argv[6]).toBe('bypassPermissions');
   });
 
