@@ -83,6 +83,46 @@ describe('Claude stream-json translator', () => {
     expect([...translateEvent({ type: 'result', session_id: 'sess-2' })][0]).not.toHaveProperty('threadId');
   });
 
+  it('emits an error (not done) when a result reports is_error', () => {
+    expect([
+      ...translateEvent({
+        type: 'result',
+        subtype: 'success',
+        is_error: true,
+        api_error_status: 403,
+        result: 'Failed to authenticate. API Error: 403 Request not allowed',
+        session_id: 'sess-403',
+        usage: { input_tokens: 0, output_tokens: 0 },
+      }),
+    ]).toEqual([
+      { type: 'usage', inputTokens: 0, outputTokens: 0, cachedInputTokens: undefined, costUsd: undefined },
+      {
+        type: 'error',
+        message: 'Failed to authenticate. API Error: 403 Request not allowed',
+        terminationReason: 'failed',
+      },
+    ]);
+  });
+
+  it('falls back to api_error_status when an errored result has no text', () => {
+    expect([...translateEvent({ type: 'result', is_error: true, api_error_status: 500 })]).toEqual([
+      { type: 'error', message: 'claude API error 500', terminationReason: 'failed' },
+    ]);
+  });
+
+  it('suppresses a synthetic auth-error assistant turn so it is not streamed as a reply', () => {
+    expect([
+      ...translateEvent({
+        type: 'assistant',
+        error: 'authentication_failed',
+        message: {
+          model: '<synthetic>',
+          content: [{ type: 'text', text: 'Failed to authenticate. API Error: 403 Request not allowed' }],
+        },
+      }),
+    ]).toEqual([]);
+  });
+
   it('ignores unknown, empty, and incomplete raw events', () => {
     expect([...translateEvent(null)]).toEqual([]);
     expect([...translateEvent({ type: 'assistant', message: { content: [{ type: 'text', text: '' }] } })]).toEqual([]);

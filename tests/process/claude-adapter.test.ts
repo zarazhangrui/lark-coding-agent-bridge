@@ -209,6 +209,166 @@ describe('ClaudeAdapter process contract', () => {
   });
 });
 
+// How the claude CLI surfaces a 403: a synthetic assistant turn (its only
+// "content" is the error string) followed by a result line with is_error set,
+// then exit 1. Captured from a real `claude -p` run against a 403 endpoint.
+const AUTH_403_SCENARIO = {
+  lines: [
+    { type: 'system', subtype: 'init', session_id: 'sess-fail', model: '<synthetic>' },
+    {
+      type: 'assistant',
+      message: {
+        model: '<synthetic>',
+        content: [{ type: 'text', text: 'Failed to authenticate. API Error: 403 Request not allowed' }],
+      },
+      error: 'authentication_failed',
+    },
+    {
+      type: 'result',
+      subtype: 'success',
+      is_error: true,
+      api_error_status: 403,
+      result: 'Failed to authenticate. API Error: 403 Request not allowed',
+      session_id: 'sess-fail',
+    },
+  ],
+  exitCode: 1,
+};
+
+const SUCCESS_SCENARIO = {
+  lines: [
+    { type: 'system', subtype: 'init', session_id: 'sess-ok', model: 'claude-sonnet' },
+    { type: 'assistant', message: { content: [{ type: 'text', text: 'hello after retry' }] } },
+    {
+      type: 'result',
+      subtype: 'success',
+      is_error: false,
+      session_id: 'sess-ok',
+      usage: { input_tokens: 3, output_tokens: 4 },
+    },
+  ],
+  exitCode: 0,
+};
+
+describe('ClaudeAdapter transient auth/403 retry', () => {
+  const cleanup: string[] = [];
+
+  afterEach(async () => {
+    await Promise.all(
+      cleanup.splice(0).map((dir) =>
+        rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 25 }),
+      ),
+    );
+  });
+
+  it('retries a transient auth/403 failure and streams the next attempt cleanly', async () => {
+    const fake = await createCountingClaude([AUTH_403_SCENARIO, SUCCESS_SCENARIO]);
+    cleanup.push(fake.dir);
+
+    const run = new ClaudeAdapter({ binary: fake.path }).run({
+      runId: 'run-retry',
+      prompt: 'hi',
+      cwd: fake.dir,
+    });
+    const events = await collect(run.events);
+
+    // The 403 must never reach the user — no error, no auth text leaked.
+    expect(events.some((e) => e.type === 'error')).toBe(false);
+    expect(events.some((e) => e.type === 'text' && e.delta.includes('authenticate'))).toBe(false);
+    expect(events.find((e) => e.type === 'text')).toEqual({
+      type: 'text',
+      delta: 'hello after retry',
+    });
+    expect(events.at(-1)).toEqual({ type: 'done', sessionId: 'sess-ok', terminationReason: 'normal' });
+
+    const invocations = await readInvocations(fake.invocationsPath);
+    expect(invocations).toHaveLength(2);
+    // The retry re-runs the caller's request fresh; it must not resume the
+    // failed attempt's throwaway session.
+    expect(invocations[1]!.argv).not.toContain('--resume');
+  }, 15_000);
+
+  it('does not retry a non-auth API error', async () => {
+    const fake = await createCountingClaude([
+      {
+        lines: [
+          { type: 'system', subtype: 'init', session_id: 's', model: 'm' },
+          {
+            type: 'result',
+            subtype: 'success',
+            is_error: true,
+            api_error_status: 500,
+            result: 'API Error: 500 Internal server error',
+            session_id: 's',
+          },
+        ],
+        exitCode: 1,
+      },
+    ]);
+    cleanup.push(fake.dir);
+
+    const events = await collect(
+      new ClaudeAdapter({ binary: fake.path }).run({ runId: 'run-500', prompt: 'hi', cwd: fake.dir })
+        .events,
+    );
+
+    expect(events.find((e) => e.type === 'error')).toMatchObject({
+      type: 'error',
+      message: 'API Error: 500 Internal server error',
+      terminationReason: 'failed',
+    });
+    expect(await readInvocations(fake.invocationsPath)).toHaveLength(1);
+  });
+
+  it('does not retry once real content has streamed, even on an auth error', async () => {
+    const fake = await createCountingClaude([
+      {
+        lines: [
+          { type: 'system', subtype: 'init', session_id: 's', model: 'm' },
+          { type: 'assistant', message: { content: [{ type: 'text', text: 'partial answer' }] } },
+          {
+            type: 'result',
+            subtype: 'success',
+            is_error: true,
+            api_error_status: 403,
+            result: 'Failed to authenticate. API Error: 403 Request not allowed',
+            session_id: 's',
+          },
+        ],
+        exitCode: 1,
+      },
+    ]);
+    cleanup.push(fake.dir);
+
+    const events = await collect(
+      new ClaudeAdapter({ binary: fake.path }).run({ runId: 'run-partial', prompt: 'hi', cwd: fake.dir })
+        .events,
+    );
+
+    expect(events.find((e) => e.type === 'text')).toEqual({ type: 'text', delta: 'partial answer' });
+    expect(events.some((e) => e.type === 'error')).toBe(true);
+    expect(await readInvocations(fake.invocationsPath)).toHaveLength(1);
+  });
+
+  it('surfaces the auth error to the user after exhausting retries', async () => {
+    const fake = await createCountingClaude([AUTH_403_SCENARIO]); // every attempt fails
+    cleanup.push(fake.dir);
+
+    const events = await collect(
+      new ClaudeAdapter({ binary: fake.path }).run({ runId: 'run-exhaust', prompt: 'hi', cwd: fake.dir })
+        .events,
+    );
+
+    expect(events.find((e) => e.type === 'error')).toMatchObject({
+      type: 'error',
+      message: 'Failed to authenticate. API Error: 403 Request not allowed',
+      terminationReason: 'failed',
+    });
+    // 1 initial attempt + MAX_AUTH_RETRIES (3) re-spawns.
+    expect(await readInvocations(fake.invocationsPath)).toHaveLength(4);
+  }, 20_000);
+});
+
 async function collect(events: AsyncIterable<AgentEvent>): Promise<AgentEvent[]> {
   const out: AgentEvent[] = [];
   for await (const event of events) out.push(event);
@@ -273,4 +433,56 @@ async function readRecord(path: string): Promise<{
       LARKSUITE_CLI_CONFIG_DIR?: string;
     };
   };
+}
+
+interface Scenario {
+  lines: unknown[];
+  stderr?: string;
+  exitCode?: number;
+}
+
+// A fake claude that behaves differently on each spawn: invocation N runs
+// scenario N (the last scenario repeats once the list is exhausted), and every
+// spawn appends its argv to a JSONL file so tests can assert how many times —
+// and with what args — claude was re-run.
+async function createCountingClaude(scenarios: Scenario[]): Promise<{
+  path: string;
+  dir: string;
+  invocationsPath: string;
+}> {
+  const dir = await mkdtemp(join(tmpdir(), 'claude-retry-test-'));
+  const path = join(dir, 'fake-claude.mjs');
+  const countPath = join(dir, 'count.json');
+  const invocationsPath = join(dir, 'invocations.jsonl');
+  await writeFile(
+    path,
+    [
+      '#!/usr/bin/env node',
+      'import { readFileSync, writeFileSync, appendFileSync } from "node:fs";',
+      `const countPath = ${JSON.stringify(countPath)};`,
+      `const invocationsPath = ${JSON.stringify(invocationsPath)};`,
+      `const scenarios = ${JSON.stringify(scenarios)};`,
+      'let n = 0;',
+      'try { n = JSON.parse(readFileSync(countPath, "utf8")).n; } catch {}',
+      'n += 1;',
+      'writeFileSync(countPath, JSON.stringify({ n }));',
+      'appendFileSync(invocationsPath, JSON.stringify({ attempt: n, argv: process.argv.slice(2) }) + "\\n");',
+      'const scenario = scenarios[Math.min(n - 1, scenarios.length - 1)];',
+      'for (const line of scenario.lines) console.log(JSON.stringify(line));',
+      'if (scenario.stderr) process.stderr.write(scenario.stderr);',
+      'process.exit(scenario.exitCode ?? 0);',
+    ].join('\n'),
+    'utf8',
+  );
+  await chmod(path, 0o755);
+  return { path, dir, invocationsPath };
+}
+
+async function readInvocations(path: string): Promise<{ attempt: number; argv: string[] }[]> {
+  const raw = await readFile(path, 'utf8');
+  return raw
+    .trim()
+    .split('\n')
+    .filter(Boolean)
+    .map((line) => JSON.parse(line) as { attempt: number; argv: string[] });
 }
