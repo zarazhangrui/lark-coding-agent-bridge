@@ -86,6 +86,7 @@ Daemon logs go to `~/.lark-channel/logs/daemon-stdout.log` and `daemon-stderr.lo
 | Command | Effect |
 |---|---|
 | `/new [effort]`, `/reset [effort]` | Clear the current chat's session; `/new low` starts fresh with low reasoning |
+| `/compact [instructions]` | Run Claude Code `/compact` on the current session, keeping the same session id |
 | `/cd <path>` | Switch working directory (resets session) |
 | `/ws list` | List named workspaces (card + buttons) |
 | `/ws save <name>` | Save current cwd as a named workspace |
@@ -119,6 +120,7 @@ Common flows:
 
 - `/effort low`: keep the current context, but make future runs in this session low effort.
 - `/effort default`: clear the current session override and return to the global default.
+- `/compact`: keep the current session id but ask Claude Code to summarize/compress its context. Add optional instructions when some details must survive compaction, e.g. `/compact keep naming criteria and rejected names`.
 - `/new low`: in the **current chat/topic**, clear the Claude session and start the new session with low effort.
 - `/new`: in the current chat/topic, clear the Claude session without setting effort.
 - `/new chat [name]`: create a new Feishu / Lark group chat. This is distinct from `/new low`; if the source chat already has an `/effort` override, the new group inherits it.
@@ -232,7 +234,7 @@ After a manual edit, **restart the bridge** or send **`/reconnect`** from any al
 
 ## FAQ
 
-**The bot stays silent / Claude never replies.** Usually the `claude` CLI itself is not logged in, or the session points to a cwd that no longer exists. Send `/status` to inspect; `/new` to start a fresh session.
+**The bot stays silent / Claude never replies.** Usually the `claude` CLI itself is not logged in, the session points to a cwd that no longer exists, or the resumed Claude session has grown awkward enough to hang. Send `/status` to inspect; try `/compact` to keep the session while reducing context; use `/new` when you want a fresh session.
 
 **Claude subprocess looks frozen (card stuck on the last frame).** Since 0.1.20 there's an idle watchdog: if Claude emits nothing for N minutes the process is killed and the card is annotated `⏱ N min no response, auto-terminated`. Disabled by default. Enable with `/config` (global, in minutes), or `/timeout 10` to set it on the current session; `/timeout off` disables for the session; `/timeout default` clears the session override.
 
@@ -246,7 +248,7 @@ After a manual edit, **restart the bridge** or send **`/reconnect`** from any al
 
 Key files:
 
-- `src/commands/index.ts`: Feishu slash command handlers, including `/effort`, `/new low`, and `/config`.
+- `src/commands/index.ts`: Feishu slash command handlers, including `/compact`, `/effort`, `/new low`, and `/config`.
 - `src/session/store.ts`: per chat/topic session id, cwd, timeout override, and effort override persistence.
 - `src/bot/channel.ts`: message batching, effective effort resolution, and `agent.run()` invocation.
 - `src/agent/claude/adapter.ts`: spawns `claude -p` with `--model`, `--effort`, `--mcp-config`, and allowed tools.

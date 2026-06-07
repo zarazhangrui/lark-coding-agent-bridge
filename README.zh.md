@@ -86,6 +86,7 @@ daemon 的 stdout / stderr 写到 `~/.lark-channel/logs/daemon-stdout.log` 和 `
 | 命令 | 作用 |
 |---|---|
 | `/new [effort]` `/reset [effort]` | 清空当前 chat 的会话；可用 `/new low` 新会话同时设低 reasoning |
+| `/compact [说明]` | 对当前 Claude session 执行 Claude Code `/compact`，压缩上下文但保留同一个 session id |
 | `/cd <path>` | 切换工作目录（会重置 session） |
 | `/ws list` | 列所有命名工作空间（卡片 + 按钮） |
 | `/ws save <name>` | 把当前 cwd 存为命名工作空间 |
@@ -119,6 +120,7 @@ Claude Code 本机支持的 `--effort` 值是 `low` / `medium` / `high` / `xhigh
 
 - `/effort low`：不清空上下文，只让当前 session 后续 run 用低 effort
 - `/effort default`：清除当前 session 覆盖，回到全局默认
+- `/compact`：不清空 session id，让 Claude Code 压缩当前上下文；可以带说明，例如 `/compact 保留起名偏好和已经否掉的名字`
 - `/new low`：在**当前 chat/topic** 里清空 Claude session，并把新 session 设为低 effort
 - `/new`：在当前 chat/topic 里清空 Claude session，不指定 effort
 - `/new chat [name]`：新建一个飞书群聊。它不是 `/new low`；如果当前 chat 已经有 `/effort` 覆盖，新群会继承这个覆盖
@@ -232,7 +234,7 @@ grep '"event":"enter"' ~/.lark-channel/logs/$(date +%Y-%m-%d).log | tail -5
 
 ## 常见问题
 
-**Claude 挂住不回复**：通常是 `claude` CLI 本身没登录，或者 session 指向了不存在的 cwd。发 `/status` 看当前状态；`/new` 重开会话往往就好。
+**Claude 挂住不回复**：通常是 `claude` CLI 本身没登录、session 指向了不存在的 cwd，或者复用的 Claude session 上下文太大 / 状态不佳。发 `/status` 看当前状态；可以先试 `/compact` 保留 session 并压缩上下文；需要彻底重来再用 `/new`。
 
 **Claude 子进程假死（卡片停在最后一帧不动）**：从 0.1.20 起支持 idle 探活：claude 一段时间没输出就被 SIGTERM kill，卡片末尾会标 "⏱ N 分钟无响应，已自动终止"。默认关闭。开启方式：`/config` 设全局值（分钟），或 `/timeout 10` 只对当前 session 生效；`/timeout off` 关掉某个 session 的探活；`/timeout default` 清掉 session 覆盖回退到全局。
 
@@ -246,7 +248,7 @@ grep '"event":"enter"' ~/.lark-channel/logs/$(date +%Y-%m-%d).log | tail -5
 
 关键文件：
 
-- `src/commands/index.ts`：飞书 slash command handler，`/effort` / `/new low` / `/config` 都在这里
+- `src/commands/index.ts`：飞书 slash command handler，`/compact` / `/effort` / `/new low` / `/config` 都在这里
 - `src/session/store.ts`：每个 chat/topic 的 session id、cwd、timeout override、effort override 持久化
 - `src/bot/channel.ts`：批处理消息、计算最终 effort、调用 `agent.run()`
 - `src/agent/claude/adapter.ts`：spawn `claude -p`，传 `--model` / `--effort` / `--mcp-config` / `--allowed-tools`

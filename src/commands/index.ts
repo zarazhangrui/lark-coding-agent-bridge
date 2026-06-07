@@ -100,6 +100,7 @@ const handlers: Record<string, Handler> = {
   '/config': handleConfig,
   '/stop': handleStop,
   '/effort': handleEffort,
+  '/compact': handleCompact,
   '/timeout': handleTimeout,
   '/ps': handlePs,
   '/exit': handleExit,
@@ -199,6 +200,8 @@ function expandTilde(p: string): string {
 
 const EFFORT_USAGE =
   '用法:`/effort [low|medium|high|xhigh|max|default]` 或 `/new [low|medium|high|xhigh|max]`';
+
+const COMMAND_POST_DONE_EXIT_GRACE_MS = 2000;
 
 function formatEffort(effort: AgentEffort): string {
   switch (effort) {
@@ -448,6 +451,111 @@ async function applyResume(sessionId: string, ctx: CommandContext): Promise<void
     ctx,
     `✓ 已恢复会话 \`${sessionId.slice(0, 8)}…\`。接着发消息就行。`,
   );
+}
+
+async function handleCompact(args: string, ctx: CommandContext): Promise<void> {
+  const cwd = ctx.workspaces.cwdFor(ctx.scope) ?? homedir();
+  const sessionId = ctx.sessions.resumeFor(ctx.scope, cwd);
+  const rawSession = ctx.sessions.getRaw(ctx.scope);
+
+  if (!sessionId) {
+    if (rawSession?.sessionId && rawSession.cwd !== cwd) {
+      await reply(
+        ctx,
+        `当前 session 绑定在旧 cwd：\`${rawSession.cwd ?? '(unknown)'}\`。\n当前 cwd 是：\`${cwd}\`。\n先用 \`/status\` 检查，或 \`/resume\` 选择要恢复的 session。`,
+      );
+      return;
+    }
+    await reply(ctx, '当前 chat 还没有可压缩的 Claude session。先正常发一条消息，或用 `/resume` 恢复历史 session。');
+    return;
+  }
+
+  const wasRunning = ctx.activeRuns.interrupt(ctx.scope);
+  if (wasRunning) {
+    await new Promise((resolve) => setTimeout(resolve, 300));
+  }
+
+  const prompt = args.trim() ? `/compact ${args.trim()}` : '/compact';
+  const effort = ctx.sessions.getEffort(ctx.scope) ?? getAgentEffort(ctx.controls.cfg);
+  log.info('command', 'compact-start', {
+    scope: ctx.scope,
+    sessionId,
+    hasInstructions: args.trim().length > 0,
+    interrupted: wasRunning,
+    effort,
+  });
+
+  const run = ctx.agent.run({
+    prompt,
+    sessionId,
+    cwd,
+    effort,
+    stopGraceMs: getAgentStopGraceMs(ctx.controls.cfg),
+  });
+  const handle = ctx.activeRuns.register(ctx.scope, run);
+
+  try {
+    await ctx.channel.stream(
+      ctx.msg.chatId,
+      {
+        card: {
+          initial: renderCard(initialState),
+          producer: async (ctrl) => {
+            let state: RunState = initialState;
+            const flush = (): Promise<void> => ctrl.update(renderCard(state));
+
+            for await (const evt of handle.run.events) {
+              if (handle.interrupted) break;
+              if (evt.type === 'system') {
+                if (evt.sessionId) {
+                  const effectiveCwd = evt.cwd ?? cwd;
+                  ctx.sessions.set(ctx.scope, evt.sessionId, effectiveCwd);
+                  log.info('session', 'set', {
+                    step: 'compact',
+                    sessionId: evt.sessionId,
+                  });
+                }
+                continue;
+              }
+              if (evt.type === 'usage') {
+                if (evt.costUsd !== undefined) {
+                  log.info('agent', 'usage', {
+                    step: 'compact',
+                    costUsd: Number(evt.costUsd.toFixed(4)),
+                  });
+                }
+                continue;
+              }
+              state = reduce(state, evt);
+              await flush();
+              if (state.terminal !== 'running') break;
+            }
+
+            state = handle.interrupted ? markInterrupted(state) : finalizeIfRunning(state);
+            await flush();
+
+            if (handle.interrupted) {
+              await handle.run.stop();
+            } else {
+              const exited = await handle.run.waitForExit(COMMAND_POST_DONE_EXIT_GRACE_MS);
+              if (!exited) {
+                log.warn('agent', 'post-done-timeout', {
+                  step: 'compact',
+                  graceMs: COMMAND_POST_DONE_EXIT_GRACE_MS,
+                });
+                await handle.run.stop();
+              }
+            }
+          },
+        },
+      },
+      { replyTo: ctx.msg.messageId },
+    );
+  } catch (err) {
+    log.fail('command', err, { step: 'compact' });
+  } finally {
+    ctx.activeRuns.unregister(ctx.scope, run);
+  }
 }
 
 async function handleStatus(_args: string, ctx: CommandContext): Promise<void> {

@@ -100,6 +100,7 @@ export function statusCard(info: StatusInfo): object {
     HR,
     actions([
       { text: '🆕 新会话', value: { cmd: 'new' }, style: 'primary' },
+      { text: '🧹 压缩上下文', value: { cmd: 'compact' } },
       { text: '🔁 恢复会话', value: { cmd: 'resume' } },
       { text: '📂 工作空间', value: { cmd: 'ws.list' } },
       { text: '💡 帮助', value: { cmd: 'help' } },
@@ -155,6 +156,7 @@ export function helpCard(): object {
         '**命令列表**',
         '',
         '- `/new` `/reset` — 清空当前 chat 的会话',
+        '- `/compact [说明]` — 压缩当前 Claude session 的上下文，继续使用同一个 session',
         '- `/new chat [name]` — 新建群+新会话，自动拉你进群',
         '- `/resume [N]` — 列出并恢复历史会话（最多 N 条）',
         '- `/cd <path>` — 切换工作目录（会重置 session）',
@@ -177,6 +179,7 @@ export function helpCard(): object {
     HR,
     actions([
       { text: '📊 状态', value: { cmd: 'status' }, style: 'primary' },
+      { text: '🧹 压缩上下文', value: { cmd: 'compact' } },
       { text: '🔁 恢复会话', value: { cmd: 'resume' } },
       { text: '📂 工作空间', value: { cmd: 'ws.list' } },
       { text: '🆕 新会话', value: { cmd: 'new' } },
