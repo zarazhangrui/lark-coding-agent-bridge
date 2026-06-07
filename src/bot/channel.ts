@@ -503,9 +503,9 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
     log.info('session', 'resume', { sessionId: resumeFrom, cwd });
   } else {
     const stale = sessions.getRaw(scope);
-    if (stale && stale.cwd !== cwd) {
+    if (stale?.sessionId && stale.cwd !== cwd) {
       log.info('session', 'stale-cleared', { staleCwd: stale.cwd, newCwd: cwd });
-      sessions.clear(scope);
+      sessions.clearSession(scope);
     } else {
       log.info('session', 'fresh', { cwd });
     }
@@ -726,6 +726,13 @@ async function processAgentStream(
       state = markInterrupted(state);
     } else {
       state = finalizeIfRunning(state);
+    }
+  }
+  if (state.terminal === 'idle_timeout' && !hasVisibleOutput(state)) {
+    const cleared = sessions.clearSession(scope);
+    if (cleared) {
+      log.warn('session', 'cleared-after-idle-timeout', { scope });
+      await sessions.flush();
     }
   }
   log.info('card', 'final', { terminal: state.terminal, interrupted: handle.interrupted });

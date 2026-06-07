@@ -102,6 +102,22 @@ export class SessionStore {
     this.schedulePersist();
   }
 
+  /** Clear only the resumable Claude session identity, preserving per-scope
+   * preferences such as effort and timeout overrides. */
+  clearSession(chatId: string): boolean {
+    const prev = this.data[chatId];
+    if (!prev || (prev.sessionId === undefined && prev.cwd === undefined)) return false;
+
+    const { sessionId: _sessionId, cwd: _cwd, ...rest } = prev;
+    if (rest.idleTimeoutMinutes === undefined && rest.effort === undefined) {
+      delete this.data[chatId];
+    } else {
+      this.data[chatId] = { ...rest, updatedAt: Date.now() };
+    }
+    this.schedulePersist();
+    return true;
+  }
+
   /** Per-scope idle-timeout override. `undefined` means no override set. */
   getIdleTimeoutMinutes(chatId: string): number | undefined {
     return this.data[chatId]?.idleTimeoutMinutes;

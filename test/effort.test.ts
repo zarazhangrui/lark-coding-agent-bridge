@@ -103,4 +103,36 @@ describe('SessionStore effort override', () => {
     expect(reloaded.getEffort('chat-a')).toBeUndefined();
     expect(reloaded.resumeFor('chat-a', '/tmp/project')).toBe('session-1');
   });
+
+  it('clears session identity without dropping effort override', async () => {
+    const file = await tempSessionFile();
+    const store = new SessionStore(file);
+
+    store.set('chat-a', 'session-1', '/tmp/project');
+    store.setEffort('chat-a', 'medium');
+    expect(store.clearSession('chat-a')).toBe(true);
+    await store.flush();
+
+    const reloaded = new SessionStore(file);
+    await reloaded.load();
+
+    expect(reloaded.resumeFor('chat-a', '/tmp/project')).toBeUndefined();
+    expect(reloaded.getRaw('chat-a')?.sessionId).toBeUndefined();
+    expect(reloaded.getRaw('chat-a')?.cwd).toBeUndefined();
+    expect(reloaded.getEffort('chat-a')).toBe('medium');
+  });
+
+  it('drops the entry when clearing a session without scope preferences', async () => {
+    const file = await tempSessionFile();
+    const store = new SessionStore(file);
+
+    store.set('chat-a', 'session-1', '/tmp/project');
+    expect(store.clearSession('chat-a')).toBe(true);
+    await store.flush();
+
+    const reloaded = new SessionStore(file);
+    await reloaded.load();
+
+    expect(reloaded.getRaw('chat-a')).toBeUndefined();
+  });
 });
