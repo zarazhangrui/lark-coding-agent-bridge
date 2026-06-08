@@ -145,6 +145,7 @@ lark-channel-bridge profile export <name> --include-secrets --yes
 | `/resume` | 恢复同 agent、工作目录、权限模式兼容的历史会话 |
 | `/status` | 查看 profile、agent、工作目录、会话、lark-cli 身份和运行状态 |
 | `/config` | 调整展示偏好、访问控制和 lark-cli 身份策略 |
+| `/receive all\|mention\|auto` | 按群设置当前群是否需要 `@bot`（管理员，仅群聊）。`all` = 消息全回复，`mention` = 必须 @，`auto` = 跟随全局默认，不带参数 = 查看状态 |
 | `/invite user @某人` | 允许用户私聊使用 bot |
 | `/invite admin @某人` | 添加访问控制管理员 |
 | `/invite group` | 允许当前群使用 bot |
@@ -158,7 +159,7 @@ lark-channel-bridge profile export <name> --include-secrets --yes
 | `/doctor [描述]` | 执行低敏诊断 |
 | `/help` | 帮助卡片 |
 
-私聊不需要 @。群和话题群默认必须 `@bot`；`@all` 会被忽略。支持的云文档评论里 @bot 就会触发回复。
+私聊不需要 @。群和话题群默认必须 `@bot`；`@all` 会被忽略。支持的云文档评论里 @bot 就会触发回复。想让某个群不用 @ 就回复每条消息，管理员在该群里发 `/receive all`（`/receive mention` 改回必须 @，`/receive auto` 跟随全局默认）。因为是按群单独设置，你可以让多人群保持默认安静、同时让自己的个人群随便聊都回。在默认安静的群里第一次发 `/receive all` 时，这条命令本身要 `@bot` 才能过 mention 门禁。
 
 ## lark-cli 身份策略
 

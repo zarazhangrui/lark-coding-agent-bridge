@@ -32,7 +32,7 @@ import {
   getAgentStopGraceMs,
   getMaxConcurrentRuns,
   getMessageReplyMode,
-  getRequireMentionInGroup,
+  getRequireMentionForChat,
   getRunIdleTimeoutMs,
   getShowToolCalls,
 } from '../config/schema';
@@ -559,7 +559,7 @@ async function intakeMessage(deps: IntakeDeps): Promise<void> {
   // event reaching here is either targeted or undirected chatter.
   if (
     msg.chatType !== 'p2p' &&
-    getRequireMentionInGroup(controls.cfg) &&
+    getRequireMentionForChat(controls.cfg, msg.chatId) &&
     !msg.mentionedBot
   ) {
     log.info('intake', 'skip-no-mention', { scope, chatType: msg.chatType });

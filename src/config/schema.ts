@@ -126,6 +126,14 @@ export interface AppPreferences {
    * Cloud-doc comments still require @-mention unconditionally.
    */
   requireMentionInGroup?: boolean;
+  /**
+   * Per-chat override of `requireMentionInGroup`, keyed by chat_id. A chat
+   * with an entry here wins over the global default: `true` = quiet unless
+   * @bot, `false` = bot replies to every message in that group. Chats with
+   * no entry follow `requireMentionInGroup`. Managed in-chat via the
+   * `/receive` command (admin-only). p2p is unaffected (always unrestricted).
+   */
+  perChatRequireMention?: Record<string, boolean>;
   /** Access control — user/chat allowlists + admin gating. See AppAccess. */
   access?: AppAccess;
   /**
@@ -226,6 +234,23 @@ export function getRequireMentionInGroup(cfg: AppConfig): boolean {
     return profileAccess.requireMentionInGroup;
   }
   return true;
+}
+
+/**
+ * Per-chat resolution of the group @-mention requirement. A chat with an
+ * explicit entry in `preferences.perChatRequireMention` overrides the global
+ * `getRequireMentionInGroup` default; chats without an entry follow it.
+ * Only meaningful for group/topic chats — p2p is always unrestricted.
+ *
+ * `true`  → that group is quiet unless someone @bot.
+ * `false` → bot replies to every message in that group (no @ needed).
+ */
+export function getRequireMentionForChat(cfg: AppConfig, chatId: string): boolean {
+  const perChat = cfg.preferences?.perChatRequireMention;
+  if (perChat && Object.prototype.hasOwnProperty.call(perChat, chatId)) {
+    return perChat[chatId] !== false;
+  }
+  return getRequireMentionInGroup(cfg);
 }
 
 /**

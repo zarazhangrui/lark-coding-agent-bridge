@@ -20,6 +20,7 @@ import {
   getAgentStopGraceMs,
   getMaxConcurrentRuns,
   getMessageReplyMode,
+  getRequireMentionForChat,
   getRequireMentionInGroup,
   getRunIdleTimeoutMs,
   getShowToolCalls,
@@ -158,6 +159,7 @@ const handlers: Record<string, Handler> = {
   '/help': handleHelp,
   '/account': handleAccount,
   '/config': handleConfig,
+  '/receive': handleReceive,
   '/stop': handleStop,
   '/timeout': handleTimeout,
   '/ps': handlePs,
@@ -177,6 +179,7 @@ const handlers: Record<string, Handler> = {
 const ADMIN_COMMANDS = new Set([
   '/account',
   '/config',
+  '/receive',
   '/ps',
   '/exit',
   '/reconnect',
@@ -2043,6 +2046,109 @@ async function savePreferencesConfig(
         requireMentionInGroup,
       },
       larkCli,
+    };
+    await saveRootConfig(root, ctx.controls.configPath);
+    ctx.controls.profileConfig = root.profiles[ctx.controls.profile]!;
+    ctx.controls.cfg = runtimeProfileConfig(root, ctx.controls.profile);
+  });
+}
+
+// ─── /receive ───────────────────────────────────────────────────────────────
+// Per-chat toggle for the group @-mention requirement. Admin-only (gated by
+// ADMIN_COMMANDS in tryHandleCommand / runCommandHandler). Persisted to
+// preferences.perChatRequireMention so it survives restarts and is scoped to
+// this deployment's own config — no hardcoded paths. Note: in a group that is
+// quiet by default, the enabling `/receive all` itself must @bot to clear the
+// intake mention-gate; once set, subsequent messages need no @.
+async function handleReceive(args: string, ctx: CommandContext): Promise<void> {
+  if (ctx.msg.chatType === 'p2p') {
+    await reply(ctx, 'ℹ️ `/receive` 只对群聊有意义 —— 私聊本来就消息全收。');
+    return;
+  }
+  const chatId = ctx.msg.chatId;
+  const sub = args.trim().toLowerCase();
+  const describe = (mention: boolean): string =>
+    mention ? '必须 @ 才回复' : '本群消息全回复（无需 @）';
+  const usage =
+    '\n\n用法:\n' +
+    '- `/receive all` 本群全回复，无需 @\n' +
+    '- `/receive mention` 本群必须 @ 才回复\n' +
+    '- `/receive auto` 跟随全局默认\n' +
+    '- `/receive` 查看当前状态';
+
+  // /receive | /receive status — show effective value + where it comes from
+  if (sub === '' || sub === 'status') {
+    const globalMention = getRequireMentionInGroup(ctx.controls.cfg);
+    const effective = getRequireMentionForChat(ctx.controls.cfg, chatId);
+    const perChat = ctx.controls.cfg.preferences?.perChatRequireMention;
+    const hasOverride = !!perChat && Object.prototype.hasOwnProperty.call(perChat, chatId);
+    const source = hasOverride
+      ? '本群单独设置'
+      : `跟随全局默认（${describe(globalMention)}）`;
+    await reply(ctx, `📥 本群当前：**${describe(effective)}**\n来源：${source}${usage}`);
+    return;
+  }
+
+  let target: boolean | undefined;
+  if (sub === 'all' || sub === 'off') target = false;
+  else if (sub === 'mention' || sub === 'on') target = true;
+  else if (sub === 'auto' || sub === 'default') target = undefined;
+  else {
+    await reply(ctx, `未知参数 \`${sub}\`。${usage}`);
+    return;
+  }
+
+  await setPerChatRequireMention(ctx, chatId, target);
+  log.info('command', 'receive-set', {
+    chatId,
+    value: target === undefined ? 'auto' : target,
+  });
+
+  if (target === undefined) {
+    const globalMention = getRequireMentionInGroup(ctx.controls.cfg);
+    await reply(ctx, `✅ 本群已恢复跟随全局默认：**${describe(globalMention)}**`);
+    return;
+  }
+  await reply(
+    ctx,
+    `✅ 本群已设为：**${describe(getRequireMentionForChat(ctx.controls.cfg, chatId))}**`,
+  );
+}
+
+/**
+ * Persist a per-chat `requireMentionInGroup` override. `value === undefined`
+ * clears the override (the chat reverts to the global default). Mirrors
+ * savePreferencesConfig's load/lock/save/reload pattern; only the
+ * `perChatRequireMention` map is touched, leaving every other field intact.
+ */
+async function setPerChatRequireMention(
+  ctx: CommandContext,
+  chatId: string,
+  value: boolean | undefined,
+): Promise<void> {
+  await withConfigFileLock(ctx.controls.configPath, async () => {
+    const root = await loadRootConfig(ctx.controls.configPath);
+    if (!root) {
+      const prefs: AppPreferences = { ...(ctx.controls.cfg.preferences ?? {}) };
+      const map = { ...(prefs.perChatRequireMention ?? {}) };
+      if (value === undefined) delete map[chatId];
+      else map[chatId] = value;
+      prefs.perChatRequireMention = map;
+      ctx.controls.cfg.preferences = prefs;
+      await saveConfig(ctx.controls.cfg, ctx.controls.configPath);
+      return;
+    }
+    const profile = root.profiles[ctx.controls.profile];
+    if (!profile) throw new Error(`profile not found: ${ctx.controls.profile}`);
+    const map = { ...(profile.preferences?.perChatRequireMention ?? {}) };
+    if (value === undefined) delete map[chatId];
+    else map[chatId] = value;
+    root.profiles[ctx.controls.profile] = {
+      ...profile,
+      preferences: {
+        ...profile.preferences,
+        perChatRequireMention: map,
+      },
     };
     await saveRootConfig(root, ctx.controls.configPath);
     ctx.controls.profileConfig = root.profiles[ctx.controls.profile]!;

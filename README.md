@@ -145,6 +145,7 @@ If a profile was created with the wrong agent kind, stop or unregister any match
 | `/resume` | Resume compatible history for the same agent, working directory, and permission mode |
 | `/status` | Show profile, agent, working directory, session, lark-cli identity, and run state |
 | `/config` | Adjust presentation preferences, access settings, and lark-cli identity policy |
+| `/receive all\|mention\|auto` | Per-chat: whether the current group needs `@bot` (admin, groups only). `all` = reply to every message, `mention` = require `@`, `auto` = follow the global default, no argument = show status |
 | `/invite user @name` | Allow a user to use the bot in DMs |
 | `/invite admin @name` | Add an access-control admin |
 | `/invite group` | Allow the current group to use the bot |
@@ -158,7 +159,7 @@ If a profile was created with the wrong agent kind, stop or unregister any match
 | `/doctor [description]` | Run low-sensitive diagnostics |
 | `/help` | Help card |
 
-DMs do not require an @ mention. Groups and topic groups require `@bot` by default; `@all` is ignored. Cloud-doc comments in supported document types run when the bot is mentioned.
+DMs do not require an @ mention. Groups and topic groups require `@bot` by default; `@all` is ignored. Cloud-doc comments in supported document types run when the bot is mentioned. To make one specific group reply to every message without an `@`, an admin runs `/receive all` in that group (`/receive mention` reverts it, `/receive auto` follows the global default). Because the change is enabled per chat, you can keep multi-person groups quiet-by-default while letting your own personal groups answer freely. The first `/receive all` in a quiet group must itself `@bot` to get past the mention gate.
 
 ## lark-cli identity policy
 
