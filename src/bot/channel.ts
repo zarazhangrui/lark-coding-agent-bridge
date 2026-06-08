@@ -636,61 +636,6 @@ export function isSmartSilentEval(state: RunState): boolean {
   return normalized === '' || normalized === SMART_SILENT_MARKER.toLowerCase();
 }
 
-/**
- * Streaming replies (markdown / card) render via Feishu's incremental
- * card-element-content API, which does NOT resolve `<at>` mention tags — so an
- * `<at id=ou_xxx>name</at>` the agent writes shows up as raw text and pings
- * nobody (and can't hand off to another bot). Rewrite every `<at>` the agent
- * wrote — any of `id` / `user_id` / `open_id`, quoted or not, with or without
- * inner text — to the canonical post form `<at user_id="ou_xxx"></at>`, which
- * DOES resolve and trigger bots when the text is sent as a post
- * (`channel.send({ markdown })`). Returns the rewritten text and whether any
- * mention was found.
- */
-export function normalizeAtMentions(text: string): { text: string; found: boolean } {
-  let found = false;
-  const out = text.replace(
-    /<at\s+(?:open_id|user_id|id)\s*=\s*["']?(ou_[A-Za-z0-9_-]+)["']?[^>]*>[\s\S]*?<\/at>/g,
-    (_m, openId: string) => {
-      found = true;
-      return `<at user_id="${openId}"></at>`;
-    },
-  );
-  return { text: out, found };
-}
-
-/**
- * Post-process a streamed reply that turned out to contain `<at>` mentions:
- * recall the streamed card (it rendered the tags as raw text and pinged no
- * one), then re-send the same body as a post so the mentions resolve and the
- * targets — including other bots — are actually notified. Best-effort: a recall
- * or re-send failure is logged but never throws into the reply flow.
- */
-async function resendWithResolvedMentions(deps: {
-  channel: LarkChannel;
-  chatId: string;
-  scope: string;
-  streamedMessageId: string | undefined;
-  body: string;
-  sendOpts: { replyTo?: string; replyInThread?: boolean };
-}): Promise<void> {
-  const norm = normalizeAtMentions(deps.body);
-  if (!norm.found || !norm.text.trim()) return;
-  if (deps.streamedMessageId) {
-    await deps.channel.rawClient.im.v1.message
-      .delete({ path: { message_id: deps.streamedMessageId } })
-      .catch((err: unknown) =>
-        log.warn('mention', 'recall-failed', { scope: deps.scope, err: String(err) }),
-      );
-  }
-  await deps.channel
-    .send(deps.chatId, { markdown: norm.text }, deps.sendOpts)
-    .then(() => log.info('flush', 'mention-resend', { scope: deps.scope }))
-    .catch((err: unknown) =>
-      log.fail('mention', err, { scope: deps.scope, step: 'resend' }),
-    );
-}
-
 interface RunBatchDeps {
   channel: LarkChannel;
   executor: RunExecutor;
@@ -937,9 +882,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
         async () => {},
       );
       if (finalState.terminal === 'done' && !isSmartSilentEval(finalState)) {
-        // Already a post send (channel.send markdown), so mentions just need
-        // rewriting to the canonical `<at user_id>` form — no recall needed.
-        const body = normalizeAtMentions(renderText(filterForPrefs(finalState))).text;
+        const body = renderText(filterForPrefs(finalState));
         await channel.send(chatId, { markdown: body }, sendOpts);
         log.info('flush', 'smart-reply', { scope, chars: body.length });
       } else {
@@ -992,15 +935,6 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
           );
         },
       });
-      const cardResult = await streamDone.catch(() => undefined);
-      await resendWithResolvedMentions({
-        channel,
-        chatId,
-        scope,
-        streamedMessageId: (cardResult as { messageId?: string } | undefined)?.messageId,
-        body: renderText(filterForPrefs(latestState)),
-        sendOpts,
-      });
     } else if (replyMode === 'markdown') {
       let latestState: RunState = initialState;
       let producerStarted = false;
@@ -1042,15 +976,6 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
           }
         },
       });
-      const mdResult = await streamDone.catch(() => undefined);
-      await resendWithResolvedMentions({
-        channel,
-        chatId,
-        scope,
-        streamedMessageId: (mdResult as { messageId?: string } | undefined)?.messageId,
-        body: renderText(filterForPrefs(latestState)),
-        sendOpts,
-      });
     } else {
       // text mode: drain the agent stream without sending anything during
       // the run, then post the final rendered text once as a plain markdown
@@ -1063,9 +988,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
         recordSession,
         async () => {},
       );
-      // Already a post send — rewrite any `<at>` to the canonical form so it
-      // resolves (text mode never streamed, so no recall needed).
-      const body = normalizeAtMentions(renderText(filterForPrefs(finalState))).text;
+      const body = renderText(filterForPrefs(finalState));
       if (body.trim()) {
         await channel.send(chatId, { markdown: body }, sendOpts);
       }
