@@ -602,8 +602,9 @@ async function intakeMessage(deps: IntakeDeps): Promise<void> {
 
 /**
  * Sentinel the agent emits in 'smart' mode to decline replying to a message
- * that didn't @-mention it. The message still lands in the session history
- * (so it becomes context for later turns) but nothing is posted to the chat.
+ * that didn't @-mention it. Nothing is posted to the chat (the transient
+ * "Typing" ack reaction is cleared), but the message still lands in the
+ * session history so it becomes context for later turns.
  */
 const SMART_SILENT_MARKER = '[[silent]]';
 
@@ -852,20 +853,26 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
   // For non-card modes Claude's output doesn't surface visually until either
   // a first streamed token (markdown mode) or the whole run ends (text mode).
   // Add a "Typing" reaction to the triggering message as an instant ack, but
-  // never let that outbound API call block agent event draining. A quiet
-  // 'smart' evaluation adds nothing — it must leave no trace if the agent
-  // decides to stay silent.
+  // never let that outbound API call block agent event draining.
+  //
+  // A quiet 'smart' evaluation also adds the reaction (it has no card to show
+  // it's working) so the user sees "TARS saw this and is considering it". The
+  // shared cleanup below removes it once the run ends — whether smart chose to
+  // reply or to stay silent — so a silent eval just flashes the ack and clears.
   const reactionPromise =
-    quietEval || replyMode === 'card'
-      ? undefined
-      : addWorkingReaction(channel, lastMsg.messageId);
+    quietEval
+      ? addWorkingReaction(channel, lastMsg.messageId)
+      : replyMode === 'card'
+        ? undefined
+        : addWorkingReaction(channel, lastMsg.messageId);
 
   try {
     if (quietEval) {
-      // No live UI: drain the run into a buffered RunState, then post only if
-      // the agent chose to chime in. Silence (or any non-clean finish) leaves
-      // the chat untouched; the messages are already in the session via
-      // recordSession, so they still serve as context next time.
+      // No live card: drain the run into a buffered RunState, then post only if
+      // the agent chose to chime in. The "Typing" ack reaction (added above)
+      // is removed by the shared cleanup when the run ends, so a silent eval
+      // just flashes the ack and leaves no message. Either way the messages are
+      // already in the session via recordSession, so they stay as context.
       const finalState = await processAgentStream(
         handle,
         eventStream,
