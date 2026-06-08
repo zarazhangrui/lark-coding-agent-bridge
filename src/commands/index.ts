@@ -2090,7 +2090,7 @@ async function handleReceive(args: string, ctx: CommandContext): Promise<void> {
     '- `/receive all` 本群全回复，无需 @\n' +
     '- `/receive smart` @必回；没 @ 时它自己判断要不要搭话\n' +
     '- `/receive mention` 本群必须 @ 才回复\n' +
-    '- `/receive auto` 跟随全局默认\n' +
+    '- `/receive default` 取消本群单独设置，跟随全局默认\n' +
     '- `/receive` 查看当前状态';
 
   // /receive | /receive status — show effective mode + where it comes from
@@ -2108,15 +2108,15 @@ async function handleReceive(args: string, ctx: CommandContext): Promise<void> {
   let target: ReceiveMode | undefined;
   if (sub === 'all') target = 'all';
   else if (sub === 'smart') target = 'smart';
-  else if (sub === 'mention' || sub === 'on') target = 'mention';
-  else if (sub === 'auto' || sub === 'default') target = undefined;
+  else if (sub === 'mention') target = 'mention';
+  else if (sub === 'default') target = undefined;
   else {
     await reply(ctx, `未知参数 \`${sub}\`。${usage}`);
     return;
   }
 
   await setPerChatReceiveMode(ctx, chatId, target);
-  log.info('command', 'receive-set', { chatId, mode: target ?? 'auto' });
+  log.info('command', 'receive-set', { chatId, mode: target ?? 'default' });
 
   if (target === undefined) {
     await reply(

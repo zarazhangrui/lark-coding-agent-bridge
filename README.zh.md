@@ -145,7 +145,7 @@ lark-channel-bridge profile export <name> --include-secrets --yes
 | `/resume` | 恢复同 agent、工作目录、权限模式兼容的历史会话 |
 | `/status` | 查看 profile、agent、工作目录、会话、lark-cli 身份和运行状态 |
 | `/config` | 调整展示偏好、访问控制和 lark-cli 身份策略 |
-| `/receive all\|smart\|mention\|auto` | 按群设置接收模式（管理员，仅群聊）。`all` = 消息全回复，`smart` = @必回，没 @ 时由 agent 自己判断是否搭话（可以选择不回，不回则不留任何痕迹，但消息仍进上下文），`mention` = 必须 @，`auto` = 跟随全局默认，不带参数 = 查看状态 |
+| `/receive all\|smart\|mention\|default` | 按群设置接收模式（管理员，仅群聊）。`all` = 消息全回复，`smart` = @必回，没 @ 时由 agent 自己判断是否搭话（可以选择不回，不回则不留任何痕迹，但消息仍进上下文），`mention` = 必须 @，`default` = 取消本群单独设置、跟随全局默认，不带参数 = 查看状态 |
 | `/invite user @某人` | 允许用户私聊使用 bot |
 | `/invite admin @某人` | 添加访问控制管理员 |
 | `/invite group` | 允许当前群使用 bot |
@@ -159,7 +159,7 @@ lark-channel-bridge profile export <name> --include-secrets --yes
 | `/doctor [描述]` | 执行低敏诊断 |
 | `/help` | 帮助卡片 |
 
-私聊不需要 @。群和话题群默认必须 `@bot`；`@all` 会被忽略。支持的云文档评论里 @bot 就会触发回复。想改某个群的处理方式，管理员在该群里发 `/receive`：`all` 回复每条消息；`smart` 在被 `@` 时必回，没 @ 时由 agent 自己判断要不要搭话（可以选择不回——不弹卡片、不加表情、什么都不发，但这些没回的消息仍会进入上下文，之后被叫到时它都能看到）；`mention` 改回只在被 @ 时回复；`auto` 跟随全局默认。因为是按群设置，你可以让多人群保持默认安静、同时让自己的个人群随便聊都回、或更像一个群成员。在默认安静的群里第一次发 `/receive all|smart` 时，这条命令本身要 `@bot` 才能过 mention 门禁。注意 `smart` 会对每条没 @ 的消息都跑一次 agent 来做判断，建议只在低频 / 个人群里用。
+私聊不需要 @。群和话题群默认必须 `@bot`；`@all` 会被忽略。支持的云文档评论里 @bot 就会触发回复。想改某个群的处理方式，管理员在该群里发 `/receive`：`all` 回复每条消息；`smart` 在被 `@` 时必回，没 @ 时由 agent 自己判断要不要搭话（可以选择不回——不弹卡片、不加表情、什么都不发，但这些没回的消息仍会进入上下文，之后被叫到时它都能看到）；`mention` 改回只在被 @ 时回复；`default` 取消本群单独设置、跟随全局默认。因为是按群设置，你可以让多人群保持默认安静、同时让自己的个人群随便聊都回、或更像一个群成员。在默认安静的群里第一次发 `/receive all|smart` 时，这条命令本身要 `@bot` 才能过 mention 门禁。注意 `smart` 会对每条没 @ 的消息都跑一次 agent 来做判断，建议只在低频 / 个人群里用。
 
 ## lark-cli 身份策略
 
