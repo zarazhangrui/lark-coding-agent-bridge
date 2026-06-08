@@ -23,6 +23,7 @@ import {
   markIdleTimeout,
   markInterrupted,
   reduce,
+  type Block,
   type RunState,
 } from '../card/run-state';
 import { renderText } from '../card/text-renderer';
@@ -616,11 +617,21 @@ const SMART_EVAL_HINT = [
   '无论你这次是否开口，这些消息都会进入对话上下文，之后被叫到时你都能看到。',
 ].join('\n');
 
-/** True when the agent's rendered answer is the silence sentinel (or empty),
- * i.e. it chose not to chime in. Tolerates surrounding whitespace / backticks
- * / bold so a slightly-formatted marker still counts as silence. */
-function isSmartSilence(body: string): boolean {
-  const normalized = body.trim().replace(/[`*\s]/g, '').toLowerCase();
+/**
+ * True when a smart-mode evaluation chose NOT to chime in: the agent's text
+ * output is empty or just the silence sentinel. Only the agent's TEXT blocks
+ * count — tool-call blocks are deliberately ignored, since `renderText` also
+ * renders tool lines (`> ✅ **Read** — …`) when showToolCalls is on (the
+ * default), so a tool-using-but-silent eval would otherwise look non-silent
+ * and leak the tool trace into the chat. Tolerates surrounding whitespace /
+ * backticks / bold so a slightly-formatted marker still counts as silence.
+ */
+export function isSmartSilentEval(state: RunState): boolean {
+  const text = state.blocks
+    .filter((b): b is Extract<Block, { kind: 'text' }> => b.kind === 'text')
+    .map((b) => b.content)
+    .join('');
+  const normalized = text.replace(/[`*\s]/g, '').toLowerCase();
   return normalized === '' || normalized === SMART_SILENT_MARKER.toLowerCase();
 }
 
@@ -863,8 +874,8 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
         recordSession,
         async () => {},
       );
-      const body = renderText(filterForPrefs(finalState));
-      if (finalState.terminal === 'done' && !isSmartSilence(body)) {
+      if (finalState.terminal === 'done' && !isSmartSilentEval(finalState)) {
+        const body = renderText(filterForPrefs(finalState));
         await channel.send(chatId, { markdown: body }, sendOpts);
         log.info('flush', 'smart-reply', { scope, chars: body.length });
       } else {
