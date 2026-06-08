@@ -15,6 +15,7 @@ For a product walkthrough, see the [Feishu document](https://larkcommunity.feish
 - **Multiple workspaces**: use `/cd` to switch the current project, and `/ws` to save and reuse common project directories.
 - **Images and files**: send them to the bot directly, and the bridge downloads them locally for the agent.
 - **Interactive cards**: `/help`, `/ws list`, and `/status` return cards with clickable buttons.
+- **Fleet management**: `fleet manifest`, `fleet snapshot`, and `fleet status` provide a JSON contract for managing the eight FusionBridge assistants across Mac1/Mac2/Win3/Win4. See [FusionBridge fleet docs](./docs/fusionbridge-fleet.md).
 
 ## Prerequisites
 

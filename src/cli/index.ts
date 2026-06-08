@@ -1,6 +1,7 @@
 import { Command } from 'commander';
 import pkg from '../../package.json';
 import { formatAgentPreflightDiagnostic, getAgentPreflightDiagnostic } from '../agent/preflight';
+import { runFleetManifest, runFleetSnapshot, runFleetStatus } from './commands/fleet';
 import { runMigrate } from './commands/migrate';
 import { runKillCli, runPs } from './commands/ps';
 import {
@@ -132,6 +133,39 @@ profile
       includeSecrets: opts.includeSecrets,
       yes: opts.yes,
     });
+  });
+
+const fleet = program
+  .command('fleet')
+  .description('Manage FusionBridge assistant fleet inventory and status');
+
+fleet
+  .command('manifest')
+  .description('Show the canonical FusionBridge assistant manifest')
+  .option('--manifest <path>', 'path to a fleet manifest JSON file')
+  .option('--json', 'output JSON')
+  .action(async (opts: { manifest?: string; json?: boolean }) => {
+    await runFleetManifest(opts);
+  });
+
+fleet
+  .command('snapshot')
+  .description('Export this machine bridge profiles and process registry state')
+  .option('--root-dir <path>', 'bridge state root (defaults to LARK_CHANNEL_HOME or ~/.lark-channel)')
+  .option('--json', 'output JSON')
+  .action(async (opts: { rootDir?: string; json?: boolean }) => {
+    await runFleetSnapshot(opts);
+  });
+
+fleet
+  .command('status')
+  .description('Compare this machine snapshot with the canonical FusionBridge manifest')
+  .option('--manifest <path>', 'path to a fleet manifest JSON file')
+  .option('--root-dir <path>', 'bridge state root (defaults to LARK_CHANNEL_HOME or ~/.lark-channel)')
+  .option('--snapshots-dir <path>', 'directory containing fleet snapshot JSON files from multiple machines')
+  .option('--json', 'output JSON')
+  .action(async (opts: { manifest?: string; rootDir?: string; snapshotsDir?: string; json?: boolean }) => {
+    await runFleetStatus(opts);
   });
 
 program

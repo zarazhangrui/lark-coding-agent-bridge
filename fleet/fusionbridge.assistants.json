@@ -1,0 +1,140 @@
+{
+  "schemaVersion": 1,
+  "fleetName": "FusionBridge",
+  "repository": "https://github.com/zarazhangrui/lark-coding-agent-bridge",
+  "lastAuditedAt": "2026-06-07T19:00:00.000Z",
+  "machines": [
+    {
+      "id": "mac1",
+      "displayName": "Mac1",
+      "platform": "darwin",
+      "sshHosts": ["air", "fors-macbook-air"],
+      "stateRoot": "/Users/jay520/.lark-channel"
+    },
+    {
+      "id": "mac2",
+      "displayName": "Mac2",
+      "platform": "darwin",
+      "sshHosts": ["mac2", "jinchis-macbook-pro"],
+      "stateRoot": "/Users/jay520/.lark-channel"
+    },
+    {
+      "id": "win3",
+      "displayName": "Win3",
+      "platform": "win32",
+      "sshHosts": ["win3", "windows3"],
+      "stateRoot": "C:\\Users\\1\\.lark-channel"
+    },
+    {
+      "id": "win4",
+      "displayName": "Win4",
+      "platform": "win32",
+      "sshHosts": ["win4", "win-4"],
+      "stateRoot": "C:\\Users\\Admin\\.lark-channel"
+    }
+  ],
+  "assistants": [
+    {
+      "id": "mac1-cc",
+      "machineId": "mac1",
+      "agentKind": "claude",
+      "profileName": "claude",
+      "botName": "Mac1CC Assistant",
+      "appId": "cli_aaae6528f3789bc2",
+      "tenant": "feishu",
+      "sshHost": "air",
+      "feishuLabel": "Claude Code"
+    },
+    {
+      "id": "mac1-cd",
+      "machineId": "mac1",
+      "agentKind": "codex",
+      "profileName": "codex",
+      "botName": "Mac1CD Assistant",
+      "appId": "cli_aaae56d7e7b8dbd8",
+      "tenant": "feishu",
+      "sshHost": "air",
+      "feishuLabel": "Codex"
+    },
+    {
+      "id": "mac2-cc",
+      "machineId": "mac2",
+      "agentKind": "claude",
+      "profileName": "claude",
+      "botName": "Mac2CC Assistant",
+      "appId": "cli_aaae6faf9ef85bb3",
+      "tenant": "feishu",
+      "sshHost": "mac2",
+      "feishuLabel": "Claude Code"
+    },
+    {
+      "id": "mac2-cd",
+      "machineId": "mac2",
+      "agentKind": "codex",
+      "profileName": "codex",
+      "botName": "Mac2CD Assistant",
+      "appId": "cli_aaae56b4cb799be9",
+      "tenant": "feishu",
+      "sshHost": "mac2",
+      "feishuLabel": "Codex"
+    },
+    {
+      "id": "win3-cc",
+      "machineId": "win3",
+      "agentKind": "claude",
+      "profileName": "claude",
+      "botName": "Win3CC Assistant",
+      "appId": "cli_aaae215338f8dbe0",
+      "tenant": "feishu",
+      "sshHost": "win3",
+      "feishuLabel": "Claude Code"
+    },
+    {
+      "id": "win3-cd",
+      "machineId": "win3",
+      "agentKind": "codex",
+      "profileName": "win3-codex",
+      "botName": "Win3CD Assistant",
+      "appId": "cli_aaae67257ff89bc0",
+      "tenant": "feishu",
+      "sshHost": "win3",
+      "feishuLabel": "Codex"
+    },
+    {
+      "id": "win4-cc",
+      "machineId": "win4",
+      "agentKind": "claude",
+      "profileName": "claude",
+      "botName": "Win4CC Assistant",
+      "appId": "cli_aaae69a63678dbe1",
+      "tenant": "feishu",
+      "sshHost": "win4",
+      "feishuLabel": "Claude Code"
+    },
+    {
+      "id": "win4-cd",
+      "machineId": "win4",
+      "agentKind": "codex",
+      "profileName": "codex",
+      "botName": "Win4CD Assistant",
+      "appId": "cli_aaae56a869385bcd",
+      "tenant": "feishu",
+      "sshHost": "win4",
+      "feishuLabel": "Codex"
+    }
+  ],
+  "groups": [
+    {
+      "name": "总作战室",
+      "description": "All FusionBridge assistants plus the general CLI entry."
+    },
+    {
+      "name": "Claude Code 分指挥室",
+      "description": "All Claude Code assistants."
+    },
+    {
+      "name": "Codex 分指挥室",
+      "description": "All Codex assistants."
+    }
+  ]
+}

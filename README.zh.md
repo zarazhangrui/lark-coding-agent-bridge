@@ -15,6 +15,7 @@
 - **多工作空间**：用 `/cd` 切换当前项目，用 `/ws` 保存和复用常用项目目录。
 - **图片 / 文件**：直接发给 bot，bridge 下载到本地后交给本机 agent 处理。
 - **卡片按钮**：`/help`、`/ws list`、`/status` 返回可点击的交互卡片。
+- **Fleet 统一管理**：`fleet manifest`、`fleet snapshot`、`fleet status` 为 Mac1/Mac2/Win3/Win4 的八个 FusionBridge 助手提供统一清单和后台看板 JSON。见 [FusionBridge 八助手统一管理](./docs/fusionbridge-fleet.md)。
 
 ## 前置条件
 

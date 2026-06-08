@@ -24,6 +24,8 @@
   "files": [
     "dist",
     "bin",
+    "docs",
+    "fleet",
     "README.md",
     "README.zh.md",
     "LICENSE"
