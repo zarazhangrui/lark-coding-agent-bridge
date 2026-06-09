@@ -1,4 +1,10 @@
 import type { AgentEvent } from '../agent/types';
+import {
+  emptyThinkingTextFilter,
+  filterThinkingTextDelta,
+  sanitizeThinkingText,
+  type ThinkingTextFilter,
+} from './thinking-text-filter';
 
 export type ToolStatus = 'running' | 'done' | 'error';
 
@@ -26,6 +32,8 @@ export interface RunState {
   /** Set when terminal === 'idle_timeout' — how long claude was idle before
    * the watchdog gave up (so the message can say "N 分钟无响应"). */
   idleTimeoutMinutes?: number;
+  /** Streaming filter for Claude extended-thinking text leaked as `text` events. */
+  textFilter?: ThinkingTextFilter;
 }
 
 export const initialState: RunState = {
@@ -33,33 +41,47 @@ export const initialState: RunState = {
   reasoning: { content: '', active: false },
   footer: 'thinking',
   terminal: 'running',
+  textFilter: emptyThinkingTextFilter(),
 };
 
 function closeStreamingText(blocks: Block[]): Block[] {
   return blocks.map((b) =>
-    b.kind === 'text' && b.streaming ? { ...b, streaming: false } : b,
+    b.kind === 'text'
+      ? { ...b, streaming: false, content: sanitizeThinkingText(b.content) }
+      : b,
   );
+}
+
+function appendVisibleText(state: RunState, delta: string): RunState {
+  const filter = { ...(state.textFilter ?? emptyThinkingTextFilter()) };
+  const { output, clearPriorInBlock } = filterThinkingTextDelta(filter, delta);
+  const base: RunState = { ...state, textFilter: filter };
+  const last = base.blocks[base.blocks.length - 1];
+
+  if (last && last.kind === 'text' && last.streaming) {
+    const content = clearPriorInBlock ? output : last.content + output;
+    return {
+      ...base,
+      blocks: [...base.blocks.slice(0, -1), { ...last, content }],
+      reasoning: { ...base.reasoning, active: false },
+      footer: 'streaming',
+    };
+  }
+
+  if (!output) return base;
+
+  return {
+    ...base,
+    blocks: [...base.blocks, { kind: 'text', content: output, streaming: true }],
+    reasoning: { ...base.reasoning, active: false },
+    footer: 'streaming',
+  };
 }
 
 export function reduce(state: RunState, evt: AgentEvent): RunState {
   switch (evt.type) {
     case 'text': {
-      const last = state.blocks[state.blocks.length - 1];
-      if (last && last.kind === 'text' && last.streaming) {
-        const next: Block = { ...last, content: last.content + evt.delta };
-        return {
-          ...state,
-          blocks: [...state.blocks.slice(0, -1), next],
-          reasoning: { ...state.reasoning, active: false },
-          footer: 'streaming',
-        };
-      }
-      return {
-        ...state,
-        blocks: [...state.blocks, { kind: 'text', content: evt.delta, streaming: true }],
-        reasoning: { ...state.reasoning, active: false },
-        footer: 'streaming',
-      };
+      return appendVisibleText(state, evt.delta);
     }
 
     case 'thinking': {
@@ -82,6 +104,7 @@ export function reduce(state: RunState, evt: AgentEvent): RunState {
         blocks: [...closeStreamingText(state.blocks), { kind: 'tool', tool }],
         reasoning: { ...state.reasoning, active: false },
         footer: 'tool_running',
+        textFilter: emptyThinkingTextFilter(),
       };
     }
 
