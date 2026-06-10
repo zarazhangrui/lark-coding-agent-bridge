@@ -1,4 +1,4 @@
-import type { LarkChannel } from '@larksuiteoapi/node-sdk';
+import type { LarkChannel } from '@larksuite/channel';
 
 export interface CreateBoundChatOptions {
   channel: LarkChannel;
@@ -18,22 +18,12 @@ export interface CreatedChat {
  */
 export async function createBoundChat(opts: CreateBoundChatOptions): Promise<CreatedChat> {
   const { channel, name, inviteOpenId, description } = opts;
-  const result = await channel.rawClient.im.v1.chat.create({
-    data: {
-      name,
-      description,
-      chat_mode: 'group',
-      chat_type: 'private',
-      user_id_list: [inviteOpenId],
-    },
-    params: {
-      user_id_type: 'open_id',
-    },
+  const { chatId } = await channel.createChat({
+    name,
+    description,
+    inviteUserIds: [inviteOpenId],
+    userIdType: 'open_id',
   });
-  const chatId = (result as { data?: { chat_id?: string } }).data?.chat_id;
-  if (!chatId) {
-    throw new Error(`chat.create returned no chat_id: ${JSON.stringify(result).slice(0, 200)}`);
-  }
   return { chatId, name };
 }
 

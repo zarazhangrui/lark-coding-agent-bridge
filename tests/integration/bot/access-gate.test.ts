@@ -2,7 +2,7 @@ import { mkdir, realpath, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import type { CommentEvent, NormalizedMessage } from '@larksuiteoapi/node-sdk';
+import type { CommentEvent, NormalizedMessage } from '@larksuite/channel';
 import { handleCommentMention } from '../../../src/bot/comments';
 import { tryHandleCommand, type CommandContext, type Controls } from '../../../src/commands';
 import { createDefaultProfileConfig, type ProfileConfig } from '../../../src/config/profile-schema';
@@ -13,6 +13,7 @@ import { SessionStore } from '../../../src/session/store';
 import { WorkspaceStore } from '../../../src/workspace/store';
 import { createFakeChannel, type FakeChannel } from '../../helpers/fake-channel';
 import { FakeAgentAdapter } from '../../helpers/fake-agent';
+import { makeFakeCommentSurface } from '../../helpers/fake-comment-surface';
 
 const roots: string[] = [];
 
@@ -71,33 +72,35 @@ describe('unified access gates', () => {
   it('does not apply IM access gates to cloud-doc comment mentions', async () => {
     const root = await makeRoot();
     const calls: string[] = [];
-    const channel = {
-      rawClient: {
-        wiki: {
-          v2: {
-            space: {
-              async getNode() {
-                calls.push('wiki.getNode');
-                return {};
-              },
-            },
-          },
-        },
-        drive: {
-          v1: {
-            fileComment: {
-              async get() {
-                calls.push('fileComment.get');
-                return {};
-              },
-              async list() {
-                calls.push('fileComment.list');
-                return {};
-              },
+    const rawClient = {
+      wiki: {
+        v2: {
+          space: {
+            async getNode() {
+              calls.push('wiki.getNode');
+              return {};
             },
           },
         },
       },
+      drive: {
+        v1: {
+          fileComment: {
+            async get() {
+              calls.push('fileComment.get');
+              return {};
+            },
+            async list() {
+              calls.push('fileComment.list');
+              return {};
+            },
+          },
+        },
+      },
+    };
+    const channel = {
+      rawClient,
+      comments: makeFakeCommentSurface(rawClient),
     };
     const agent = new FakeAgentAdapter({ events: [] });
     const activeRuns = new ActiveRuns();

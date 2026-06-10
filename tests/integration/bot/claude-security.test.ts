@@ -1,4 +1,4 @@
-import type { CardActionEvent } from '@larksuiteoapi/node-sdk';
+import type { CardActionEvent } from '@larksuite/channel';
 import { afterEach, describe, expect, it } from 'vitest';
 import { ActiveRuns } from '../../../src/bot/active-runs.js';
 import type { ChatModeCache } from '../../../src/bot/chat-mode-cache.js';

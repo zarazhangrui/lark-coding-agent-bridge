@@ -1,4 +1,4 @@
-import type { NormalizedMessage } from '@larksuiteoapi/node-sdk';
+import type { NormalizedMessage } from '@larksuite/channel';
 import { log } from '../core/logger';
 
 interface PendingEntry {

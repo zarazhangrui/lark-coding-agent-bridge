@@ -1,4 +1,4 @@
-import type { CardActionEvent, LarkChannel, NormalizedMessage } from '@larksuiteoapi/node-sdk';
+import type { CardActionEvent, LarkChannel, NormalizedMessage } from '@larksuite/channel';
 import type { AgentAdapter } from '../agent/types';
 import type { ActiveRuns } from '../bot/active-runs';
 import type { ChatModeCache } from '../bot/chat-mode-cache';
@@ -164,10 +164,13 @@ async function lookupMessageThreadId(
   messageId: string,
 ): Promise<string | undefined> {
   try {
-    const r = (await channel.rawClient.im.v1.message.get({
-      path: { message_id: messageId },
-    })) as { data?: { items?: { thread_id?: string }[] } };
-    return r?.data?.items?.[0]?.thread_id;
+    // fetchRawMessage returns the raw `im.v1.message.get` items, which carry
+    // `thread_id`. We intentionally avoid channel.fetchMessage() here: its
+    // NormalizedMessage path rebuilds a synthetic raw event without
+    // `thread_id`, so threadId always comes back undefined and topic-group
+    // card clicks would fall back to the plain chatId scope (wrong session).
+    const [parent] = await channel.fetchRawMessage(messageId);
+    return (parent as { thread_id?: string } | undefined)?.thread_id;
   } catch (err) {
     log.warn('cardAction', 'thread-id-lookup-failed', {
       messageId,

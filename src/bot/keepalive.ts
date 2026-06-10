@@ -1,4 +1,4 @@
-import type { LarkChannel } from '@larksuiteoapi/node-sdk';
+import type { LarkChannel } from '@larksuite/channel';
 import { log, reportMetric } from '../core/logger';
 
 /**

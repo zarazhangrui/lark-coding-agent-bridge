@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, isAbsolute } from 'node:path';
-import type { LarkChannel, NormalizedMessage } from '@larksuiteoapi/node-sdk';
+import type { LarkChannel, NormalizedMessage } from '@larksuite/channel';
 import { claudeCapability, codexCapability } from '../agent/capability';
 import type { AgentAdapter } from '../agent/types';
 import type { ActiveRuns } from '../bot/active-runs';
@@ -1230,17 +1230,10 @@ async function handleDoctor(args: string, ctx: CommandContext): Promise<void> {
       // Send a one-shot interactive card by open_id. Lark routes it to the
       // user's p2p chat with the bot (auto-creates it if needed); other
       // group members never see this payload.
-      await ctx.channel.rawClient.im.v1.message.create({
-        params: { receive_id_type: 'open_id' },
-        data: {
-          receive_id: ctx.msg.senderId,
-          msg_type: 'interactive',
-          content: JSON.stringify(
-            renderCard(
-              withDoctorReport(state, doctorReport(formatDoctorEchoStatus(echoText, state))),
-            ),
-          ),
-        },
+      await ctx.channel.send(ctx.msg.senderId, {
+        card: renderCard(
+          withDoctorReport(state, doctorReport(formatDoctorEchoStatus(echoText, state))),
+        ),
       });
     }
   } catch (err) {
@@ -1466,9 +1459,7 @@ async function submitAccount(ctx: CommandContext): Promise<void> {
 
 async function recallMessage(ctx: CommandContext, messageId: string): Promise<void> {
   try {
-    await ctx.channel.rawClient.im.v1.message.delete({
-      path: { message_id: messageId },
-    });
+    await ctx.channel.recallMessage(messageId);
   } catch (err) {
     console.warn('[recall failed]', err);
   }

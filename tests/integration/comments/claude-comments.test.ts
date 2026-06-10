@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { CommentEvent } from '@larksuiteoapi/node-sdk';
+import type { CommentEvent } from '@larksuite/channel';
 import type { AgentEvent } from '../../../src/agent/types.js';
 import { ActiveRuns } from '../../../src/bot/active-runs.js';
 import { handleCommentMention } from '../../../src/bot/comments.js';
@@ -10,6 +10,7 @@ import { SessionCatalog } from '../../../src/session/catalog.js';
 import { SessionStore } from '../../../src/session/store.js';
 import { WorkspaceStore } from '../../../src/workspace/store.js';
 import { FakeAgentAdapter } from '../../helpers/fake-agent.js';
+import { makeFakeCommentSurface } from '../../helpers/fake-comment-surface.js';
 import { createTmpProfile, type TmpProfile } from '../../helpers/tmp-profile.js';
 
 interface RequestRecord {
@@ -20,6 +21,7 @@ interface RequestRecord {
 
 interface FakeCommentChannel {
   requests: RequestRecord[];
+  comments: ReturnType<typeof makeFakeCommentSurface>;
   rawClient: {
     request(input: { method: string; url: string; data?: unknown }): Promise<unknown>;
     wiki: { v2: { space: { getNode(input: unknown): Promise<unknown> } } };
@@ -135,7 +137,7 @@ describe('Claude cloud-doc comment regression', () => {
     expect(warnings.join('\n')).not.toContain('get-fallback-list');
   });
 
-  it('posts whole-document comments as top-level replies without probing in-thread replies', async () => {
+  it('posts whole-document comments as top-level replies without an in-thread probe', async () => {
     const h = await createCommentHarness({
       getResponse: commentGet({ replyId: 'reply-3', question: 'whole doc question', isWhole: true }),
       agentText: '**bold** _italic_ `code`\n- item\n> quote',
@@ -143,6 +145,8 @@ describe('Claude cloud-doc comment regression', () => {
 
     await handleCommentMention(h.deps(event({ replyId: 'reply-3' })));
 
+    // The comment is known to be whole-document, so the bridge passes
+    // `topLevel` and the SDK skips the doomed in-thread probe entirely.
     expect(h.requests.some((request) => request.url.includes('/replies?'))).toBe(false);
     expect(h.inThreadReplies).toEqual([]);
     expect(h.createdTopLevelReplies).toEqual(['bold italic code\nitem\nquote']);
@@ -190,7 +194,6 @@ async function createCommentHarness(options: {
   getResponse?: unknown;
   getErrorCode?: number;
   listResponses?: unknown[];
-  replyErrorCode?: number;
   agentText?: string;
   agentEvents?: readonly AgentEvent[];
 }): Promise<{
@@ -212,14 +215,11 @@ async function createCommentHarness(options: {
   let listCalls = 0;
   const listResponses = [...(options.listResponses ?? [])];
 
-  const channel: FakeCommentChannel = {
-    requests,
-    rawClient: {
+  const rawClient: FakeCommentChannel['rawClient'] = {
       async request(input) {
         requests.push(input);
         if (input.url.includes('/comments/reaction')) return {};
         if (input.url.includes('/replies?')) {
-          if (options.replyErrorCode) throw apiError(options.replyErrorCode);
           inThreadReplies.push(extractText(input.data));
           return {};
         }
@@ -253,7 +253,11 @@ async function createCommentHarness(options: {
           },
         },
       },
-    },
+  };
+  const channel: FakeCommentChannel = {
+    requests,
+    rawClient,
+    comments: makeFakeCommentSurface(rawClient),
   };
 
   const agentEvents = options.agentEvents ?? [

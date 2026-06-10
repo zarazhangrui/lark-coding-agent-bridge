@@ -2,8 +2,8 @@ import type {
   LarkChannel,
   LarkChannelOptions,
   NormalizedMessage,
-} from '@larksuiteoapi/node-sdk';
-import { Domain, LoggerLevel, createLarkChannel } from '@larksuiteoapi/node-sdk';
+} from '@larksuite/channel';
+import { createLarkChannel } from '@larksuite/channel';
 import { dirname, join } from 'node:path';
 import { claudeCapability, codexCapability } from '../agent/capability';
 import {
@@ -45,7 +45,7 @@ import {
 } from '../media/attachment';
 import { canUseDm, canUseGroup } from '../policy/access';
 import type { ScopeContext } from '../policy/run-policy';
-import { createOwnerRefreshController, type OwnerRawClient } from '../policy/owner';
+import { createOwnerRefreshController } from '../policy/owner';
 import { RunExecutor } from '../runtime/run-executor';
 import type { SessionCatalog } from '../session/catalog';
 import type { SessionStore } from '../session/store';
@@ -56,7 +56,6 @@ import { handleCommentMention } from './comments';
 import { recordRunSessionEvent, startRunFlow } from './run-flow';
 import { commandSessionCatalogIdentity } from './session-catalog-identity';
 import { startKeepalive } from './keepalive';
-import { configureNetwork } from './network-config';
 import { PendingQueue } from './pending-queue';
 import { ProcessPool } from './process-pool';
 import { fetchQuotedContext, type QuotedContext } from './quote';
@@ -181,10 +180,6 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
   const pool = new ProcessPool(() => getMaxConcurrentRuns(controls.cfg));
   const executor = new RunExecutor({ agent, pool, activeRuns });
 
-  // Apply network-layer overrides (HTTP timeout + proxy from env). Idempotent;
-  // safe to call on every startChannel (used by /account change hot-reload too).
-  const netOverrides = configureNetwork();
-
   // Resolve the App Secret to plaintext. The config field can be a literal
   // string, a "${VAR}" template, or a {source, id} SecretRef referencing
   // the encrypted keystore / env / file / exec provider. Re-resolved on
@@ -205,9 +200,11 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
   const opts: LarkChannelOptions = {
     appId: cfg.accounts.app.id,
     appSecret,
-    domain: cfg.accounts.app.tenant === 'lark' ? Domain.Lark : Domain.Feishu,
+    domain:
+      cfg.accounts.app.tenant === 'lark'
+        ? 'https://open.larksuite.com'
+        : 'https://open.feishu.cn',
     source: 'lark-channel-bridge',
-    loggerLevel: LoggerLevel.info,
     logger: buildQuietLogger(),
     policy: {
       dmMode: 'open',
@@ -234,8 +231,11 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
     // 8s handshake timeout (replaces hardcoded 15s). Fast-fail + fast-retry
     // beats slow-fail in unstable networks.
     handshakeTimeoutMs: 8_000,
-    // Optional WS-layer proxy agent (only when HTTPS_PROXY / HTTP_PROXY env set).
-    ...(netOverrides.agent ? { agent: netOverrides.agent } : {}),
+    // Per-request REST timeout — without a cap a slow API can hang the
+    // event-handling thread.
+    httpTimeoutMs: 30_000,
+    // Route WS + REST through HTTPS_PROXY / HTTP_PROXY when set (no-op otherwise).
+    respectProxyEnv: true,
   };
 
   const channel = createLarkChannel(opts);
@@ -375,7 +375,7 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
   await channel.connect();
   const ownerRefresh = createOwnerRefreshController({
     controls,
-    rawClient: channel.rawClient as OwnerRawClient,
+    source: channel,
     appId: cfg.accounts.app.id,
   });
   await ownerRefresh.start();
@@ -469,21 +469,13 @@ async function sendNonAllowedGroupHint(
   chatId: string,
   replyToMessageId: string,
 ): Promise<void> {
-  const content = JSON.stringify({
-    text:
-      '当前群尚未加入响应列表，所以 bot 不会处理消息。\n' +
-      'Bot owner/管理员可在本群发 /invite group 加入白名单。',
-  });
+  const text =
+    '当前群尚未加入响应列表，所以 bot 不会处理消息。\n' +
+    'Bot owner/管理员可在本群发 /invite group 加入白名单。';
   try {
-    await channel.rawClient.im.v1.message.reply({
-      path: { message_id: replyToMessageId },
-      data: { msg_type: 'text', content },
-    });
+    await channel.send(chatId, { text }, { replyTo: replyToMessageId });
   } catch {
-    await channel.rawClient.im.v1.message.create({
-      params: { receive_id_type: 'chat_id' },
-      data: { receive_id: chatId, msg_type: 'text', content },
-    });
+    await channel.send(chatId, { text });
   }
 }
 

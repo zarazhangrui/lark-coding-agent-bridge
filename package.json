@@ -1,6 +1,6 @@
 {
   "name": "lark-channel-bridge",
-  "version": "0.2.2",
+  "version": "0.3.0",
   "description": "Bridge Feishu/Lark messenger with local CLI coding agents",
   "type": "module",
   "packageManager": "pnpm@10.33.0",
@@ -43,11 +43,10 @@
   },
   "dependencies": {
     "@clack/prompts": "^1.4.0",
-    "@larksuiteoapi/node-sdk": "^1.65.0",
+    "@larksuite/channel": "^0.1.2",
     "commander": "^12.1.0",
     "cross-spawn": "^7.0.6",
     "graceful-fs": "^4.2.11",
-    "https-proxy-agent": "^9.0.0",
     "proper-lockfile": "^4.1.2",
     "qrcode-terminal": "^0.12.0"
   },

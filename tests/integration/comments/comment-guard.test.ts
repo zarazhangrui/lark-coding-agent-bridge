@@ -1,6 +1,6 @@
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import type { CommentEvent } from '@larksuiteoapi/node-sdk';
+import type { CommentEvent } from '@larksuite/channel';
 import { ActiveRuns } from '../../../src/bot/active-runs.js';
 import { handleCommentMention } from '../../../src/bot/comments.js';
 import { ProcessPool } from '../../../src/bot/process-pool.js';
@@ -9,12 +9,14 @@ import { RunExecutor } from '../../../src/runtime/run-executor.js';
 import { SessionStore } from '../../../src/session/store.js';
 import { WorkspaceStore } from '../../../src/workspace/store.js';
 import { FakeAgentAdapter } from '../../helpers/fake-agent.js';
+import { makeFakeCommentSurface } from '../../helpers/fake-comment-surface.js';
 import { createTmpProfile, type TmpProfile } from '../../helpers/tmp-profile.js';
 
 interface FakeCommentChannel {
   botIdentity?: { openId: string };
   calls: string[];
   replies: string[];
+  comments: ReturnType<typeof makeFakeCommentSurface>;
   rawClient: {
     request(input: unknown): Promise<unknown>;
     wiki: { v2: { space: { getNode(input: unknown): Promise<unknown> } } };
@@ -103,11 +105,7 @@ async function createHarness(options: {
   const tmp = await createTmpProfile('comment-guard-');
   const calls: string[] = [];
   const replies: string[] = [];
-  const channel: FakeCommentChannel = {
-    calls,
-    replies,
-    ...(options.botOpenId ? { botIdentity: { openId: options.botOpenId } } : {}),
-    rawClient: {
+  const rawClient: FakeCommentChannel['rawClient'] = {
       async request(input) {
         calls.push('request');
         const url = (input as { url?: string }).url ?? '';
@@ -154,7 +152,13 @@ async function createHarness(options: {
           },
         },
       },
-    },
+  };
+  const channel: FakeCommentChannel = {
+    calls,
+    replies,
+    ...(options.botOpenId ? { botIdentity: { openId: options.botOpenId } } : {}),
+    rawClient,
+    comments: makeFakeCommentSurface(rawClient),
   };
   const agent = new FakeAgentAdapter({
     events: [[{ type: 'text', delta: 'answer' }, { type: 'done', terminationReason: 'normal' }]],

@@ -1,4 +1,4 @@
-import { registerApp } from '@larksuiteoapi/node-sdk';
+import { registerApp } from '@larksuite/channel';
 import qrcode from 'qrcode-terminal';
 import type { AppConfig, TenantBrand } from '../config/schema';
 

@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { createReadStream } from 'node:fs';
 import { mkdir, readdir, rename, rm, stat } from 'node:fs/promises';
 import { join } from 'node:path';
-import type { LarkChannel, ResourceDescriptor } from '@larksuiteoapi/node-sdk';
+import type { LarkChannel, ResourceDescriptor } from '@larksuite/channel';
 import { paths } from '../config/paths';
 import { log } from '../core/logger';
 import {
@@ -78,18 +78,24 @@ export class MediaCache {
       `.tmp-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}`,
     );
 
-    // Use the message-resource endpoint, which is required for resources
-    // that arrived from user messages. The channel's downloadResource()
-    // helper targets a different endpoint only valid for bot-uploaded files.
-    const result = await this.channel.rawClient.im.v1.messageResource.get({
-      params: { type: r.type },
-      path: { message_id: messageId, file_key: r.fileKey },
-    });
-    await result.writeFile(tmpPath);
+    // downloadResourceToFile hits im.v1.messageResource.get under the hood —
+    // the endpoint required for resources that arrived in user messages. It
+    // maps image resources to 'image' and everything else (file/audio/video)
+    // to 'file'. We stream straight to disk (not via a full Buffer) because the
+    // size limit is only enforced after download: a large attachment would
+    // otherwise sit entirely in the JS heap before being rejected. It returns
+    // the server content-type so we can pick an accurate extension, falling
+    // back to defaultMime(kind) when absent.
+    const { contentType } = await this.channel.downloadResourceToFile(
+      messageId,
+      r.fileKey,
+      r.type === 'image' ? 'image' : 'file',
+      tmpPath,
+    );
 
     const tmpStat = await stat(tmpPath);
     const hash = await hashFile(tmpPath);
-    const mime = contentTypeFromResult(result) ?? defaultMime(kind);
+    const mime = contentType ?? defaultMime(kind);
     const ext = safeExtensionForMime(mime);
     const absPath = join(this.rootDir, `${hash}.${ext}`);
     try {
@@ -156,13 +162,6 @@ function defaultMime(kind: AttachmentKind): string {
     default:
       return 'application/octet-stream';
   }
-}
-
-function contentTypeFromResult(result: unknown): string | undefined {
-  const headers = (result as { headers?: Record<string, unknown> }).headers;
-  const value = headers?.['content-type'] ?? headers?.['Content-Type'];
-  if (typeof value !== 'string') return undefined;
-  return value.split(';')[0]?.trim().toLowerCase();
 }
 
 async function listFiles(root: string): Promise<string[]> {

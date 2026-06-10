@@ -1,6 +1,6 @@
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { CardActionEvent, NormalizedMessage } from '@larksuiteoapi/node-sdk';
+import type { CardActionEvent, NormalizedMessage } from '@larksuite/channel';
 import { claudeCapability, codexCapability } from '../../../src/agent/capability.js';
 import { ActiveRuns } from '../../../src/bot/active-runs.js';
 import type { ChatModeCache } from '../../../src/bot/chat-mode-cache.js';

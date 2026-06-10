@@ -216,7 +216,7 @@ export async function runStart(opts: StartOptions): Promise<void> {
               if (!target) return;
               await refreshOwnerControls(
                 currentControls,
-                target.rawClient,
+                target,
                 currentControls.cfg.accounts.app.id,
               );
             },
