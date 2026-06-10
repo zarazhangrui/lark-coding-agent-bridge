@@ -38,7 +38,7 @@ describe('lark-cli guard shim', () => {
     // mkdtemp dir is left for the OS to reap; nothing persistent created elsewhere.
   });
 
-  it('forces --as bot for an im message send', () => {
+  it('rewrites an explicit --as user on an im send', () => {
     const r = run('im', 'send', '--chat', 'oc_x', '--text', 'hi', '--as', 'user');
     expect(r.stdout).toContain('FORWARDED: im send --chat oc_x --text hi --as bot');
     expect(r.stdout).not.toContain('--as user');
@@ -48,6 +48,18 @@ describe('lark-cli guard shim', () => {
     const r = run('im', 'reply', '--as=user', '--text', 'hi');
     expect(r.stdout).toContain('--as=bot');
     expect(r.stdout).not.toContain('--as=user');
+  });
+
+  it('covers the raw `+messages-send` verb the prompt uses', () => {
+    const r = run('im', '+messages-send', '--chat-id', 'oc_x', '--msg-type', 'text', '--as', 'user');
+    expect(r.stdout).toContain('+messages-send');
+    expect(r.stdout).toContain('--as bot');
+    expect(r.stdout).not.toContain('--as user');
+  });
+
+  it('APPENDS --as bot when an im send has no identity flag (beats default-as auto)', () => {
+    const r = run('im', '+messages-send', '--chat-id', 'oc_x', '--content', '{}');
+    expect(r.stdout).toContain('FORWARDED: im +messages-send --chat-id oc_x --content {} --as bot');
   });
 
   it('leaves doc creation as the user untouched', () => {
@@ -60,8 +72,9 @@ describe('lark-cli guard shim', () => {
     expect(r.stdout).toContain('FORWARDED: base record list --as user');
   });
 
-  it('leaves an im send without an identity flag untouched', () => {
-    const r = run('im', 'send', '--text', 'hi');
-    expect(r.stdout).toContain('FORWARDED: im send --text hi');
+  it('does not touch read-only im commands (no spurious --as bot)', () => {
+    const r = run('im', 'chat-history', '--chat-id', 'oc_x');
+    expect(r.stdout).toContain('FORWARDED: im chat-history --chat-id oc_x');
+    expect(r.stdout).not.toContain('--as');
   });
 });
