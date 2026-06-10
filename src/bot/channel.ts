@@ -349,6 +349,17 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
             log.warn('reaction', 'no-chatId', { messageId: evt.messageId });
             return;
           }
+          // Only forward reactions on messages sent by THIS bot.
+          // Reactions on other bots' messages should not be routed here.
+          const messageSenderId = item?.sender?.id as string | undefined;
+          if (messageSenderId !== channel.botIdentity?.openId) {
+            log.info('reaction', 'skip-other-sender', {
+              messageId: evt.messageId,
+              messageSenderId,
+              botOpenId: channel.botIdentity?.openId,
+            });
+            return;
+          }
           const chatMode = await chatModeCache.resolve(channel, chatId);
           const threadId = item?.thread_id as string | undefined;
           const scope =
