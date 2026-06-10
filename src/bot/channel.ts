@@ -349,14 +349,19 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
             log.warn('reaction', 'no-chatId', { messageId: evt.messageId });
             return;
           }
-          // Only forward reactions on messages sent by THIS bot.
-          // Reactions on other bots' messages should not be routed here.
+          // Only forward reactions on THIS bot's messages.
+          // Compare both open_id (ou_xxx) and app client id (cli_xxx) —
+          // the message API returns bot senders in cli_xxx format.
           const messageSenderId = item?.sender?.id as string | undefined;
-          if (messageSenderId !== channel.botIdentity?.openId) {
+          const isOwnMessage =
+            messageSenderId === channel.botIdentity?.openId ||
+            messageSenderId === cfg.accounts.app.id;
+          if (!isOwnMessage) {
             log.info('reaction', 'skip-other-sender', {
               messageId: evt.messageId,
               messageSenderId,
               botOpenId: channel.botIdentity?.openId,
+              appId: cfg.accounts.app.id,
             });
             return;
           }
