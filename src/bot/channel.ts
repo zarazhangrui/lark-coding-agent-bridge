@@ -337,6 +337,49 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
         }).catch((err) => log.fail('comment', err));
       }).catch((err) => log.fail('comment', err));
     },
+    reaction: async (evt) => {
+      await withTrace({ chatId: evt.messageId }, async () => {
+        try {
+          const r = await channel.rawClient.im.v1.message.get({
+            path: { message_id: evt.messageId },
+          });
+          const item = r?.data?.items?.[0];
+          const chatId = item?.chat_id as string | undefined;
+          if (!chatId) {
+            log.warn('reaction', 'no-chatId', { messageId: evt.messageId });
+            return;
+          }
+          const chatMode = await chatModeCache.resolve(channel, chatId);
+          const threadId = item?.thread_id as string | undefined;
+          const scope =
+            chatMode === 'topic' && threadId
+              ? `${chatId}:${threadId}`
+              : chatId;
+          const chatType = chatMode === 'p2p' ? 'p2p' as const : 'group' as const;
+          pending.push(scope, {
+            messageId: evt.messageId,
+            chatId,
+            chatType,
+            threadId,
+            senderId: evt.operator.openId,
+            content: `[reaction-${evt.action}] ${evt.emojiType} (on msg ${evt.messageId.slice(-8)})`,
+            rawContentType: 'reaction' as const,
+            resources: [],
+            mentions: [],
+            mentionAll: false,
+            mentionedBot: false,
+            createTime: evt.actionTime ?? Date.now(),
+          });
+          log.info('reaction', 'enqueued', {
+            scope,
+            emojiType: evt.emojiType,
+            action: evt.action,
+          });
+        } catch (err) {
+          log.fail('reaction', err);
+        }
+      }).catch((err) => log.fail('reaction', err));
+    },
     reconnecting: () => {
       consecutiveReconnects++;
       log.warn('ws', 'reconnecting', { consecutive: consecutiveReconnects });
