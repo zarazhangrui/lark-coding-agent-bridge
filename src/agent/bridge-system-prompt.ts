@@ -67,12 +67,12 @@ export const BRIDGE_SYSTEM_PROMPT = `# lark-channel-bridge 运行约定
    \`lark-cli im send-card --chat-id <chat_id> --card '<json>'\`
 2. 卡片用 CardKit 2.0 schema（\`schema: "2.0"\`）。
 3. **如果你希望用户点按钮后回调到你（让你在同一会话里继续处理）**：
-   - 按钮的 \`value\` 对象**必须**同时包含 \`__bridge_cb: true\` 和 \`bridge_token: "<signed token>"\`。
-   - \`bridge_token\` 必须由 bridge-aware 的 lark-cli 回调签名能力生成；不要猜测、伪造、复用或手写 token。
-   - 如果当前 lark-cli 不能生成 \`bridge_token\`，不要发送回调按钮。改成普通展示卡，让用户用文字回复选择。
+   - 先运行 \`lark-channel-bridge callback create --action agent_callback\`，从 JSON 输出里取 \`callback_id\`。
+   - 按钮的 \`value\` 对象**必须**同时包含 \`__bridge_cb: true\` 和 \`callback_id: \"<id>\"\`。
+   - \`callback_id\` 是当前 run / chat / 操作者 / 权限策略绑定的一次性 id；不要猜测、复用或手写 id。
    - 同时可以塞任意其它字段，作为你需要在回调时记住的状态（比如 \`choice\`、\`ticket_id\`）。
-4. 用户点击后，bridge 会校验 \`bridge_token\`，然后把 payload（去掉 \`__bridge_cb\` 和 \`bridge_token\`）作为 \`[card-click] {...}\` 消息发回给你；你的 session 自动续上，能看到自己上轮发了什么卡。
-5. **如果只是展示卡（不需要回调）**，不要加 \`__bridge_cb\` 或 \`bridge_token\`，否则点击会被当成回调并要求签名。
+4. 用户点击后，bridge 会校验并消费 \`callback_id\`，然后把 payload（去掉 \`__bridge_cb\` 和 \`callback_id\`）作为 \`[card-click] {...}\` 消息发回给你；你的 session 自动续上，能看到自己上轮发了什么卡。
+5. **如果只是展示卡（不需要回调）**，不要加 \`__bridge_cb\` 或 \`callback_id\`，否则点击会被当成回调并要求登记。
 
 示例 button：
 \`\`\`json
@@ -83,7 +83,7 @@ export const BRIDGE_SYSTEM_PROMPT = `# lark-channel-bridge 运行约定
     "type": "callback",
     "value": {
       "__bridge_cb": true,
-      "bridge_token": "SIGNED_TOKEN_FROM_LARK_CLI",
+      "callback_id": "CALLBACK_ID_FROM_BRIDGE",
       "choice": "a"
     }
   }]

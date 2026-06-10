@@ -151,6 +151,16 @@ export async function startRunFlow(input: StartRunFlowInput): Promise<StartRunFl
               .filter((path): path is string => Boolean(path))
           : undefined,
       stopGraceMs: input.stopGraceMs,
+      ...(input.scope.chatId
+        ? {
+            callbackContext: {
+              scope: input.scopeId,
+              chatId: input.scope.chatId,
+              operatorOpenId: input.scope.actorId,
+              policyFingerprint: policy.policyFingerprint,
+            },
+          }
+        : {}),
       observability: input.observability,
     });
   } catch (err) {
