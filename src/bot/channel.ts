@@ -636,6 +636,126 @@ export function isSmartSilentEval(state: RunState): boolean {
   return normalized === '' || normalized === SMART_SILENT_MARKER.toLowerCase();
 }
 
+/**
+ * Matches the silence sentinel anywhere in a text block, tolerating the same
+ * surrounding whitespace / backticks / bold that {@link isSmartSilentEval}
+ * tolerates, plus inner spacing (`[[ silent ]]`).
+ */
+const SILENT_MARKER_RE = /[`*\s]*\[\[\s*silent\s*\]\][`*\s]*/gi;
+
+/**
+ * Short ack posted when the agent was @-mentioned but produced nothing but the
+ * silence sentinel. We must answer a direct mention, so this beats leaking the
+ * marker or posting an empty bubble. Un-mentioned ('smart') batches stay silent
+ * via the quietEval branch instead and never reach this.
+ */
+const MENTIONED_EMPTY_FALLBACK = '在的~,有什么可以帮你的?';
+
+/**
+ * Defense-in-depth: strip the silence sentinel out of every text block so it can
+ * never reach the chat as literal `[[silent]]`. The sentinel is only meant to be
+ * intercepted on the un-mentioned ('smart') path, but the agent's persistent
+ * session learns the convention and can emit it on any turn — including a real
+ * @-mention, which renders normally and would otherwise post the raw marker.
+ */
+export function stripSilentMarker(state: RunState): RunState {
+  let touched = false;
+  const blocks = state.blocks.map((b) => {
+    if (b.kind !== 'text') return b;
+    const content = b.content.replace(SILENT_MARKER_RE, '');
+    if (content === b.content) return b;
+    touched = true;
+    return { ...b, content };
+  });
+  return touched ? { ...state, blocks } : state;
+}
+
+/**
+ * Render a reply as markdown text (marker already stripped via `filterForPrefs`).
+ * When the agent was @-mentioned (`mustReply`) and the run finished with nothing
+ * but the now-stripped sentinel, fall back to a short ack instead of an empty
+ * message. While still running, an empty render stays empty (no premature ack).
+ */
+export function renderReplyText(state: RunState, mustReply: boolean): string {
+  const body = renderText(state);
+  if (body.trim()) return body;
+  return mustReply && state.terminal !== 'running' ? MENTIONED_EMPTY_FALLBACK : '';
+}
+
+/**
+ * Max chars per post message before we split. Mirrors the SDK's default
+ * `textChunkLimit` (3500) so a chunk we hand to `channel.send` is never
+ * re-split internally — each send maps to exactly one Feishu message whose id
+ * we can chain the next chunk under.
+ */
+const POST_CHUNK_LIMIT = 3500;
+
+/**
+ * Split markdown into <=limit-char chunks, preferring to break at blank lines /
+ * headings and never mid-code-fence (a fence left open is reopened in the next
+ * chunk). Ported from the SDK's internal `splitWithCodeFences` so our chunking
+ * matches what `channel.send` would have done — we only take over the threading.
+ */
+export function splitMarkdownForPost(text: string, limit: number): string[] {
+  if (text.length <= limit) return [text];
+  const lines = text.split('\n');
+  const out: string[] = [];
+  let buf: string[] = [];
+  let bufLen = 0;
+  let fenceLang: string | null = null;
+  const flush = (): void => {
+    if (buf.length === 0) return;
+    let chunk = buf.join('\n');
+    if (fenceLang !== null) chunk += '\n```';
+    out.push(chunk);
+    buf = [];
+    bufLen = 0;
+    if (fenceLang !== null) {
+      const reopened = '```' + fenceLang;
+      buf.push(reopened);
+      bufLen = reopened.length;
+    }
+  };
+  for (const line of lines) {
+    const m = line.match(/^```(\w*)$/);
+    const lineLen = line.length + (buf.length > 0 ? 1 : 0);
+    const isHeading = /^#{1,6}\s/.test(line);
+    const nearFull = bufLen > limit * 0.75;
+    if (bufLen + lineLen > limit || (isHeading && nearFull && buf.length > 0)) {
+      flush();
+    }
+    buf.push(line);
+    bufLen += lineLen;
+    if (m) fenceLang = fenceLang === null ? m[1] || '' : null;
+  }
+  flush();
+  return out;
+}
+
+/**
+ * Post a (possibly long) markdown reply, keeping every chunk in one thread.
+ *
+ * `channel.send` chunks long markdown internally but only threads the FIRST
+ * chunk — continuation chunks post at top level, which in a topic group spawns
+ * stray new topics (upstream @larksuiteoapi/node-sdk bug in `sendMarkdown`). We
+ * split here and chain each chunk as a reply to the previous message instead.
+ * Chaining only kicks in for thread/topic replies (`replyInThread`); outside a
+ * thread, continuation chunks stay at top level to match Feishu's default.
+ */
+export async function sendThreadedMarkdown(
+  channel: LarkChannel,
+  chatId: string,
+  body: string,
+  sendOpts: { replyTo?: string; replyInThread?: boolean },
+): Promise<void> {
+  const chunks = splitMarkdownForPost(body, POST_CHUNK_LIMIT);
+  let replyTo = sendOpts.replyTo;
+  for (const chunk of chunks) {
+    const res = await channel.send(chatId, { markdown: chunk }, { ...sendOpts, replyTo });
+    replyTo = sendOpts.replyInThread ? (res?.messageId ?? replyTo) : undefined;
+  }
+}
+
 interface RunBatchDeps {
   channel: LarkChannel;
   executor: RunExecutor;
@@ -832,8 +952,9 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
   // Re-read prefs on every flush so toggling /config mid-stream takes
   // effect immediately. Cheap object lookups, no allocation when on.
   const filterForPrefs = (state: RunState): RunState => {
-    if (getShowToolCalls(controls.cfg)) return state;
-    return { ...state, blocks: state.blocks.filter((b) => b.kind !== 'tool') };
+    const clean = stripSilentMarker(state);
+    if (getShowToolCalls(controls.cfg)) return clean;
+    return { ...clean, blocks: clean.blocks.filter((b) => b.kind !== 'tool') };
   };
   const cardRenderOptions = callbackAuth
     ? {
@@ -883,7 +1004,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
       );
       if (finalState.terminal === 'done' && !isSmartSilentEval(finalState)) {
         const body = renderText(filterForPrefs(finalState));
-        await channel.send(chatId, { markdown: body }, sendOpts);
+        await sendThreadedMarkdown(channel, chatId, body, sendOpts);
         log.info('flush', 'smart-reply', { scope, chars: body.length });
       } else {
         log.info('flush', 'smart-silent', { scope, terminal: finalState.terminal });
@@ -948,7 +1069,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
         async (state) => {
           latestState = state;
           if (markdownCtrl) {
-            await markdownCtrl.setContent(renderText(filterForPrefs(state)));
+            await markdownCtrl.setContent(renderReplyText(filterForPrefs(state), !quietEval));
           }
         },
       );
@@ -958,7 +1079,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
           markdown: async (ctrl) => {
             producerStarted = true;
             markdownCtrl = ctrl;
-            await ctrl.setContent(renderText(filterForPrefs(latestState)));
+            await ctrl.setContent(renderReplyText(filterForPrefs(latestState), !quietEval));
             await renderDone;
           },
         },
@@ -970,9 +1091,9 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
         renderDone,
         producerStarted: () => producerStarted,
         fallback: async (state) => {
-          const body = renderText(filterForPrefs(state));
+          const body = renderReplyText(filterForPrefs(state), !quietEval);
           if (body.trim()) {
-            await channel.send(chatId, { markdown: body }, sendOpts);
+            await sendThreadedMarkdown(channel, chatId, body, sendOpts);
           }
         },
       });
@@ -988,9 +1109,9 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
         recordSession,
         async () => {},
       );
-      const body = renderText(filterForPrefs(finalState));
+      const body = renderReplyText(filterForPrefs(finalState), true);
       if (body.trim()) {
-        await channel.send(chatId, { markdown: body }, sendOpts);
+        await sendThreadedMarkdown(channel, chatId, body, sendOpts);
       }
     }
   } catch (err) {
