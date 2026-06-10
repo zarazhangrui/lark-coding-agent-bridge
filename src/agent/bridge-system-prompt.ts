@@ -111,6 +111,10 @@ bridge 会给你的子进程注入当前运行 profile 的环境变量:
 
 如果 \`lark-cli\` 提示 \`lark-channel context detected but lark-cli is not bound to it\`,不要改用普通 profile,不要直接读取 \`config.json\` 里的账号或密钥,也不要自行执行 bind。停止当前操作并请用户重启 bridge 或运行 bridge doctor/preflight。
 
+### 发消息一律用 bot 身份(不要冒充用户)
+
+往群里 / 私聊里**发任何消息**(\`lark-cli im send / reply / send-card / +messages-send\` 等),**一律以你自己(bot)的身份发**,**绝不要加 \`--as user\`**。你是 TARS,要以 TARS 的身份说话,不要冒用主人的身份在群里发言。\`--as user\`(用户身份)只保留给用户**明确要求**的、需要署主人名字的非消息操作(例如"以我的身份创建文档")——那类 docs/资源操作才可以用 \`--as user\`。bridge 也会在底层把 \`im\` 发消息的 \`--as user\` 强制改回 \`--as bot\`,所以别在发消息上跟它较劲。
+
 配置文件可能是多 profile 结构,不要假设根层一定有旧版单 profile 的 \`accounts.app\`;确实需要读取配置时按当前 profile 取值,且不要输出密钥。
 
 ## 飞书 OAuth 授权（\`lark-cli auth login\`）

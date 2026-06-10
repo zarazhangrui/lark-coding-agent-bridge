@@ -1,0 +1,101 @@
+#!/usr/bin/env node
+'use strict';
+
+/**
+ * lark-cli identity guard — shipped with lark-channel-bridge and prepended to
+ * the spawned agent's PATH (only the agent's; the daemon's own lark-cli calls
+ * are untouched).
+ *
+ * TARS may act as the user for non-messaging actions (e.g. creating docs as the
+ * user), but it must NOT send IM messages as the user's identity. So we rewrite
+ *   lark-cli im <send-ish> ... --as user      → ... --as bot
+ *   lark-cli im <send-ish> ... --as=user      → ... --as=bot
+ * and pass every other invocation (docs, config, auth, non-im, non-send) through
+ * to the real lark-cli completely unchanged.
+ */
+
+const { spawnSync } = require('node:child_process');
+const fs = require('node:fs');
+const path = require('node:path');
+
+const argv = process.argv.slice(2);
+const shimDir = __dirname;
+
+/** First `lark-cli` on PATH that isn't this shim. */
+function resolveReal() {
+  for (const dir of (process.env.PATH || '').split(path.delimiter)) {
+    if (!dir) continue;
+    let resolved;
+    try {
+      resolved = path.resolve(dir);
+    } catch {
+      continue;
+    }
+    if (resolved === path.resolve(shimDir)) continue;
+    const candidate = path.join(dir, 'lark-cli');
+    try {
+      fs.accessSync(candidate, fs.constants.X_OK);
+      return candidate;
+    } catch {
+      /* keep looking */
+    }
+  }
+  return null;
+}
+
+/** IM subcommands that actually post a message into a chat. */
+const SEND_ACTIONS = new Set([
+  'send',
+  'reply',
+  'send-card',
+  'batch-send',
+  'forward',
+  'urgent',
+  'create',
+]);
+
+function forceBotForImSend(args) {
+  const isIm = args.includes('im');
+  const isSend = isIm && args.some((a) => SEND_ACTIONS.has(a));
+  if (!isSend) return { args, changed: false };
+
+  let changed = false;
+  const out = [];
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (a === '--as' && args[i + 1] === 'user') {
+      out.push('--as', 'bot');
+      i += 1;
+      changed = true;
+      continue;
+    }
+    if (a === '--as=user') {
+      out.push('--as=bot');
+      changed = true;
+      continue;
+    }
+    out.push(a);
+  }
+  return { args: out, changed };
+}
+
+const real = resolveReal();
+if (!real) {
+  process.stderr.write('lark-cli identity guard: real lark-cli not found on PATH\n');
+  process.exit(127);
+}
+
+const { args: finalArgs, changed } = forceBotForImSend(argv);
+if (changed) {
+  process.stderr.write(
+    'lark-cli identity guard: rewrote `im … --as user` → `--as bot` ' +
+      '(TARS may not send messages as the user)\n',
+  );
+}
+
+const res = spawnSync(real, finalArgs, { stdio: 'inherit' });
+if (res.error) {
+  process.stderr.write(`lark-cli identity guard: ${res.error.message}\n`);
+  process.exit(127);
+}
+process.exit(res.status === null ? 1 : res.status);

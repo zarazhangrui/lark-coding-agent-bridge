@@ -7,6 +7,7 @@ import { mergeProcessEnv, spawnProcess, type SpawnedProcessByStdio } from '../..
 import { SpawnFailed } from '../../runtime/errors';
 import { prefixBridgeSystemPrompt } from '../bridge-system-prompt';
 import { buildLarkChannelEnv, type LarkChannelEnvContext } from '../lark-channel-env';
+import { withLarkCliGuard } from '../lark-cli-guard';
 import { checkAgentAvailability, type AgentAvailability } from '../preflight';
 import type {
   AgentAdapter,
@@ -109,7 +110,7 @@ export class CodexAdapter implements AgentAdapter {
     }
     const child = spawnProcess(this.binary, args, {
       cwd: opts.cwd,
-      env: mergeProcessEnv(process.env, envOverrides),
+      env: mergeProcessEnv(process.env, withLarkCliGuard(envOverrides)),
       stdio: ['pipe', 'pipe', 'pipe'],
     }) as CodexChild;
 
