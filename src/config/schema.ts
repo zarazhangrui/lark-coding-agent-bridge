@@ -67,6 +67,11 @@ export interface SecretsConfig {
  * `markdown`. See `messageReplyMigrated` for the auto-coercion logic.
  */
 export type MessageReplyMode = 'card' | 'markdown' | 'text';
+export type PresentationMode = 'clean' | 'progress' | 'debug';
+
+export interface PresentationPreferences {
+  mode?: PresentationMode;
+}
 
 /**
  * Access control settings. Empty lists are fail-closed in the v2 policy:
@@ -99,10 +104,18 @@ export interface AppPreferences {
   messageReplyMigrated?: boolean;
   /**
    * Whether to render tool-call blocks (Bash / Read / Edit / ...) in the
-   * output. Default true. Turn off if you only care about Claude's final
-   * text answer and want to hide the "工具调用过程".
+   * output. Legacy compatibility field. Prefer `presentation.mode`:
+   * `debug` shows the full tool stream, while `clean` / `progress` hide raw
+   * tool details from the chat surface.
    */
   showToolCalls?: boolean;
+  /**
+   * User-facing presentation mode for agent runs.
+   *   - clean: user text + minimal "processing" status only
+   *   - progress: user text + coarse running phase, no command/file details
+   *   - debug: full reasoning and tool-call stream for maintainers
+   */
+  presentation?: PresentationPreferences;
   /**
    * Cap on concurrent claude runs across all chats / topics. Excess runs
    * queue FIFO. Default 10. Mostly relevant for topic groups where each
@@ -196,9 +209,21 @@ export function getMessageReplyMode(cfg: AppConfig): MessageReplyMode {
   return 'markdown';
 }
 
+export function isPresentationMode(value: unknown): value is PresentationMode {
+  return value === 'clean' || value === 'progress' || value === 'debug';
+}
+
+/** Resolve the presentation mode with legacy showToolCalls fallback. */
+export function getPresentationMode(cfg: AppConfig): PresentationMode {
+  const raw = cfg.preferences?.presentation?.mode;
+  if (isPresentationMode(raw)) return raw;
+  if (cfg.preferences?.showToolCalls === true) return 'debug';
+  return 'clean';
+}
+
 /** Resolve the show-tool-calls preference with default fallback. */
 export function getShowToolCalls(cfg: AppConfig): boolean {
-  return cfg.preferences?.showToolCalls !== false;
+  return getPresentationMode(cfg) === 'debug';
 }
 
 /** Resolve the max-concurrent-runs preference with default + sanity clamp. */

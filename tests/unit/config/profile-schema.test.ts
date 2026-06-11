@@ -115,6 +115,39 @@ describe('profile schema', () => {
     });
   });
 
+  it('normalizes presentation mode while preserving legacy show-tool compatibility', () => {
+    const cfg = normalizeProfileConfig({
+      schemaVersion: 2,
+      agentKind: 'claude',
+      accounts: { app },
+      preferences: {
+        presentation: { mode: 'progress' },
+        showToolCalls: true,
+      },
+    });
+
+    expect(cfg.preferences).toEqual({
+      presentation: { mode: 'progress' },
+      showToolCalls: true,
+    });
+  });
+
+  it('drops invalid presentation mode values instead of blocking config load', () => {
+    const cfg = normalizeProfileConfig({
+      schemaVersion: 2,
+      agentKind: 'claude',
+      accounts: { app },
+      preferences: {
+        presentation: { mode: 'verbose' },
+        showToolCalls: false,
+      } as never,
+    });
+
+    expect(cfg.preferences).toEqual({
+      showToolCalls: false,
+    });
+  });
+
   it('normalizes workspaces to a default working directory only', () => {
     const cfg = createDefaultProfileConfig({
       agentKind: 'claude',

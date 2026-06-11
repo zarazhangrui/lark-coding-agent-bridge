@@ -32,9 +32,9 @@ import {
   getAgentStopGraceMs,
   getMaxConcurrentRuns,
   getMessageReplyMode,
+  getPresentationMode,
   getRequireMentionInGroup,
   getRunIdleTimeoutMs,
-  getShowToolCalls,
 } from '../config/schema';
 import { resolveAppSecret } from '../config/secret-resolver';
 import { log, reportMetric, withTrace } from '../core/logger';
@@ -769,12 +769,6 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
   const replyMode = getMessageReplyMode(controls.cfg);
   log.info('flush', 'reply-mode', { mode: replyMode });
 
-  // Re-read prefs on every flush so toggling /config mid-stream takes
-  // effect immediately. Cheap object lookups, no allocation when on.
-  const filterForPrefs = (state: RunState): RunState => {
-    if (getShowToolCalls(controls.cfg)) return state;
-    return { ...state, blocks: state.blocks.filter((b) => b.kind !== 'tool') };
-  };
   const cardRenderOptions = callbackAuth
     ? {
         signCallback: (action: string) =>
@@ -789,6 +783,15 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
           }),
       }
     : {};
+  // Re-read presentation prefs on every flush so toggling /config mid-stream
+  // takes effect immediately.
+  const renderRunCard = (state: RunState): object =>
+    renderCard(state, {
+      ...cardRenderOptions,
+      presentationMode: getPresentationMode(controls.cfg),
+    });
+  const renderRunText = (state: RunState): string =>
+    renderText(state, { presentationMode: getPresentationMode(controls.cfg) });
 
   // For non-card modes Claude's output doesn't surface visually until either
   // a first streamed token (markdown mode) or the whole run ends (text mode).
@@ -813,7 +816,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
         async (state) => {
           latestState = state;
           if (cardCtrl) {
-            await cardCtrl.update(renderCard(filterForPrefs(state), cardRenderOptions));
+            await cardCtrl.update(renderRunCard(state));
           }
         },
       );
@@ -821,11 +824,11 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
         chatId,
         {
           card: {
-            initial: renderCard(initialState, cardRenderOptions),
+            initial: renderRunCard(initialState),
             producer: async (ctrl) => {
               producerStarted = true;
               cardCtrl = ctrl;
-              await ctrl.update(renderCard(filterForPrefs(latestState), cardRenderOptions));
+              await ctrl.update(renderRunCard(latestState));
               await renderDone;
             },
           },
@@ -840,7 +843,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
         fallback: async (state) => {
           await channel.send(
             chatId,
-            { card: renderCard(filterForPrefs(state), cardRenderOptions) },
+            { card: renderRunCard(state) },
             sendOpts,
           );
         },
@@ -858,7 +861,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
         async (state) => {
           latestState = state;
           if (markdownCtrl) {
-            await markdownCtrl.setContent(renderText(filterForPrefs(state)));
+            await markdownCtrl.setContent(renderRunText(state));
           }
         },
       );
@@ -868,7 +871,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
           markdown: async (ctrl) => {
             producerStarted = true;
             markdownCtrl = ctrl;
-            await ctrl.setContent(renderText(filterForPrefs(latestState)));
+            await ctrl.setContent(renderRunText(latestState));
             await renderDone;
           },
         },
@@ -880,7 +883,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
         renderDone,
         producerStarted: () => producerStarted,
         fallback: async (state) => {
-          const body = renderText(filterForPrefs(state));
+          const body = renderRunText(state);
           if (body.trim()) {
             await channel.send(chatId, { markdown: body }, sendOpts);
           }
@@ -898,7 +901,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
         recordSession,
         async () => {},
       );
-      const body = renderText(filterForPrefs(finalState));
+      const body = renderRunText(finalState);
       if (body.trim()) {
         await channel.send(chatId, { markdown: body }, sendOpts);
       }

@@ -60,7 +60,7 @@ describe('profile-aware account and config commands', () => {
 
     await h.command('/config submit', {
       message_reply: 'text',
-      show_tool_calls: 'hide',
+      presentation_mode: 'progress',
       max_concurrent_runs: '7',
       run_idle_timeout_minutes: '15',
       require_mention_in_group: 'no',
@@ -77,6 +77,7 @@ describe('profile-aware account and config commands', () => {
       messageReply: 'text',
       messageReplyMigrated: true,
       showToolCalls: false,
+      presentation: { mode: 'progress' },
       maxConcurrentRuns: 7,
       runIdleTimeoutMinutes: 15,
     });

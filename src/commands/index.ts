@@ -15,14 +15,20 @@ import {
 import { configCancelledCard, configFailedCard, configFormCard, configSavedCard } from '../card/config-card';
 import { forgetManagedCard, sendManagedCard, updateManagedCard } from '../card/managed';
 import { helpCard, resumeCard, statusCard, workspacesCard } from '../card/templates';
-import type { AppConfig, AppPreferences, MessageReplyMode, TenantBrand } from '../config/schema';
+import type {
+  AppConfig,
+  AppPreferences,
+  MessageReplyMode,
+  PresentationMode,
+  TenantBrand,
+} from '../config/schema';
 import {
   getAgentStopGraceMs,
   getMaxConcurrentRuns,
   getMessageReplyMode,
+  getPresentationMode,
   getRequireMentionInGroup,
   getRunIdleTimeoutMs,
-  getShowToolCalls,
   secretKeyForApp,
 } from '../config/schema';
 import type { ProfileAccess, ProfileConfig } from '../config/profile-schema';
@@ -1743,7 +1749,7 @@ async function showConfigForm(ctx: CommandContext): Promise<void> {
   const access = ctx.controls.profileConfig.access;
   const card = configFormCard({
     messageReply: getMessageReplyMode(ctx.controls.cfg),
-    showToolCalls: getShowToolCalls(ctx.controls.cfg),
+    presentationMode: getPresentationMode(ctx.controls.cfg),
     maxConcurrentRuns: getMaxConcurrentRuns(ctx.controls.cfg),
     runIdleTimeoutMinutes: ms ? Math.round(ms / 60_000) : 0,
     requireMentionInGroup: getRequireMentionInGroup(ctx.controls.cfg),
@@ -1793,7 +1799,15 @@ async function submitConfig(ctx: CommandContext): Promise<void> {
       ? (rawReply as MessageReplyMode)
       : 'card';
   const rawTools = String(fv.show_tool_calls ?? '').trim();
-  const showToolCalls = rawTools !== 'hide';
+  const rawPresentation = String(fv.presentation_mode ?? '').trim();
+  const presentationMode: PresentationMode =
+    rawPresentation === 'clean' || rawPresentation === 'progress' || rawPresentation === 'debug'
+      ? rawPresentation
+      : rawTools === 'hide'
+        ? 'clean'
+        : rawTools === 'show'
+          ? 'debug'
+          : getPresentationMode(ctx.controls.cfg);
   // Parse max_concurrent_runs; invalid input falls back to current value.
   const rawMaxCC = String(fv.max_concurrent_runs ?? '').trim();
   const parsedMaxCC = Number(rawMaxCC);
@@ -1856,7 +1870,8 @@ async function submitConfig(ctx: CommandContext): Promise<void> {
       // markdown card. Set unconditionally on every submit so a user who
       // explicitly picks any option gets out of the legacy-coerce path.
       messageReplyMigrated: true,
-      showToolCalls,
+      showToolCalls: presentationMode === 'debug',
+      presentation: { mode: presentationMode },
       maxConcurrentRuns,
       runIdleTimeoutMinutes,
       requireMentionInGroup,
@@ -1900,7 +1915,7 @@ async function submitConfig(ctx: CommandContext): Promise<void> {
 
     log.info('command', 'config-saved', {
       messageReply,
-      showToolCalls,
+      presentationMode,
       maxConcurrentRuns,
       runIdleTimeoutMinutes,
       requireMentionInGroup,
@@ -1915,7 +1930,7 @@ async function submitConfig(ctx: CommandContext): Promise<void> {
       formMsgId,
       configSavedCard({
         messageReply,
-        showToolCalls,
+        presentationMode,
         maxConcurrentRuns,
         runIdleTimeoutMinutes,
         requireMentionInGroup,

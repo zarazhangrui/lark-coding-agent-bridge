@@ -1,3 +1,4 @@
+import type { PresentationMode } from '../config/schema';
 import type { Block, FooterStatus, RunState, ToolEntry } from './run-state';
 import { toolBodyMd, toolHeaderText } from './tool-render';
 
@@ -16,12 +17,14 @@ type Group = ToolGroup | TextGroup;
 
 export interface RunCardRenderOptions {
   signCallback?: (action: string) => string;
+  presentationMode?: PresentationMode;
 }
 
 export function renderCard(state: RunState, options: RunCardRenderOptions = {}): object {
+  const presentationMode = options.presentationMode ?? 'debug';
   const elements: object[] = [];
 
-  if (state.reasoning.content) {
+  if (presentationMode === 'debug' && state.reasoning.content) {
     elements.push(reasoningPanel(state.reasoning.content, state.reasoning.active));
   }
 
@@ -30,7 +33,7 @@ export function renderCard(state: RunState, options: RunCardRenderOptions = {}):
       if (group.content.trim()) {
         elements.push(markdown(group.content));
       }
-    } else {
+    } else if (presentationMode === 'debug') {
       elements.push(...renderToolGroup(group.tools, state.terminal !== 'running'));
     }
   }
@@ -47,7 +50,13 @@ export function renderCard(state: RunState, options: RunCardRenderOptions = {}):
   }
 
   if (state.terminal === 'running') {
-    if (state.footer) elements.push(footerStatus(state.footer));
+    const status =
+      presentationMode === 'debug'
+        ? state.footer
+          ? footerStatus(state.footer)
+          : undefined
+        : presentationStatus(state.footer, presentationMode);
+    if (status) elements.push(status);
     elements.push(stopButton(options));
   }
 
@@ -55,7 +64,7 @@ export function renderCard(state: RunState, options: RunCardRenderOptions = {}):
     schema: '2.0',
     config: {
       streaming_mode: state.terminal === 'running',
-      summary: { content: summaryText(state) },
+      summary: { content: summaryText(state, presentationMode) },
     },
     body: { elements },
   };
@@ -201,11 +210,25 @@ function footerStatus(status: Exclude<FooterStatus, null>): object {
   return noteMd(text);
 }
 
-function summaryText(state: RunState): string {
+function presentationStatus(status: FooterStatus, mode: Exclude<PresentationMode, 'debug'>): object {
+  if (mode === 'clean') return noteMd('_处理中…_');
+  const text =
+    status === 'thinking'
+      ? '_处理中：规划中…_'
+      : status === 'tool_running'
+        ? '_处理中：执行内部步骤…_'
+        : status === 'streaming'
+          ? '_处理中：整理回复…_'
+          : '_处理中…_';
+  return noteMd(text);
+}
+
+function summaryText(state: RunState, mode: PresentationMode): string {
   if (state.terminal === 'interrupted') return '已中断';
   if (state.terminal === 'idle_timeout') return '已超时';
   if (state.terminal === 'error') return '出错';
   if (state.terminal === 'done') return '已完成';
+  if (mode === 'clean') return '处理中';
   if (state.footer === 'tool_running') return '正在调用工具';
   if (state.footer === 'streaming') return '正在输出';
   return '思考中';

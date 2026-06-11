@@ -9,7 +9,7 @@ For a product walkthrough, see the [Feishu document](https://larkcommunity.feish
 ## What it does
 
 - Forwards Feishu / Lark messages to local Claude Code or Codex CLI. Send a DM directly, or `@bot` in a group.
-- **Streaming card**: text replies and tool calls update on one Lark card in real time.
+- **Streaming replies**: user-facing text updates in chat, while raw tool/reasoning details can stay hidden unless you enable debug mode.
 - **Session continuity**: each chat, topic, or document comment thread keeps its own session.
 - **Queueing and batching**: messages sent in quick succession are handled together; messages sent during a run are queued for the next turn, while commands like `/new`, `/cd`, `/ws use`, and `/stop` can interrupt the current task.
 - **Multiple workspaces**: use `/cd` to switch the current project, and `/ws` to save and reuse common project directories.
@@ -159,6 +159,16 @@ If a profile was created with the wrong agent kind, stop or unregister any match
 | `/help` | Help card |
 
 DMs do not require an @ mention. Groups and topic groups require `@bot` by default; `@all` is ignored. Cloud-doc comments in supported document types run when the bot is mentioned.
+
+### Presentation modes
+
+`/config` controls how much run detail is shown in Feishu / Lark:
+
+- `clean` (default): user-facing text plus a minimal processing status. Raw `Read` / `Bash` / `Write` / `Edit` events and reasoning are kept out of chat.
+- `progress`: user-facing text plus coarse phases such as planning, internal steps, and reply drafting. Commands, file paths from tool calls, outputs, and diffs stay out of chat.
+- `debug`: full reasoning and tool-call panels, useful for maintainers when diagnosing bridge or agent behavior.
+
+The bridge still records agent events and tool results in local logs/session state; presentation mode only changes what is rendered back to chat.
 
 ## lark-cli identity policy
 
