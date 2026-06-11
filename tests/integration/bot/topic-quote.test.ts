@@ -146,11 +146,70 @@ describe('topic message quote handling', () => {
       expect.objectContaining({ cardContentType: 'user_card_content' }),
     );
   });
+
+  it('expands interactive cards inside live merge-forward messages', async () => {
+    const h = await createHarness({
+      chatMode: 'group',
+      rawMessages: {
+        om_merge: [
+          {
+            message_id: 'om_merge',
+            msg_type: 'merge_forward',
+            body: { content: '{}' },
+            create_time: '1760000000000',
+            sender: { id: 'ou_forward_sender' },
+          },
+          {
+            message_id: 'om_card_child',
+            msg_type: 'interactive',
+            body: {
+              content: JSON.stringify({
+                schema: '2.0',
+                body: {
+                  elements: [
+                    {
+                      tag: 'markdown',
+                      content: '**Gemini图片生成-同步算子成功率告警-80%**',
+                    },
+                  ],
+                },
+              }),
+            },
+            create_time: '1760000000001',
+            sender: { id: 'cli_alarm_bot' },
+          },
+        ],
+      },
+    });
+
+    await startTestBridge(h);
+
+    await h.channel.handlers.message?.(
+      message({
+        messageId: 'om_merge',
+        rootId: '',
+        parentId: '',
+        content:
+          '<forwarded_messages>\n[2026-06-11T20:03:59+08:00] cli_alarm_bot:\n    [interactive card]\n</forwarded_messages>',
+        rawContentType: 'merge_forward',
+      }),
+    );
+    await waitFor(() => h.agent.runOptions.length === 1);
+
+    const prompt = h.agent.runOptions[0]?.prompt ?? '';
+    expect(h.channel.fetchRawMessage).toHaveBeenCalledWith(
+      'om_merge',
+      expect.objectContaining({ cardContentType: 'user_card_content' }),
+    );
+    expect(prompt).toContain('Gemini图片生成-同步算子成功率告警-80%');
+    expect(prompt).toContain('interactive_card');
+  });
 });
 
 async function createHarness(options: {
   chatMode?: 'group' | 'topic';
   quotedMessages?: Record<string, string>;
+  rawMessages?: Record<string, unknown[]>;
 } = {}): Promise<{
   tmp: TmpProfile;
   channel: FakeLarkChannel & { handlers: MessageHandlerMap };
@@ -226,6 +285,7 @@ async function startTestBridge(h: {
 function createFakeLarkChannel(options: {
   chatMode?: 'group' | 'topic';
   quotedMessages?: Record<string, string>;
+  rawMessages?: Record<string, unknown[]>;
 } = {}): FakeLarkChannel & { handlers: MessageHandlerMap } {
   const handlers: MessageHandlerMap = {};
   const chatMode = options.chatMode ?? 'topic';
@@ -248,19 +308,21 @@ function createFakeLarkChannel(options: {
     },
     getAppInfo: vi.fn(async () => ({ ownerId: 'ou_owner' })),
     listChats: vi.fn(async () => []),
-    fetchRawMessage: vi.fn(async (messageId: string) => [
-      {
-        message_id: messageId,
-        msg_type: 'text',
-        body: {
-          content: JSON.stringify({
-            text: quotedMessages[messageId] ?? 'quoted content',
-          }),
+    fetchRawMessage: vi.fn(async (messageId: string) =>
+      options.rawMessages?.[messageId] ?? [
+        {
+          message_id: messageId,
+          msg_type: 'text',
+          body: {
+            content: JSON.stringify({
+              text: quotedMessages[messageId] ?? 'quoted content',
+            }),
+          },
+          create_time: '1760000000000',
+          sender: { id: 'ou_quote_sender' },
         },
-        create_time: '1760000000000',
-        sender: { id: 'ou_quote_sender' },
-      },
-    ]),
+      ],
+    ),
     on(nextHandlers) {
       Object.assign(handlers, nextHandlers);
     },
@@ -301,6 +363,7 @@ function message(input: {
   parentId: string;
   threadId?: string;
   content: string;
+  rawContentType?: string;
 }): NormalizedMessage {
   return {
     messageId: input.messageId,
@@ -309,7 +372,7 @@ function message(input: {
     senderId: 'ou_user',
     senderName: 'User',
     content: input.content,
-    rawContentType: 'text',
+    rawContentType: input.rawContentType ?? 'text',
     resources: [],
     mentions: [{ key: '@_user_1', openId: 'ou_bot', name: 'Bridge', isBot: true }],
     mentionAll: false,

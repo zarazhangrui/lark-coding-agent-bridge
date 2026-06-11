@@ -58,7 +58,12 @@ import { commandSessionCatalogIdentity } from './session-catalog-identity';
 import { startKeepalive } from './keepalive';
 import { PendingQueue } from './pending-queue';
 import { ProcessPool } from './process-pool';
-import { fetchQuotedContext, type QuotedContext } from './quote';
+import {
+  fetchExpandedMessageContext,
+  fetchQuotedContext,
+  type ExpandedMessageContext,
+  type QuotedContext,
+} from './quote';
 import { addWorkingReaction, removeReaction } from './reaction';
 import { fetchKnownChats } from './lark-info';
 import type { AppPaths } from '../config/app-paths';
@@ -670,7 +675,8 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
     }
   }
 
-  const prompt = buildPrompt(batch, attachments, quotes, channel.botIdentity);
+  const expandedMessages = await fetchLiveMessageExpansions(channel, batch);
+  const prompt = buildPrompt(batch, attachments, quotes, channel.botIdentity, expandedMessages);
   log.info('prompt', 'built', { promptChars: prompt.length, quotes: quotes.length });
 
   // For topic groups: thread the reply so it lands in the same topic as the
@@ -1149,6 +1155,7 @@ function buildPrompt(
   attachments: LocalAttachment[],
   quotes: QuotedContext[] = [],
   botIdentity?: { openId: string; name?: string },
+  expandedMessages: Map<string, ExpandedMessageContext> = new Map(),
 ): string {
   const first = batch[0];
   if (!first) return '';
@@ -1160,7 +1167,8 @@ function buildPrompt(
   const annotate = batch.length > 1;
   const texts = batch
     .map((m) => {
-      const text = stripAttachmentRefs(m.content, fileKeys).trim();
+      const content = expandedMessages.get(m.messageId)?.content ?? m.content;
+      const text = stripAttachmentRefs(content, fileKeys).trim();
       if (!text) return '';
       return annotate ? `${senderAnnotation(m)} ${text}` : text;
     })
@@ -1194,6 +1202,30 @@ function buildPrompt(
     interactiveCards: batch.map(toPromptInteractiveCard).filter(isDefined),
     attachments: attachments.map(toPromptAttachment),
   });
+}
+
+async function fetchLiveMessageExpansions(
+  channel: LarkChannel,
+  batch: NormalizedMessage[],
+): Promise<Map<string, ExpandedMessageContext>> {
+  const out = new Map<string, ExpandedMessageContext>();
+  for (const msg of batch) {
+    if (!shouldExpandLiveMessage(msg)) continue;
+    const expanded = await fetchExpandedMessageContext(channel, msg.messageId);
+    if (!expanded) continue;
+    out.set(msg.messageId, expanded);
+    log.info('message', 'expanded-live', {
+      messageId: msg.messageId,
+      type: expanded.rawContentType,
+      contentChars: expanded.content.length,
+    });
+  }
+  return out;
+}
+
+function shouldExpandLiveMessage(msg: NormalizedMessage): boolean {
+  if (msg.rawContentType === 'merge_forward') return true;
+  return false;
 }
 
 /**
