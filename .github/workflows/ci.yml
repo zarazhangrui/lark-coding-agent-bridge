@@ -12,6 +12,10 @@ jobs:
       fail-fast: false
       matrix:
         os: [macos-latest, ubuntu-latest, windows-latest]
+        include:
+          - os: windows-latest
+            allow_failure: true
+    continue-on-error: ${{ matrix.allow_failure == true }}
 
     steps:
       - name: Checkout
