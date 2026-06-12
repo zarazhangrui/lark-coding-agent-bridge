@@ -83,6 +83,9 @@ export interface AppAccess {
    * (/account, /config, /exit, /reconnect, /doctor, /cd, /ws, /doc,
    * /invite, /remove). */
   admins?: string[];
+  /** open_id list of bots with admin privileges. Same gates as admins
+   * but for other bots — enables bot-to-bot admin delegation. */
+  botAdmins?: string[];
 }
 
 export interface AppPreferences {

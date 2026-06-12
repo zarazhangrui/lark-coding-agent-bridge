@@ -13,6 +13,7 @@ export interface ConfigFormOpts {
   allowedUsers: string[];
   allowedChats: string[];
   admins: string[];
+  botAdmins: string[];
   knownChats: KnownChat[];
 }
 
@@ -81,8 +82,17 @@ export function configFormCard(opts: ConfigFormOpts): object {
       content:
         `**管理员**（共 ${opts.admins.length} 人）\n` +
         `${atMentionLine(opts.admins)}\n\n` +
-        '_可以跑敏感命令：`/account` `/config` `/exit` `/reconnect` `/doctor` `/cd` `/ws` `/invite` `/remove`。管理员也自动获得私聊权限，并可在未白名单群里管理访问控制。_\n\n' +
+        '_可以跑敏感命令：`/account` `/config` `/exit` `/reconnect` `/doctor` `/cd` `/ws` `/project` `/invite` `/remove`。管理员也自动获得私聊权限，并可在未白名单群里管理访问控制。_\n\n' +
         '_加 / 删：_ `/invite admin @某人`  `/remove admin @某人`',
+    },
+    { tag: 'hr' },
+    {
+      tag: 'markdown',
+      content:
+        `**Bot 管理员**（共 ${opts.botAdmins.length} 个）\n` +
+        `${atMentionLine(opts.botAdmins)}\n\n` +
+        '_其他 Bot 可执行 `/cd` `/ws` `/project` `/invite group` `/remove group` 等运营命令；不能管理用户、人类管理员或配置。_\n\n' +
+        '_加 / 删：_ `/botAdmin add @Bot名`  `/botAdmin remove @Bot名`',
     },
   ];
 
@@ -268,7 +278,8 @@ export function configSavedCard(opts: ConfigFormOpts): object {
             '🔒 **访问控制**\n' +
             `**允许私聊的用户**:${summarize(opts.allowedUsers)}\n` +
             `**允许响应的群**:${summarize(opts.allowedChats)}\n` +
-            `**管理员**:${summarize(opts.admins)}\n\n` +
+            `**管理员**:${summarize(opts.admins)}\n` +
+            `**Bot 管理员**:${summarize(opts.botAdmins)}\n\n` +
             '下条消息开始生效。',
         },
       ],

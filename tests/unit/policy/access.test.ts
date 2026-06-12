@@ -2,8 +2,10 @@ import { describe, expect, it } from 'vitest';
 import {
   accessPolicyDigest,
   canRunAdminCommand,
+  canRunBotAdminCommand,
   canUseDm,
   canUseGroup,
+  isBotAdmin,
   isCreator,
   type RuntimeControls,
 } from '../../../src/policy/access';
@@ -98,6 +100,43 @@ describe('access policy', () => {
 
     const withAdmin = profileWithAccess({ admins: ['ou_admin'] });
     expect(canRunAdminCommand(withAdmin, ownerControls, 'ou_admin').ok).toBe(true);
+  });
+
+  // ── botAdmin tier tests ──
+
+  it('lets botAdmins pass canRunBotAdminCommand but not canRunAdminCommand', () => {
+    const profile = profileWithAccess({ botAdmins: ['ou_bot'] });
+
+    // botAdmin passes operational gate
+    expect(canRunBotAdminCommand(profile, ownerControls, 'ou_bot')).toEqual({
+      ok: true,
+      reason: 'allowed-admin',
+    });
+    // botAdmin does NOT pass human-admin-only gate
+    expect(canRunAdminCommand(profile, ownerControls, 'ou_bot').ok).toBe(false);
+  });
+
+  it('isBotAdmin returns true only for botAdmins list members', () => {
+    const profile = profileWithAccess({
+      admins: ['ou_admin'],
+      botAdmins: ['ou_bot'],
+    });
+
+    expect(isBotAdmin(profile, 'ou_bot')).toBe(true);
+    expect(isBotAdmin(profile, 'ou_admin')).toBe(false); // human admin ≠ botAdmin
+    expect(isBotAdmin(profile, 'ou_other')).toBe(false);
+  });
+
+  it('owner passes both canRunAdminCommand and canRunBotAdminCommand', () => {
+    const profile = profileWithAccess();
+    expect(canRunAdminCommand(profile, ownerControls, 'ou_owner').ok).toBe(true);
+    expect(canRunBotAdminCommand(profile, ownerControls, 'ou_owner').ok).toBe(true);
+  });
+
+  it('human admin passes both canRunAdminCommand and canRunBotAdminCommand', () => {
+    const profile = profileWithAccess({ admins: ['ou_admin'] });
+    expect(canRunAdminCommand(profile, ownerControls, 'ou_admin').ok).toBe(true);
+    expect(canRunBotAdminCommand(profile, ownerControls, 'ou_admin').ok).toBe(true);
   });
 
   it('does not include runtime owner state in the access policy digest', () => {
