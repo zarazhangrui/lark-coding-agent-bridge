@@ -83,7 +83,8 @@ export async function handleCardAction(deps: CardDispatchDeps): Promise<void> {
 
   const cmd = typeof payload.cmd === 'string' ? payload.cmd : '';
   if (cmd) {
-    if (isSignedBridgeCallback(payload) && !verifyBridgeToken(deps, payload, scope, cmd)) {
+    const signedBridgeCallback = isSignedBridgeCallback(payload);
+    if (signedBridgeCallback && !verifyBridgeToken(deps, payload, scope, cmd)) {
       return;
     }
     log.info('cardAction', 'cmd', { cmd, scope });
@@ -112,6 +113,7 @@ export async function handleCardAction(deps: CardDispatchDeps): Promise<void> {
       controls: deps.controls,
       formValue,
       fromCardAction: true,
+      cardActionAuthorized: signedBridgeCallback,
     };
 
     const [name, ...rest] = cmd.split('.');

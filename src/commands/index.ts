@@ -133,6 +133,9 @@ export interface CommandContext {
    * text command. Determines whether to update the existing card vs send a
    * new one. */
   fromCardAction?: boolean;
+  /** True when a card command callback carried a valid bridge_token. Unsigned
+   * card commands still need the normal admin/botAdmin gate. */
+  cardActionAuthorized?: boolean;
 }
 
 type Handler = (args: string, ctx: CommandContext) => Promise<void>;
@@ -246,10 +249,7 @@ export async function tryHandleCommand(ctx: CommandContext): Promise<boolean> {
   const h = handlers[cmd];
   if (!h) return false;
 
-  // Card callbacks have their own bridge_token verification in the
-  // dispatcher; don't double-gate them through the admin-command check
-  // (the callback operator may not be in admins/botAdmins).
-  if (!ctx.fromCardAction) {
+  if (!ctx.fromCardAction || !ctx.cardActionAuthorized) {
     const gate = resolveCommandGate(
       cmd,
       ctx.controls.profileConfig,
@@ -284,7 +284,7 @@ export async function runCommandHandler(
   const h = handlers[`/${name}`];
   if (!h) return false;
 
-  if (!ctx.fromCardAction) {
+  if (!ctx.fromCardAction || !ctx.cardActionAuthorized) {
     const gate = resolveCommandGate(
       name,
       ctx.controls.profileConfig,
