@@ -1,4 +1,4 @@
-import { readAndPrune, resolveTarget, isAlive } from '../../runtime/registry';
+import { readAndPrune, resolveTarget, isAlive, unregister } from '../../runtime/registry';
 import type { ProcessEntry } from '../../runtime/registry';
 
 /**
@@ -51,6 +51,13 @@ export async function runKillCli(target: string | undefined): Promise<void> {
     process.exit(1);
   }
 
+  if (result === 'not-running') {
+    // Hard-killed processes (crash, Stop-Process, task-scheduler kill) never
+    // unregister themselves; drop the ghost entry so `ps` stops listing it.
+    await unregister(entry.id);
+    console.log(`✓ bot ${entry.id} 的进程已不存在,已清理注册表残留。`);
+    return;
+  }
   if (result === 'killed') {
     console.log(`✓ 已强制关闭 bot ${entry.id}。`);
     return;
@@ -58,13 +65,18 @@ export async function runKillCli(target: string | undefined): Promise<void> {
   console.log(`✓ 已关闭 bot ${entry.id}。`);
 }
 
-export type StopProcessEntryResult = 'terminated' | 'killed';
+export type StopProcessEntryResult = 'terminated' | 'killed' | 'not-running';
 
 export async function stopProcessEntry(
   entry: Pick<ProcessEntry, 'pid'> & { id?: string },
   timeoutMs = 2000,
 ): Promise<StopProcessEntryResult> {
-  process.kill(entry.pid, 'SIGTERM');
+  try {
+    process.kill(entry.pid, 'SIGTERM');
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ESRCH') return 'not-running';
+    throw err;
+  }
 
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {

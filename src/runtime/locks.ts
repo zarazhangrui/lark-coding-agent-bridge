@@ -1,4 +1,4 @@
-import { chmod, mkdir, readFile, unlink, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, readFile, rm, unlink, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import * as lockfile from 'proper-lockfile';
 import type { AppPaths } from '../config/app-paths';
@@ -96,6 +96,19 @@ export async function acquireProfileRuntimeLock(
 
 export function runtimeLockMetaFile(target: string): string {
   return `${target}.meta.json`;
+}
+
+/**
+ * Remove lockfile artifacts left behind by a dead holder. A hard kill
+ * (crash, Stop-Process, task-scheduler termination — common on Windows)
+ * leaves the `.lock` dir in place, and proper-lockfile only reclaims it
+ * after the stale window, which turns every crash into a confusing
+ * "already running" failure on the next `start`. Only call this after
+ * confirming the holder process is gone.
+ */
+export async function cleanupStaleRuntimeLock(target: string): Promise<void> {
+  await rm(`${target}.lock`, { recursive: true, force: true });
+  await rm(runtimeLockMetaFile(target), { force: true });
 }
 
 export async function readRuntimeLockMeta(target: string): Promise<RuntimeLockMeta | undefined> {
