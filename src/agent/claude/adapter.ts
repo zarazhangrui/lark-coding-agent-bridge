@@ -1,7 +1,12 @@
 import { createInterface } from 'node:readline';
 import type { Readable } from 'node:stream';
 import { log } from '../../core/logger';
-import { mergeProcessEnv, spawnProcess, type SpawnedProcessByStdio } from '../../platform/spawn';
+import {
+  mergeProcessEnv,
+  resolveWindowsCmdShim,
+  spawnProcess,
+  type SpawnedProcessByStdio,
+} from '../../platform/spawn';
 import { buildBridgeSystemPrompt } from '../bridge-system-prompt';
 import { buildLarkChannelEnv, type LarkChannelEnvContext } from '../lark-channel-env';
 import { checkAgentAvailability, type AgentAvailability } from '../preflight';
@@ -71,7 +76,13 @@ export class ClaudeAdapter implements AgentAdapter {
     if (opts.sessionId) args.push('--resume', opts.sessionId);
     if (opts.model) args.push('--model', opts.model);
 
-    const child = spawnProcess(this.binary, args, {
+    // On Windows, bypass cmd.exe by spawning node + the resolved entry script
+    // directly. See resolveWindowsCmdShim for the full rationale.
+    const shim = resolveWindowsCmdShim(this.binary);
+    const spawnBin = shim?.command ?? this.binary;
+    const spawnArgs = shim ? [...shim.prependArgs, ...args] : args;
+
+    const child = spawnProcess(spawnBin, spawnArgs, {
       cwd: opts.cwd,
       env: mergeProcessEnv(process.env, buildLarkChannelEnv(this.larkChannel)),
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -83,6 +94,7 @@ export class ClaudeAdapter implements AgentAdapter {
       hasSession: Boolean(opts.sessionId),
       promptChars: opts.prompt.length,
       model: opts.model,
+      shim: shim ? 'win32-node' : null,
     });
 
     // Listeners MUST be attached synchronously here, before we return.
