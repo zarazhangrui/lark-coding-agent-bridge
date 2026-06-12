@@ -51,6 +51,17 @@ gate.
 
 ## Command Gates
 
+Public self-service commands available to any allowed caller:
+
+- `/status`
+- `/help`
+- `/new`
+- `/reset`
+- `/resume`
+- `/stop`
+- `/timeout`
+- `/doc`
+
 Human-admin commands:
 
 - `/account`
@@ -67,15 +78,7 @@ Operational commands allowed for bot admins:
 - `/project`
 - `/invite`
 - `/remove`
-- `/status`
-- `/help`
-- `/stop`
-- `/timeout`
 - `/ps`
-- `/new`
-- `/reset`
-- `/resume`
-- `/doc`
 
 `/invite` and `/remove` are still handler-gated:
 
@@ -90,7 +93,8 @@ Operational commands allowed for bot admins:
 | `/remove group` | yes | yes | yes | no |
 | `/cd` | yes | yes | yes | no |
 | `/project start` | yes | yes | yes | no |
-| `/status` / `/help` | yes | yes | yes | yes |
+| `/status` / `/help` / `/new` / `/reset` / `/resume` / `/stop` / `/timeout` / `/doc` | yes | yes | yes | yes |
+| `/ps` | yes | yes | yes | no |
 | `/invite user` | yes | yes | no | no |
 | `/invite admin` | yes | yes | no | no |
 | `/remove admin` | yes | yes | no | no |
@@ -181,6 +185,9 @@ The config card must display bot admins separately from human admins.
 - bot admins do not pass `canRunAdminCommand`.
 - `isBotAdmin` is an exact list membership check.
 - `/botAdmin add/remove/list` persists and renders correctly.
+- regular allowed users can run public self-service commands.
+- unsigned public command card callbacks work, while unsigned admin command
+  callbacks stay gated.
 - bot admins can run operational commands.
 - bot admins cannot run role-elevation commands.
 - text-only fake `@Name` is rejected.
