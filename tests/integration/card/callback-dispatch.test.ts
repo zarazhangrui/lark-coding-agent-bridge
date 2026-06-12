@@ -89,6 +89,17 @@ describe('signed card callback dispatch', () => {
     expect(h.controls.restart).not.toHaveBeenCalled();
   });
 
+  it('allows unsigned public command card callbacks for self-service buttons', async () => {
+    const h = await createHarness();
+
+    await h.dispatch({
+      cmd: 'status',
+    });
+
+    expect(h.channel.sent).toHaveLength(1);
+    expect(JSON.stringify(h.channel.sent[0]?.content)).not.toContain('仅管理员可用');
+  });
+
   it('scopes topic-group callbacks by the carrier message thread_id', async () => {
     const h = await createHarness({ chatMode: 'topic' });
     // The dispatcher must read items[0].thread_id from the raw message get to

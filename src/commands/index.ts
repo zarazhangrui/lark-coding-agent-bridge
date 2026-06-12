@@ -193,11 +193,28 @@ const ADMIN_ONLY_COMMANDS = new Set([
 ]);
 
 /**
+ * Self-service commands available to any caller that has already passed the
+ * chat-level allow policy. These do not change shared access, credentials, or
+ * process-wide lifecycle state.
+ */
+const PUBLIC_COMMANDS = new Set([
+  '/status',
+  '/help',
+  '/new',
+  '/reset',
+  '/resume',
+  '/stop',
+  '/timeout',
+  '/doc',
+]);
+
+/**
  * Commands allowed for botAdmins in addition to human admins/owner.
  * These are project-operations commands: group join/leave, cwd,
- * project setup, and status queries.  `/invite` and `/remove` are
- * included here but further gated inside their handlers: botAdmins
- * may only use the `group` sub-kind, not `user` or `admin`.
+ * project setup, process inspection, and role-limited group membership
+ * management.  `/invite` and `/remove` are included here but further gated
+ * inside their handlers: botAdmins may only use the `group` sub-kind, not
+ * `user` or `admin`.
  */
 const BOT_ADMIN_COMMANDS = new Set([
   '/cd',
@@ -205,15 +222,7 @@ const BOT_ADMIN_COMMANDS = new Set([
   '/project',
   '/invite',
   '/remove',
-  '/status',
-  '/help',
-  '/stop',
-  '/timeout',
   '/ps',
-  '/new',
-  '/reset',
-  '/resume',
-  '/doc',
 ]);
 
 function isAdminOnlyCommand(cmd: string): boolean {
@@ -231,6 +240,9 @@ function resolveCommandGate(
   senderId: string,
 ): AccessDecision {
   const c = cmd.startsWith('/') ? cmd : `/${cmd}`;
+  if (PUBLIC_COMMANDS.has(c)) {
+    return { ok: true, reason: 'allowed-public' };
+  }
   if (ADMIN_ONLY_COMMANDS.has(c)) {
     return canRunAdminCommand(profile, controls, senderId);
   }

@@ -423,6 +423,28 @@ describe('Bridge command contracts', () => {
     expect(lastMarkdown(h.channel)).toContain('仅管理员可用');
   });
 
+  it('allows regular allowed users to run public self-service commands', async () => {
+    const h = await createHarness();
+    const userRun = (content: string, overrides?: RunOverrides) =>
+      h.run(content, { senderId: 'ou-user', ...overrides });
+
+    await expect(userRun('/help')).resolves.toBe(true);
+    expect(JSON.stringify(lastContent(h.channel))).not.toContain('仅管理员可用');
+
+    await expect(userRun('/status')).resolves.toBe(true);
+    expect(JSON.stringify(lastContent(h.channel))).not.toContain('仅管理员可用');
+
+    await expect(userRun('/new')).resolves.toBe(true);
+    expect(lastMarkdown(h.channel)).toContain('已开始新会话');
+
+    h.activeRuns.register('chat-1', h.agent.run({ runId: 'run-1', prompt: 'running' }));
+    await expect(userRun('/stop')).resolves.toBe(true);
+    expect(JSON.stringify(lastContent(h.channel))).not.toContain('仅管理员可用');
+
+    await expect(userRun('/config')).resolves.toBe(true);
+    expect(lastMarkdown(h.channel)).toContain('仅管理员可用');
+  });
+
   // ── Anti-lockout tests ──
 
   it('prevents removing the last human admin', async () => {
