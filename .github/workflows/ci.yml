@@ -38,14 +38,35 @@ jobs:
       - name: Build
         run: pnpm build
 
+  package:
+    name: Package npm tarball
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Enable pnpm
+        run: corepack enable
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Build
+        run: pnpm build
+
       - name: Pack npm tarball
-        if: matrix.os == 'ubuntu-latest'
         run: |
           mkdir -p artifacts
           npm pack --pack-destination artifacts
 
       - name: Upload npm tarball
-        if: matrix.os == 'ubuntu-latest'
         uses: actions/upload-artifact@v4
         with:
           name: lark-channel-bridge-${{ github.sha }}
