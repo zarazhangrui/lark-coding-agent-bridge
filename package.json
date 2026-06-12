@@ -1,5 +1,5 @@
 {
-  "name": "@tobinzuo/lark-channel-bridge",
+  "name": "@gec-lumen/lark-channel-bridge",
   "version": "0.3.0-cardfix.0",
   "description": "Bridge Feishu/Lark messenger with local CLI coding agents",
   "type": "module",
@@ -29,8 +29,8 @@
     "LICENSE"
   ],
   "publishConfig": {
-    "registry": "https://registry.npmjs.org",
-    "access": "public"
+    "registry": "https://bnpm.byted.org",
+    "access": "restricted"
   },
   "scripts": {
     "dev": "tsup --watch",
