@@ -37,3 +37,16 @@ jobs:
 
       - name: Build
         run: pnpm build
+
+      - name: Pack npm tarball
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          mkdir -p artifacts
+          npm pack --pack-destination artifacts
+
+      - name: Upload npm tarball
+        if: matrix.os == 'ubuntu-latest'
+        uses: actions/upload-artifact@v4
+        with:
+          name: lark-channel-bridge-${{ github.sha }}
+          path: artifacts/*.tgz
