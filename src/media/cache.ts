@@ -1,8 +1,8 @@
 import { createHash } from 'node:crypto';
 import { createReadStream } from 'node:fs';
-import { mkdir, readdir, rename, rm, stat } from 'node:fs/promises';
+import { mkdir, readdir, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import type { LarkChannel, ResourceDescriptor } from '@larksuite/channel';
+import type { LarkChannel, ResourceDescriptor, ResourceType } from '@larksuite/channel';
 import { paths } from '../config/paths';
 import { log } from '../core/logger';
 import {
@@ -86,7 +86,8 @@ export class MediaCache {
     // otherwise sit entirely in the JS heap before being rejected. It returns
     // the server content-type so we can pick an accurate extension, falling
     // back to defaultMime(kind) when absent.
-    const { contentType } = await this.channel.downloadResourceToFile(
+    const { contentType } = await downloadResourceToFile(
+      this.channel,
       messageId,
       r.fileKey,
       r.type === 'image' ? 'image' : 'file',
@@ -122,6 +123,43 @@ export class MediaCache {
     });
     return candidate;
   }
+}
+
+interface ChannelResourceDownloader {
+  downloadResourceToFile?(
+    messageId: string,
+    fileKey: string,
+    type: ResourceType,
+    destPath: string,
+  ): Promise<{ contentType?: string; bytesWritten?: number }>;
+  downloadResourceWithMeta?(
+    messageId: string,
+    fileKey: string,
+    type: ResourceType,
+  ): Promise<{ buffer: Buffer; contentType?: string }>;
+}
+
+async function downloadResourceToFile(
+  channel: LarkChannel,
+  messageId: string,
+  fileKey: string,
+  type: ResourceType,
+  destPath: string,
+): Promise<{ contentType?: string }> {
+  const downloader = channel as unknown as ChannelResourceDownloader;
+  if (typeof downloader.downloadResourceToFile === 'function') {
+    return downloader.downloadResourceToFile(messageId, fileKey, type, destPath);
+  }
+  if (typeof downloader.downloadResourceWithMeta === 'function') {
+    const { buffer, contentType } = await downloader.downloadResourceWithMeta(
+      messageId,
+      fileKey,
+      type,
+    );
+    await writeFile(destPath, buffer);
+    return { contentType };
+  }
+  throw new Error('channel does not support message resource download');
 }
 
 /** Delete files under the media cache whose mtime is older than maxAgeMs. */

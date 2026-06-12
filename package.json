@@ -1,17 +1,17 @@
 {
-  "name": "lark-channel-bridge",
-  "version": "0.3.0",
+  "name": "@gec-lumen/lark-channel-bridge",
+  "version": "0.3.0-cardfix.0",
   "description": "Bridge Feishu/Lark messenger with local CLI coding agents",
   "type": "module",
   "packageManager": "pnpm@10.33.0",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/zarazhangrui/feishu-claude-code-bridge.git"
+    "url": "git+https://github.com/TobinZuo/lark-coding-agent-bridge.git"
   },
   "bugs": {
-    "url": "https://github.com/zarazhangrui/feishu-claude-code-bridge/issues"
+    "url": "https://github.com/TobinZuo/lark-coding-agent-bridge/issues"
   },
-  "homepage": "https://github.com/zarazhangrui/feishu-claude-code-bridge#readme",
+  "homepage": "https://github.com/TobinZuo/lark-coding-agent-bridge#readme",
   "bin": {
     "lark-channel-bridge": "./bin/lark-channel-bridge.mjs"
   },
@@ -28,6 +28,10 @@
     "README.zh.md",
     "LICENSE"
   ],
+  "publishConfig": {
+    "registry": "https://bnpm.byted.org",
+    "access": "restricted"
+  },
   "scripts": {
     "dev": "tsup --watch",
     "build": "tsup",

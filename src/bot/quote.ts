@@ -21,6 +21,15 @@ export interface QuotedContext {
   rawContentType: string;
 }
 
+export interface ExpandedMessageContext {
+  messageId: string;
+  senderId: string;
+  senderName?: string;
+  createdAt: string;
+  content: string;
+  rawContentType: string;
+}
+
 /**
  * Fetch and normalize the content of a message that the user is reply-quoting.
  *
@@ -63,6 +72,13 @@ export async function fetchQuotedContext(
   channel: LarkChannel,
   messageId: string,
 ): Promise<QuotedContext | undefined> {
+  return fetchExpandedMessageContext(channel, messageId);
+}
+
+export async function fetchExpandedMessageContext(
+  channel: LarkChannel,
+  messageId: string,
+): Promise<ExpandedMessageContext | undefined> {
   let items: ApiMessageItem[];
   try {
     // Ask for the original card JSON (incl. v2 user_dsl) instead of the
