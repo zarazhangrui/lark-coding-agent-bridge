@@ -1,5 +1,5 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
-import { createWriteStream, mkdirSync, type WriteStream } from 'node:fs';
+import { createWriteStream, mkdirSync, renameSync, statSync, type WriteStream } from 'node:fs';
 import { open, readdir, rm, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { telemetry } from './telemetry';
@@ -14,6 +14,28 @@ const DEFAULT_RETENTION_DAYS = Math.max(
   1,
   Number(process.env.LARK_CHANNEL_LOG_DAYS ?? 30) || 30,
 );
+
+/** Max bytes per daily log file before rotation (default 100 MB). */
+const MAX_LOG_SIZE = (() => {
+  const v = Number(process.env.LARK_CHANNEL_MAX_LOG_SIZE_MB);
+  return (Number.isFinite(v) && v > 0 ? v : 100) * 1024 * 1024;
+})();
+
+/**
+ * Max consecutive process-level errors within the time window before
+ * suppressing further file writes (default 10 / 60s).
+ * Set LARK_CHANNEL_LOG_RATE_LIMIT to "<count>,<window-ms>", e.g. "5,30000".
+ */
+const LOG_RATE_LIMIT: { maxHits: number; windowMs: number } = (() => {
+  const raw = process.env.LARK_CHANNEL_LOG_RATE_LIMIT;
+  if (raw) {
+    const parts = raw.split(',');
+    const c = Number(parts[0]);
+    const w = Number(parts[1]);
+    if (Number.isFinite(c) && c > 0 && Number.isFinite(w) && w > 0) return { maxHits: c, windowMs: w };
+  }
+  return { maxHits: 10, windowMs: 60_000 };
+})();
 
 let loggerOptions: LoggerOptions = {
   retentionDays: DEFAULT_RETENTION_DAYS,
@@ -59,6 +81,15 @@ const als = new AsyncLocalStorage<LogContext>();
 let stream: WriteStream | null = null;
 let currentDate = '';
 
+// ── Error-flood guard ─────────────────────────────────────────────
+// Counts consecutive `process.fail` (uncaughtException / unhandledRejection)
+// entries within a sliding window. Once the threshold is crossed the file
+// writer stops flushing them to disk so a single broken pipe can't fill the
+// drive. The process stays alive — per-bridge design — but stops amplifying.
+let _errorHits = 0;
+let _errorWindowStart = 0;
+let _errorSuppressed = false;
+
 function todayKey(): string {
   return loggerOptions.now().toISOString().slice(0, 10).replace(/-/g, '');
 }
@@ -85,7 +116,28 @@ function getStream(): WriteStream | null {
   }
   try {
     mkdirSync(dir, { recursive: true });
-    stream = createWriteStream(join(dir, logFileName(today)), { flags: 'a' });
+    let basePath = join(dir, logFileName(today));
+    // Rotate when the daily file exceeds the size limit.
+    // bridge-YYYYMMDD.jsonl → bridge-YYYYMMDD-1.jsonl → bridge-YYYYMMDD-2.jsonl …
+    try {
+      const st = statSync(basePath);
+      if (st.size >= MAX_LOG_SIZE) {
+        let seq = 1;
+        for (;;) {
+          const rotated = join(dir, `bridge-${today}-${seq}.jsonl`);
+          try {
+            statSync(rotated);
+            seq++;
+          } catch {
+            renameSync(basePath, rotated);
+            break;
+          }
+        }
+      }
+    } catch {
+      /* file does not exist yet — first write of the day */
+    }
+    stream = createWriteStream(basePath, { flags: 'a' });
     currentDate = today;
     return stream;
   } catch {
@@ -242,8 +294,46 @@ function emit(level: Level, phase: string, event: string, fields: LogFields = {}
     }
   }
 
+  // Sanitize early — both the flood-guard telemetry path and the normal
+  // path below need these.
   const externalEntry = sanitizeLogEntry(entry, EXTERNAL_SANITIZE);
   const telemetrySafe = telemetryPayloadFromEntry(externalEntry);
+
+  // ── Error-flood guard ────────────────────────────────────────
+  // When the same process-level error repeats rapidly (e.g. EPIPE after
+  // the agent process dies) the naïve log loop can fill the disk in
+  // seconds.  Track consecutive `process.fail` hits inside a sliding
+  // window; past the threshold we stop writing them to the file but
+  // still emit to telemetry so the owner can observe the spike.
+  if (level === 'error' && phase === 'process' && event === 'fail') {
+    const now = Date.now();
+    if (now - _errorWindowStart > LOG_RATE_LIMIT.windowMs) {
+      _errorHits = 1;
+      _errorWindowStart = now;
+      _errorSuppressed = false;
+    } else {
+      _errorHits++;
+      if (_errorHits > LOG_RATE_LIMIT.maxHits) {
+        _errorSuppressed = true;
+      }
+    }
+
+    if (_errorSuppressed) {
+      // Telemetry only — skip the (potentially gigantic) file write.
+      try {
+        telemetry().emit({
+          level,
+          phase,
+          event,
+          fields: telemetrySafe.fields,
+          ctx: telemetrySafe.ctx,
+          ts: String(entry.ts),
+        });
+      } catch { /* never break logging */ }
+      return;
+    }
+  }
+
   const s = getStream();
   if (s) {
     try {
