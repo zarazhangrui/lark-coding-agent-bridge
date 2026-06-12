@@ -233,7 +233,7 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
     handshakeTimeoutMs: 8_000,
     // Per-request REST timeout — without a cap a slow API can hang the
     // event-handling thread.
-    httpTimeoutMs: 30_000,
+    httpTimeoutMs: (() => { const v = Number(process.env.LARK_CHANNEL_STREAM_TIMEOUT_MS); return Number.isFinite(v) && v > 0 ? v : 30_000; })(),
     // Route WS + REST through HTTPS_PROXY / HTTP_PROXY when set (no-op otherwise).
     respectProxyEnv: true,
   };
