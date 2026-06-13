@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  BRIDGE_OUTBOUND_MEDIA_PROMPT,
   BRIDGE_SYSTEM_PROMPT,
   buildBridgeSystemPrompt,
   prefixBridgeSystemPrompt,
@@ -40,8 +41,10 @@ describe('bridge system prompt bot collaboration rules', () => {
 });
 
 describe('buildBridgeSystemPrompt', () => {
-  it('returns the base prompt unchanged when no identity is available', () => {
-    expect(buildBridgeSystemPrompt(undefined)).toBe(BRIDGE_SYSTEM_PROMPT);
+  it('returns the base prompt plus outbound media instructions when no identity is available', () => {
+    expect(buildBridgeSystemPrompt(undefined)).toBe(
+      `${BRIDGE_SYSTEM_PROMPT}${BRIDGE_OUTBOUND_MEDIA_PROMPT}`,
+    );
   });
 
   it('appends a concrete identity line with open_id and name', () => {
@@ -68,6 +71,7 @@ describe('prefixBridgeSystemPrompt', () => {
   it('keeps working without an identity', () => {
     const prompt = prefixBridgeSystemPrompt('hello world', undefined);
     expect(prompt.startsWith(BRIDGE_SYSTEM_PROMPT)).toBe(true);
+    expect(prompt).toContain(BRIDGE_OUTBOUND_MEDIA_PROMPT);
     expect(prompt.endsWith('hello world')).toBe(true);
   });
 });

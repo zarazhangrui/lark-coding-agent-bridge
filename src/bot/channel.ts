@@ -56,6 +56,7 @@ import { handleCommentMention } from './comments';
 import { recordRunSessionEvent, startRunFlow } from './run-flow';
 import { commandSessionCatalogIdentity } from './session-catalog-identity';
 import { startKeepalive } from './keepalive';
+import { sendOutboundArtifacts } from './outbound-artifacts';
 import { PendingQueue } from './pending-queue';
 import { ProcessPool } from './process-pool';
 import { fetchQuotedContext, type QuotedContext } from './quote';
@@ -845,6 +846,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
           );
         },
       });
+      await sendOutboundArtifacts(channel, chatId, filterForPrefs(await renderDone), cwd, sendOpts);
     } else if (replyMode === 'markdown') {
       let latestState: RunState = initialState;
       let producerStarted = false;
@@ -886,6 +888,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
           }
         },
       });
+      await sendOutboundArtifacts(channel, chatId, filterForPrefs(await renderDone), cwd, sendOpts);
     } else {
       // text mode: drain the agent stream without sending anything during
       // the run, then post the final rendered text once as a plain markdown
@@ -902,6 +905,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
       if (body.trim()) {
         await channel.send(chatId, { markdown: body }, sendOpts);
       }
+      await sendOutboundArtifacts(channel, chatId, filterForPrefs(finalState), cwd, sendOpts);
     }
   } catch (err) {
     log.fail('stream', err);
@@ -1084,6 +1088,7 @@ async function awaitRenderAwareStream(input: {
       mode: input.mode,
       graceMs: STREAM_TERMINAL_GRACE_MS,
     });
+    await runFallbackReply(input.mode, first.state, input.fallback);
     void streamResult.then((result) => {
       if (!result.ok) {
         log.fail('stream', result.err, { mode: input.mode, step: 'stream-terminal-late' });
@@ -1091,7 +1096,10 @@ async function awaitRenderAwareStream(input: {
     });
     return;
   }
-  if (!terminal.ok) throw terminal.err;
+  if (!terminal.ok) {
+    log.fail('stream', terminal.err, { mode: input.mode, step: 'stream-terminal' });
+    await runFallbackReply(input.mode, first.state, input.fallback);
+  }
 }
 
 async function runFallbackReply(
