@@ -143,8 +143,11 @@ export async function startRunFlow(input: StartRunFlowInput): Promise<StartRunFl
       policy,
       sessionId,
       threadId,
+      // Both codex and claude can ingest images now; codex via --image argv,
+      // claude via stream-json stdin (see claude/adapter.ts). Other agents
+      // still get undefined.
       images:
-        input.capability.agentId === 'codex'
+        input.capability.agentId === 'codex' || input.capability.agentId === 'claude'
           ? policy.attachments
               .filter((attachment) => attachment.kind === 'image' && attachment.decision === 'accepted')
               .map((attachment) => attachment.path)
