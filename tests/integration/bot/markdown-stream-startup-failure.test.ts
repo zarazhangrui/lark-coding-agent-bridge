@@ -4,6 +4,13 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createDefaultProfileConfig } from '../../../src/config/profile-schema.js';
 import { log } from '../../../src/core/logger.js';
+import {
+  sessionCatalogKey,
+  type SessionCatalog,
+  type SessionCatalogEntry,
+  type UpsertSessionCatalogInput,
+} from '../../../src/session/catalog.js';
+import { ContextBudgetStore } from '../../../src/session/context-budget.js';
 import { SessionStore } from '../../../src/session/store.js';
 import { WorkspaceStore } from '../../../src/workspace/store.js';
 import { FakeAgentAdapter } from '../../helpers/fake-agent.js';
@@ -117,6 +124,42 @@ describe('markdown stream startup failures', () => {
     await waitFor(() => h.channel.rawClient.im.v1.messageReaction.delete.mock.calls.length > 0);
   });
 
+  it('starts a fresh IM session after usage crosses the auto-new threshold', async () => {
+    const h = await createHarness();
+    h.agent.setEvents([
+      [
+        { type: 'system', threadId: 'thread-old' },
+        { type: 'usage', inputTokens: 80_000 },
+        { type: 'done', terminationReason: 'normal' },
+      ],
+      [{ type: 'done', terminationReason: 'normal' }],
+    ]);
+    const sessionCatalog = createMemorySessionCatalog();
+    const contextBudget = new ContextBudgetStore();
+    await startTestBridge({ ...h, sessionCatalog, contextBudget });
+
+    await h.channel.handlers.message?.(message('om_first', 'first'));
+    await waitFor(() => h.agent.runOptions.length === 1);
+    await waitFor(() => Boolean(contextBudget.pendingResetFor('oc_dm', {
+      enabled: true,
+      inputTokenThreshold: 80_000,
+      minTurnsBeforeInputTokenReset: 1,
+      maxTurns: 8,
+    })));
+
+    await h.channel.handlers.message?.(message('om_second', 'second'));
+    await waitFor(() => h.agent.runOptions.length === 2);
+
+    expect(h.agent.runOptions[1]).toMatchObject({
+      threadId: undefined,
+      sessionId: undefined,
+    });
+    expect(h.channel.sent.some((msg) => {
+      const markdown = (msg.content as { markdown?: string }).markdown;
+      return markdown?.includes('已自动开启新会话');
+    })).toBe(true);
+  });
+
   it('logs stream failures that arrive after terminal grace expires', async () => {
     const streamFailure = deferred<void>();
     let streamProducerStarted = false;
@@ -190,6 +233,14 @@ async function createHarness(options: {
   });
   const profileConfig = {
     ...baseProfileConfig,
+    preferences: {
+      ...baseProfileConfig.preferences,
+      autoNewSession: {
+        ...baseProfileConfig.preferences.autoNewSession,
+        inputTokenThreshold: 80_000,
+        minTurnsBeforeInputTokenReset: 1,
+      },
+    },
     workspaces: {
       ...baseProfileConfig.workspaces,
       default: workspace,
@@ -233,6 +284,8 @@ async function startTestBridge(h: {
   profileConfig: ReturnType<typeof createDefaultProfileConfig>;
   agent: FakeAgentAdapter;
   sessions: SessionStore;
+  sessionCatalog?: SessionCatalog;
+  contextBudget?: ContextBudgetStore;
   workspaces: WorkspaceStore;
   controls: ReturnType<typeof createControls>;
 }): Promise<void> {
@@ -240,6 +293,8 @@ async function startTestBridge(h: {
     cfg: h.profileConfig,
     agent: h.agent,
     sessions: h.sessions,
+    sessionCatalog: h.sessionCatalog,
+    contextBudget: h.contextBudget,
     workspaces: h.workspaces,
     controls: h.controls,
   });
@@ -338,6 +393,49 @@ function createControls(profileConfig: ReturnType<typeof createDefaultProfileCon
     cfg: profileConfig,
     processId: 'proc_test',
   };
+}
+
+function createMemorySessionCatalog(): SessionCatalog {
+  const data = new Map<string, SessionCatalogEntry>();
+  return {
+    activeFor(input) {
+      const entry = data.get(sessionCatalogKey(input));
+      return entry?.status === 'active' ? { ...entry } : undefined;
+    },
+    upsertActive(input: UpsertSessionCatalogInput) {
+      const key = sessionCatalogKey(input);
+      const entry: SessionCatalogEntry = {
+        key,
+        scopeId: input.scopeId,
+        agentId: input.agentId,
+        cwdRealpath: input.cwdRealpath,
+        policyFingerprint: input.policyFingerprint,
+        status: 'active',
+        updatedAt: input.now ?? Date.now(),
+        ...(input.sessionId ? { sessionId: input.sessionId } : {}),
+        ...(input.threadId ? { threadId: input.threadId } : {}),
+      };
+      data.set(key, entry);
+      return { ...entry };
+    },
+    archiveActive(input) {
+      const key = sessionCatalogKey(input);
+      const entry = data.get(key);
+      if (!entry || entry.status !== 'active') return false;
+      data.set(key, { ...entry, status: 'archived', updatedAt: input.now ?? Date.now() });
+      return true;
+    },
+    entries() {
+      return [...data.values()].map((entry) => ({ ...entry }));
+    },
+    gc() {},
+    async load() {},
+    async flush() {},
+    async replaceForTest(entries: SessionCatalogEntry[]) {
+      data.clear();
+      for (const entry of entries) data.set(entry.key, { ...entry });
+    },
+  } as SessionCatalog;
 }
 
 function message(messageId: string, content: string): NormalizedMessage {

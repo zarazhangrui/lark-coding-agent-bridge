@@ -30,6 +30,7 @@ import { tryHandleCommand, type Controls } from '../commands';
 import type { AppConfig } from '../config/schema';
 import {
   getAgentStopGraceMs,
+  getAutoNewSessionConfig,
   getMaxConcurrentRuns,
   getMessageReplyMode,
   getPresentationMode,
@@ -48,6 +49,10 @@ import type { ScopeContext } from '../policy/run-policy';
 import { createOwnerRefreshController } from '../policy/owner';
 import { RunExecutor } from '../runtime/run-executor';
 import type { SessionCatalog } from '../session/catalog';
+import {
+  ContextBudgetStore,
+  formatContextBudgetResetNotice,
+} from '../session/context-budget';
 import type { SessionStore } from '../session/store';
 import type { WorkspaceStore } from '../workspace/store';
 import { ActiveRuns, type RunHandle } from './active-runs';
@@ -164,13 +169,22 @@ export interface StartChannelDeps {
   agent: AgentAdapter;
   sessions: SessionStore;
   sessionCatalog?: SessionCatalog;
+  contextBudget?: ContextBudgetStore;
   workspaces: WorkspaceStore;
   controls: Controls;
-  appPaths?: Pick<AppPaths, 'secretsFile' | 'keystoreSaltFile' | 'mediaDir'>;
+  appPaths?: Pick<AppPaths, 'secretsFile' | 'keystoreSaltFile' | 'mediaDir' | 'sessionsFile'>;
 }
 
 export async function startChannel(deps: StartChannelDeps): Promise<BridgeChannel> {
   const { cfg, agent, sessions, sessionCatalog, workspaces, controls } = deps;
+  const contextBudget =
+    deps.contextBudget ??
+    new ContextBudgetStore(
+      deps.appPaths ? `${deps.appPaths.sessionsFile}.context-budget.json` : undefined,
+    );
+  if (!deps.contextBudget) {
+    await contextBudget.load();
+  }
   const activeRuns = new ActiveRuns();
   // ChatModeCache stays per-bridge-instance — invalidated on restart along
   // with everything else. Topic-mode chats only need one chat.get() call ever.
@@ -259,6 +273,7 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
           executor,
           sessions,
           sessionCatalog,
+          contextBudget,
           workspaces,
           media,
           batch,
@@ -288,6 +303,7 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
           agent,
           sessions,
           sessionCatalog,
+          contextBudget,
           workspaces,
           activeRuns,
           pending,
@@ -309,6 +325,7 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
           evt,
           sessions,
           sessionCatalog,
+          contextBudget,
           workspaces,
           activeRuns,
           agent,
@@ -426,6 +443,7 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
         activeRuns.stopAll(),
         sessions.flush(),
         sessionCatalog?.flush(),
+        contextBudget.flush(),
         callbackNonceStore?.flush(),
         workspaces.flush(),
       ]);
@@ -484,6 +502,7 @@ interface IntakeDeps {
   agent: AgentAdapter;
   sessions: SessionStore;
   sessionCatalog?: SessionCatalog;
+  contextBudget: ContextBudgetStore;
   workspaces: WorkspaceStore;
   activeRuns: ActiveRuns;
   pending: PendingQueue;
@@ -500,6 +519,7 @@ async function intakeMessage(deps: IntakeDeps): Promise<void> {
     agent,
     sessions,
     sessionCatalog,
+    contextBudget,
     workspaces,
     activeRuns,
     pending,
@@ -568,6 +588,7 @@ async function intakeMessage(deps: IntakeDeps): Promise<void> {
     agent,
     activeRuns,
     sessionCatalog,
+    contextBudget,
     sessionCatalogIdentity: await commandSessionCatalogIdentity({
       msg,
       scope,
@@ -595,6 +616,7 @@ interface RunBatchDeps {
   executor: RunExecutor;
   sessions: SessionStore;
   sessionCatalog?: SessionCatalog;
+  contextBudget: ContextBudgetStore;
   workspaces: WorkspaceStore;
   media: MediaCache;
   batch: NormalizedMessage[];
@@ -611,6 +633,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
     executor,
     sessions,
     sessionCatalog,
+    contextBudget,
     workspaces,
     media,
     batch,
@@ -695,6 +718,16 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
     controls.profileConfig.agentKind === 'codex'
       ? codexCapability(controls.profileConfig)
       : claudeCapability(controls.profileConfig);
+  const contextBudgetConfig = getAutoNewSessionConfig(controls.cfg);
+  const resetBeforeRun = contextBudget.pendingResetFor(scope, contextBudgetConfig);
+  if (resetBeforeRun) {
+    log.info('context-budget', 'auto-new-before-run', {
+      scope,
+      reason: resetBeforeRun.code,
+      inputTokens: resetBeforeRun.inputTokens,
+      turns: resetBeforeRun.turns,
+    });
+  }
   const flow = await startRunFlow({
     scopeId: scope,
     scope: scopeContext,
@@ -708,6 +741,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
     workspaces,
     executor,
     now: Date.now(),
+    forceNewSession: Boolean(resetBeforeRun),
     stopGraceMs: getAgentStopGraceMs(controls.cfg),
     observability: {
       profile: controls.profile,
@@ -728,9 +762,28 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
   }
 
   const { execution, cwdRealpath: cwd } = flow;
+  if (resetBeforeRun) {
+    contextBudget.reset(scope);
+    await channel
+      .send(chatId, { markdown: formatContextBudgetResetNotice(resetBeforeRun) }, sendOpts)
+      .catch((err) =>
+        log.warn('context-budget', 'auto-new-notice-failed', {
+          scope,
+          err: err instanceof Error ? err.message : String(err),
+        }),
+      );
+  }
   activePolicyFingerprints.set(scope, flow.policy.policyFingerprint);
   const handle = execution.handle;
-  const eventStream = execution.subscribe();
+  let runInputTokens: number | undefined;
+  let runErrorMessage: string | undefined;
+  const eventStream = observeContextBudgetEvents(execution.subscribe(), (evt) => {
+    if (evt.type === 'usage' && evt.inputTokens !== undefined) {
+      runInputTokens = evt.inputTokens;
+    } else if (evt.type === 'error') {
+      runErrorMessage = evt.message;
+    }
+  });
   if (flow.resumeFrom) {
     log.info('session', 'resume', { sessionId: flow.resumeFrom, cwd });
   } else {
@@ -800,6 +853,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
   const reactionPromise =
     replyMode === 'card' ? undefined : addWorkingReaction(channel, lastMsg.messageId);
 
+  let finalState: RunState | undefined;
   try {
     if (replyMode === 'card') {
       let latestState: RunState = initialState;
@@ -848,6 +902,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
           );
         },
       });
+      finalState = await renderDone;
     } else if (replyMode === 'markdown') {
       let latestState: RunState = initialState;
       let producerStarted = false;
@@ -889,11 +944,12 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
           }
         },
       });
+      finalState = await renderDone;
     } else {
       // text mode: drain the agent stream without sending anything during
       // the run, then post the final rendered text once as a plain markdown
       // (msg_type=post) message — no card, no streaming, no typewriter.
-      const finalState = await processAgentStream(
+      finalState = await processAgentStream(
         handle,
         eventStream,
         scope,
@@ -909,9 +965,89 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
   } catch (err) {
     log.fail('stream', err);
   } finally {
+    if (finalState) {
+      const resetAfterRun = contextBudget.recordRunResult(
+        scope,
+        {
+          terminal: contextBudgetTerminal(finalState),
+          ...(runInputTokens !== undefined ? { inputTokens: runInputTokens } : {}),
+          ...(runErrorMessage ?? finalState.errorMsg
+            ? { errorMessage: runErrorMessage ?? finalState.errorMsg }
+            : {}),
+        },
+        contextBudgetConfig,
+      );
+      if (resetAfterRun?.code === 'context-error') {
+        archiveRunSession({
+          scope,
+          sessions,
+          sessionCatalog,
+          capability,
+          policyFingerprint: flow.policy.policyFingerprint,
+          cwdRealpath: flow.policy.cwdRealpath,
+        });
+        contextBudget.reset(scope);
+        await channel
+          .send(chatId, { markdown: formatContextBudgetResetNotice(resetAfterRun) }, sendOpts)
+          .catch((noticeErr) =>
+            log.warn('context-budget', 'context-error-notice-failed', {
+              scope,
+              err: noticeErr instanceof Error ? noticeErr.message : String(noticeErr),
+            }),
+          );
+      } else if (resetAfterRun) {
+        log.info('context-budget', 'auto-new-pending', {
+          scope,
+          reason: resetAfterRun.code,
+          inputTokens: resetAfterRun.inputTokens,
+          turns: resetAfterRun.turns,
+        });
+      }
+    }
     activePolicyFingerprints.delete(scope);
     scheduleWorkingReactionCleanup(channel, lastMsg.messageId, reactionPromise);
   }
+}
+
+function observeContextBudgetEvents(
+  events: AsyncIterable<AgentEvent>,
+  observe: (event: AgentEvent) => void,
+): AsyncIterable<AgentEvent> {
+  return {
+    async *[Symbol.asyncIterator](): AsyncIterator<AgentEvent> {
+      for await (const event of events) {
+        observe(event);
+        yield event;
+      }
+    },
+  };
+}
+
+function contextBudgetTerminal(
+  state: RunState,
+): 'done' | 'interrupted' | 'error' | 'idle_timeout' {
+  if (state.terminal === 'interrupted') return 'interrupted';
+  if (state.terminal === 'error') return 'error';
+  if (state.terminal === 'idle_timeout') return 'idle_timeout';
+  return 'done';
+}
+
+function archiveRunSession(input: {
+  scope: string;
+  sessions: SessionStore;
+  sessionCatalog?: SessionCatalog;
+  capability: { agentId: 'claude' | 'codex' };
+  cwdRealpath: string;
+  policyFingerprint: string;
+}): void {
+  input.sessionCatalog?.archiveActive({
+    scopeId: input.scope,
+    agentId: input.capability.agentId,
+    cwdRealpath: input.cwdRealpath,
+    policyFingerprint: input.policyFingerprint,
+    now: Date.now(),
+  });
+  input.sessions.clear(input.scope);
 }
 
 /**

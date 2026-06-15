@@ -73,6 +73,7 @@ import type { RunExecutor } from '../runtime/run-executor';
 import { RunRejected } from '../runtime/errors';
 import { validateAppCredentials } from '../utils/feishu-auth';
 import type { WorkspaceStore } from '../workspace/store';
+import type { ContextBudgetStore } from '../session/context-budget';
 import { createBoundChat, defaultChatName } from '../bot/group';
 import { fetchKnownChats, type KnownChat } from '../bot/lark-info';
 import { applyLarkCliIdentityPolicy, hasStructuredLarkCliUserAuth } from '../lark-cli/identity-policy';
@@ -119,6 +120,7 @@ export interface CommandContext {
   sessions: SessionStore;
   sessionCatalog?: SessionCatalog;
   sessionCatalogIdentity?: SessionCatalogIdentity;
+  contextBudget?: ContextBudgetStore;
   workspaces: WorkspaceStore;
   agent: AgentAdapter;
   activeRuns: ActiveRuns;
@@ -316,6 +318,7 @@ async function handleNew(args: string, ctx: CommandContext): Promise<void> {
     });
   }
   ctx.sessions.clear(ctx.scope);
+  ctx.contextBudget?.reset(ctx.scope);
   await reply(ctx, wasRunning ? '已中断当前任务并开始新会话。' : '已开始新会话。');
 }
 
@@ -377,6 +380,7 @@ async function handleCd(args: string, ctx: CommandContext): Promise<void> {
   ctx.activeRuns.interrupt(ctx.scope);
   ctx.workspaces.setCwd(ctx.scope, workspace.cwdRealpath);
   ctx.sessions.clear(ctx.scope);
+  ctx.contextBudget?.reset(ctx.scope);
   await reply(ctx, `✓ 已切换 cwd 到 \`${workspace.cwdRealpath}\`\n（session 已重置）`);
 }
 
@@ -442,6 +446,7 @@ async function handleWsUse(name: string, ctx: CommandContext): Promise<void> {
   ctx.activeRuns.interrupt(ctx.scope);
   ctx.workspaces.setCwd(ctx.scope, workspace.cwdRealpath);
   ctx.sessions.clear(ctx.scope);
+  ctx.contextBudget?.reset(ctx.scope);
   await reply(ctx, `✓ 已切换到 \`${name}\` (${workspace.cwdRealpath})\n（session 已重置）`);
 }
 
@@ -610,6 +615,7 @@ async function applyResume(sessionId: string, ctx: CommandContext): Promise<void
         });
         ctx.sessions.set(ctx.scope, resolved.sessionId!, ctx.sessionCatalogIdentity.cwdRealpath);
       }
+      ctx.contextBudget?.reset(ctx.scope);
       await reply(ctx, RESUME_APPLIED_REPLY);
       return;
     }
@@ -626,6 +632,7 @@ async function applyResume(sessionId: string, ctx: CommandContext): Promise<void
     if (ctx.sessionCatalogIdentity.agentId === 'claude') {
       ctx.sessions.set(ctx.scope, sessionId, ctx.sessionCatalogIdentity.cwdRealpath);
     }
+    ctx.contextBudget?.reset(ctx.scope);
     await reply(ctx, RESUME_APPLIED_REPLY);
     return;
   }
@@ -642,6 +649,7 @@ async function applyResume(sessionId: string, ctx: CommandContext): Promise<void
   }
   ctx.activeRuns.interrupt(ctx.scope);
   ctx.sessions.set(ctx.scope, sessionId, cwd);
+  ctx.contextBudget?.reset(ctx.scope);
   await reply(ctx, RESUME_APPLIED_REPLY);
 }
 
