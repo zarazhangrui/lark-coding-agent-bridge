@@ -13,6 +13,7 @@ import type { SessionCatalog } from '../session/catalog';
 import type { SessionStore } from '../session/store';
 import type { WorkspaceStore } from '../workspace/store';
 import { commandSessionCatalogIdentity } from '../bot/session-catalog-identity';
+import { isManaged, updateManagedCard } from './managed';
 
 /** Marker key on a button's value object that flags the cardAction as
  * a callback that should be forwarded back to the agent instead
@@ -21,6 +22,7 @@ import { commandSessionCatalogIdentity } from '../bot/session-catalog-identity';
  * fields the agent might set.
  */
 const BRIDGE_CALLBACK_MARKER = '__bridge_cb';
+const BRIDGE_CALLBACK_ACK = 'bridge_ack';
 const LEGACY_CLAUDE_CALLBACK_MARKER = '__claude_cb';
 
 export interface CardDispatchDeps {
@@ -133,6 +135,7 @@ export async function handleCardAction(deps: CardDispatchDeps): Promise<void> {
   // as a follow-up message, with full context of what it sent.
   if (BRIDGE_CALLBACK_MARKER in payload) {
     if (!verifyBridgeToken(deps, payload, scope, 'agent_callback')) return;
+    await acknowledgeAgentCallback(deps, payload);
     forwardToAgent(deps, payload, formValue, scope, threadId, mode);
     return;
   }
@@ -180,6 +183,69 @@ async function lookupMessageThreadId(
   }
 }
 
+async function acknowledgeAgentCallback(
+  deps: CardDispatchDeps,
+  payload: Record<string, unknown>,
+): Promise<void> {
+  const ack = parseCallbackAck(payload[BRIDGE_CALLBACK_ACK]);
+  if (!ack) return;
+  if (!isManaged(deps.evt.messageId)) {
+    log.info('cardAction', 'ack-skip-unmanaged', { messageId: deps.evt.messageId });
+    return;
+  }
+  try {
+    await updateManagedCard(deps.channel, deps.evt.messageId, callbackAckCard(ack));
+  } catch (err) {
+    log.warn('cardAction', 'ack-update-failed', {
+      messageId: deps.evt.messageId,
+      err: err instanceof Error ? err.message : String(err),
+    });
+  }
+}
+
+interface CallbackAck {
+  title: string;
+  message: string;
+}
+
+function parseCallbackAck(value: unknown): CallbackAck | undefined {
+  if (value === true) {
+    return {
+      title: 'Action received',
+      message: 'The button click was sent to the local agent.',
+    };
+  }
+  if (!value || typeof value !== 'object') return undefined;
+  const input = value as Record<string, unknown>;
+  return {
+    title: cleanAckText(input.title, 'Action received'),
+    message: cleanAckText(input.message, 'The button click was sent to the local agent.'),
+  };
+}
+
+function cleanAckText(value: unknown, fallback: string): string {
+  if (typeof value !== 'string') return fallback;
+  const trimmed = value.trim();
+  return trimmed ? trimmed.slice(0, 200) : fallback;
+}
+
+function callbackAckCard(ack: CallbackAck): object {
+  return {
+    schema: '2.0',
+    config: {
+      summary: { content: ack.title },
+    },
+    body: {
+      elements: [
+        {
+          tag: 'markdown',
+          content: `**${ack.title}**\n\n${ack.message}`,
+        },
+      ],
+    },
+  };
+}
+
 function forwardToAgent(
   deps: CardDispatchDeps,
   payload: Record<string, unknown>,
@@ -191,6 +257,7 @@ function forwardToAgent(
   // Strip the marker so the agent only sees the meaningful fields it set.
   const {
     [BRIDGE_CALLBACK_MARKER]: _marker,
+    [BRIDGE_CALLBACK_ACK]: _ack,
     bridge_token: _token,
     ...agentPayload
   } = payload;
