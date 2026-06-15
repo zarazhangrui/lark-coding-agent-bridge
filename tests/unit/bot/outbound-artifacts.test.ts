@@ -7,6 +7,7 @@ import {
   extractOutboundImageCandidates,
   resolveOutboundFileCandidates,
   resolveOutboundImageCandidates,
+  sanitizeOutboundArtifactReferences,
   sendOutboundArtifacts,
 } from '../../../src/bot/outbound-artifacts.js';
 import type { RunState } from '../../../src/card/run-state.js';
@@ -24,6 +25,34 @@ describe('outbound artifacts', () => {
 
     expect(extractOutboundImageCandidates(state)).toEqual(['renders/result.png']);
     expect(extractOutboundFileCandidates(state)).toEqual(['outbound-files/deepsketch_example.3dm']);
+  });
+
+  it('sanitizes local artifact references while preserving surrounding text', () => {
+    const state = finalState(
+      [
+        'before image',
+        '![preview](renders/result.png)',
+        'after image',
+        '[model](bridge-file:outbound-files/deepsketch_example.3dm)',
+        '[docs](src/bot/channel.ts)',
+        '![remote](https://example.com/image.png)',
+      ].join('\n'),
+    );
+
+    expect(sanitizeOutboundArtifactReferences(state).blocks).toEqual([
+      {
+        kind: 'text',
+        streaming: false,
+        content: [
+          'before image',
+          '图片已作为附件发送：preview',
+          'after image',
+          '文件已作为附件发送：model',
+          '[docs](src/bot/channel.ts)',
+          '![remote](https://example.com/image.png)',
+        ].join('\n'),
+      },
+    ]);
   });
 
   it('resolves only workspace-contained image and non-image file candidates', async () => {
@@ -87,6 +116,42 @@ describe('outbound artifacts', () => {
         },
       ]);
       expect(channel.sender.config.allowedFileDirs).toContain(root);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('times out stalled sends and continues with later artifacts', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'outbound-artifacts-timeout-'));
+    try {
+      const image = join(root, 'preview.png');
+      const file = join(root, 'model.3dm');
+      await writeFile(image, Buffer.from([1, 2, 3]));
+      await writeFile(file, Buffer.from([4, 5, 6]));
+      const sent: unknown[] = [];
+      const channel = {
+        sender: { config: { allowedFileDirs: [] as string[] } },
+        send: async (_chatId: string, content: unknown) => {
+          sent.push(content);
+          if ((content as { image?: unknown }).image) {
+            await new Promise(() => undefined);
+          }
+        },
+      };
+
+      await sendOutboundArtifacts(
+        channel as never,
+        'oc_test',
+        finalState(`![preview](preview.png)\n[model](bridge-file:model.3dm)`),
+        root,
+        { replyTo: 'om_test' },
+        { sendTimeoutMs: 5 },
+      );
+
+      expect(sent).toEqual([
+        { image: { source: image } },
+        { file: { source: file, fileName: 'model.3dm' } },
+      ]);
     } finally {
       await rm(root, { recursive: true, force: true });
     }

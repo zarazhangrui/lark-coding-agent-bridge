@@ -10,6 +10,11 @@ const OUTBOUND_IMAGE_MAX_BYTES = 25 * 1024 * 1024;
 const OUTBOUND_FILE_MAX_COUNT = 6;
 const OUTBOUND_FILE_MAX_BYTES = 25 * 1024 * 1024;
 const OUTBOUND_FILE_SCHEME = 'bridge-file:';
+const OUTBOUND_SEND_TIMEOUT_MS = 30_000;
+
+export interface SendOutboundArtifactsOptions {
+  sendTimeoutMs?: number;
+}
 
 export async function sendOutboundArtifacts(
   channel: LarkChannel,
@@ -17,9 +22,10 @@ export async function sendOutboundArtifacts(
   state: RunState,
   cwd: string,
   sendOpts: SendOptions,
+  options: SendOutboundArtifactsOptions = {},
 ): Promise<void> {
-  await sendOutboundImages(channel, chatId, state, cwd, sendOpts);
-  await sendOutboundFiles(channel, chatId, state, cwd, sendOpts);
+  await sendOutboundImages(channel, chatId, state, cwd, sendOpts, options);
+  await sendOutboundFiles(channel, chatId, state, cwd, sendOpts, options);
 }
 
 async function sendOutboundImages(
@@ -28,6 +34,7 @@ async function sendOutboundImages(
   state: RunState,
   cwd: string,
   sendOpts: SendOptions,
+  options: SendOutboundArtifactsOptions,
 ): Promise<void> {
   if (state.terminal === 'running') return;
   const candidates = extractOutboundImageCandidates(state);
@@ -38,7 +45,11 @@ async function sendOutboundImages(
 
   for (const imagePath of images) {
     try {
-      await channel.send(chatId, { image: { source: imagePath } }, sendOpts);
+      await withTimeout(
+        channel.send(chatId, { image: { source: imagePath } }, sendOpts),
+        options.sendTimeoutMs ?? OUTBOUND_SEND_TIMEOUT_MS,
+        'outbound image send timed out',
+      );
       log.info('media', 'outbound-image-sent', { path: imagePath });
     } catch (err) {
       log.fail('media', err, { step: 'outbound-image-send', path: imagePath });
@@ -52,6 +63,7 @@ async function sendOutboundFiles(
   state: RunState,
   cwd: string,
   sendOpts: SendOptions,
+  options: SendOutboundArtifactsOptions,
 ): Promise<void> {
   if (state.terminal === 'running') return;
   const candidates = extractOutboundFileCandidates(state);
@@ -62,7 +74,11 @@ async function sendOutboundFiles(
 
   for (const filePath of files) {
     try {
-      await channel.send(chatId, { file: { source: filePath, fileName: basename(filePath) } }, sendOpts);
+      await withTimeout(
+        channel.send(chatId, { file: { source: filePath, fileName: basename(filePath) } }, sendOpts),
+        options.sendTimeoutMs ?? OUTBOUND_SEND_TIMEOUT_MS,
+        'outbound file send timed out',
+      );
       log.info('media', 'outbound-file-sent', { path: filePath });
     } catch (err) {
       log.fail('media', err, { step: 'outbound-file-send', path: filePath });
@@ -88,6 +104,17 @@ export function extractOutboundFileCandidates(state: RunState): string[] {
   return uniqueStrings(out).slice(0, OUTBOUND_FILE_MAX_COUNT * 3);
 }
 
+export function sanitizeOutboundArtifactReferences(state: RunState): RunState {
+  return {
+    ...state,
+    blocks: state.blocks.map((block) =>
+      block.kind === 'text'
+        ? { ...block, content: sanitizeOutboundArtifactText(block.content) }
+        : block,
+    ),
+  };
+}
+
 function extractImagePathsFromText(text: string): string[] {
   const out: string[] = [];
   const markdownImage = /!\[[^\]]*]\(([^)\s]+)(?:\s+["'][^"']*["'])?\)/g;
@@ -106,6 +133,21 @@ function extractFilePathsFromText(text: string): string[] {
     if (raw) out.push(raw);
   }
   return out;
+}
+
+function sanitizeOutboundArtifactText(text: string): string {
+  return text
+    .replace(/!\[([^\]]*)]\(([^)\s]+)(?:\s+["'][^"']*["'])?\)/g, (match, alt, href) => {
+      const candidate = cleanImagePathCandidate(href);
+      if (!candidate) return match;
+      const label = String(alt || basename(candidate) || 'image').trim();
+      return `图片已作为附件发送：${label}`;
+    })
+    .replace(/(?<!!)\[([^\]]+)]\(([^)\s]+)(?:\s+["'][^"']*["'])?\)/g, (match, label, href) => {
+      const candidate = cleanFilePathCandidate(href);
+      if (!candidate) return match;
+      return `文件已作为附件发送：${String(label || basename(candidate) || 'file').trim()}`;
+    });
 }
 
 function cleanImagePathCandidate(value: string | undefined): string | undefined {
@@ -195,4 +237,16 @@ async function allowOutboundDir(channel: LarkChannel, cwd: string): Promise<void
 
 function uniqueStrings(values: readonly unknown[]): string[] {
   return [...new Set(values.filter((value): value is string => typeof value === 'string' && value.length > 0))];
+}
+
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) return promise;
+  let timer: NodeJS.Timeout | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(message)), timeoutMs);
+  });
+  promise.catch(() => undefined);
+  return Promise.race([promise, timeout]).finally(() => {
+    if (timer) clearTimeout(timer);
+  });
 }
