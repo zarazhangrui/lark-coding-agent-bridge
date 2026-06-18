@@ -27,6 +27,7 @@ import { helpCard, resumeCard, statusCard, workspacesCard } from '../card/templa
 import type { AppConfig, AppPreferences, MessageReplyMode, TenantBrand } from '../config/schema';
 import {
   getAgentStopGraceMs,
+  getDefaultModel,
   getMaxConcurrentRuns,
   getMessageReplyMode,
   getRequireMentionInGroup,
@@ -169,6 +170,7 @@ const handlers: Record<string, Handler> = {
   '/config': handleConfig,
   '/stop': handleStop,
   '/timeout': handleTimeout,
+  '/model': handleModel,
   '/ps': handlePs,
   '/exit': handleExit,
   '/doctor': handleDoctor,
@@ -931,6 +933,75 @@ function parseTimeoutTarget(input: string, currentScope: string): {
     value: input,
     targeted: false,
   };
+}
+
+/**
+ * Common claude model aliases. Users typing `/model sonnet` get the
+ * verbatim string `sonnet` passed to `claude --model` — claude resolves
+ * its own aliases on the CLI side, so we only need to list the ones the
+ * CLI accepts here for the inline `/model` help. Fully-qualified names
+ * (`claude-sonnet-4-6`, etc.) are also accepted as-is.
+ */
+const MODEL_ALIASES = ['sonnet', 'opus', 'haiku'] as const;
+
+async function handleModel(args: string, ctx: CommandContext): Promise<void> {
+  const trimmed = args.trim();
+  const globalModel = getDefaultModel(ctx.controls.cfg);
+  const formatGlobal = (): string => globalModel ?? 'claude 自带默认';
+
+  const usage =
+    '\n\n用法:\n' +
+    '- `/model sonnet` / `/model opus` / `/model haiku` — 本 chat 切到指定模型\n' +
+    '- `/model claude-sonnet-4-6` — 完整模型名也可以\n' +
+    '- `/model default` — 清除本 chat 覆盖，回退全局默认\n' +
+    '- `/model` — 查看当前 chat 用的什么\n\n' +
+    `_全局默认通过 \`preferences.defaultModel\` 配置;\`/new\` 会清掉本 chat 的覆盖_`;
+
+  // /model — show effective value + source
+  if (!trimmed) {
+    const scopeModel = ctx.sessions.getModel(ctx.scope);
+    if (scopeModel !== undefined) {
+      await reply(
+        ctx,
+        `🤖 当前 chat 模型:\`${scopeModel}\`(本 chat 覆盖)\n全局默认:${formatGlobal()}${usage}`,
+      );
+      return;
+    }
+    await reply(ctx, `🤖 当前 chat 模型:跟随全局(${formatGlobal()})${usage}`);
+    return;
+  }
+
+  if (trimmed === 'default' || trimmed === 'reset') {
+    const cleared = ctx.sessions.clearModelOverride(ctx.scope);
+    log.info('command', 'model-clear', { scope: ctx.scope, cleared });
+    await reply(
+      ctx,
+      cleared
+        ? `✅ 已清除 chat 覆盖,回退到全局默认(${formatGlobal()})。`
+        : `当前 chat 本来就没设过覆盖,跟随全局(${formatGlobal()})。`,
+    );
+    return;
+  }
+
+  // Guard against accidental shell-like values that almost certainly aren't
+  // models. The actual model-name validation lives in claude CLI; we just
+  // bounce obvious noise so the user doesn't spawn a broken run.
+  if (trimmed.length > 80 || /[\s'"`$\\;|<>]/.test(trimmed)) {
+    await reply(
+      ctx,
+      '❌ 模型名看着不对劲(长度超限或含特殊字符)。常用别名:`' +
+        MODEL_ALIASES.join('`、`') +
+        '`',
+    );
+    return;
+  }
+
+  ctx.sessions.setModel(ctx.scope, trimmed);
+  log.info('command', 'model-set', { scope: ctx.scope, model: trimmed });
+  await reply(
+    ctx,
+    `✅ 当前 chat 模型已切到 \`${trimmed}\`。下次发消息开始生效(已经在跑的不变)。`,
+  );
 }
 
 async function handlePs(_args: string, ctx: CommandContext): Promise<void> {

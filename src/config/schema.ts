@@ -129,6 +129,14 @@ export interface AppPreferences {
   /** Access control — user/chat allowlists + admin gating. See AppAccess. */
   access?: AppAccess;
   /**
+   * Global default model passed to `claude --model` when a chat has no
+   * per-scope override (set via `/model <name>`). Undefined = let claude
+   * pick its default. Common values: `sonnet`, `opus`, `haiku` (claude
+   * resolves the alias to the current latest), or a fully-qualified name
+   * like `claude-sonnet-4-6`. Per-scope `/model` overrides this.
+   */
+  defaultModel?: string;
+  /**
    * Grace period (ms) between SIGTERM and SIGKILL when killing the claude
    * subprocess. Bumped from a hardcoded 500ms because claude often has its
    * own subprocesses (e.g. lark-cli mid-OAuth) that need a moment to clean
@@ -244,6 +252,15 @@ export function getAgentStopGraceMs(cfg: AppConfig): number {
   const raw = cfg.preferences?.agentStopGraceMs;
   if (typeof raw !== 'number' || !Number.isFinite(raw)) return 5000;
   return Math.min(30_000, Math.max(100, Math.floor(raw)));
+}
+
+/** Global default model (`preferences.defaultModel`). Trimmed and
+ * non-empty; otherwise treated as unset. */
+export function getDefaultModel(cfg: AppConfig): string | undefined {
+  const raw = cfg.preferences?.defaultModel;
+  if (typeof raw !== 'string') return undefined;
+  const t = raw.trim();
+  return t.length > 0 ? t : undefined;
 }
 
 export function getRunIdleTimeoutMs(cfg: AppConfig): number | undefined {
