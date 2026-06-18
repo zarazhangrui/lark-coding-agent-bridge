@@ -2,6 +2,7 @@ import type {
   LarkChannel,
   LarkChannelOptions,
   NormalizedMessage,
+  SendOptions,
 } from '@larksuite/channel';
 import { createLarkChannel } from '@larksuite/channel';
 import { dirname, join } from 'node:path';
@@ -56,6 +57,7 @@ import { handleCommentMention } from './comments';
 import { recordRunSessionEvent, startRunFlow } from './run-flow';
 import { commandSessionCatalogIdentity } from './session-catalog-identity';
 import { startKeepalive } from './keepalive';
+import { sanitizeOutboundArtifactReferences, sendOutboundArtifacts } from './outbound-artifacts';
 import { PendingQueue } from './pending-queue';
 import { ProcessPool } from './process-pool';
 import { fetchQuotedContext, type QuotedContext } from './quote';
@@ -775,6 +777,8 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
     if (getShowToolCalls(controls.cfg)) return state;
     return { ...state, blocks: state.blocks.filter((b) => b.kind !== 'tool') };
   };
+  const displayForPrefs = (state: RunState): RunState =>
+    sanitizeOutboundArtifactReferences(filterForPrefs(state));
   const cardRenderOptions = callbackAuth
     ? {
         signCallback: (action: string) =>
@@ -813,7 +817,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
         async (state) => {
           latestState = state;
           if (cardCtrl) {
-            await cardCtrl.update(renderCard(filterForPrefs(state), cardRenderOptions));
+            await cardCtrl.update(renderCard(displayForPrefs(state), cardRenderOptions));
           }
         },
       );
@@ -825,7 +829,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
             producer: async (ctrl) => {
               producerStarted = true;
               cardCtrl = ctrl;
-              await ctrl.update(renderCard(filterForPrefs(latestState), cardRenderOptions));
+              await ctrl.update(renderCard(displayForPrefs(latestState), cardRenderOptions));
               await renderDone;
             },
           },
@@ -840,11 +844,12 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
         fallback: async (state) => {
           await channel.send(
             chatId,
-            { card: renderCard(filterForPrefs(state), cardRenderOptions) },
+            { card: renderCard(displayForPrefs(state), cardRenderOptions) },
             sendOpts,
           );
         },
       });
+      scheduleOutboundArtifacts(channel, chatId, filterForPrefs(await renderDone), cwd, sendOpts);
     } else if (replyMode === 'markdown') {
       let latestState: RunState = initialState;
       let producerStarted = false;
@@ -858,7 +863,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
         async (state) => {
           latestState = state;
           if (markdownCtrl) {
-            await markdownCtrl.setContent(renderText(filterForPrefs(state)));
+            await markdownCtrl.setContent(renderText(displayForPrefs(state)));
           }
         },
       );
@@ -868,7 +873,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
           markdown: async (ctrl) => {
             producerStarted = true;
             markdownCtrl = ctrl;
-            await ctrl.setContent(renderText(filterForPrefs(latestState)));
+            await ctrl.setContent(renderText(displayForPrefs(latestState)));
             await renderDone;
           },
         },
@@ -880,12 +885,13 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
         renderDone,
         producerStarted: () => producerStarted,
         fallback: async (state) => {
-          const body = renderText(filterForPrefs(state));
+          const body = renderText(displayForPrefs(state));
           if (body.trim()) {
             await channel.send(chatId, { markdown: body }, sendOpts);
           }
         },
       });
+      scheduleOutboundArtifacts(channel, chatId, filterForPrefs(await renderDone), cwd, sendOpts);
     } else {
       // text mode: drain the agent stream without sending anything during
       // the run, then post the final rendered text once as a plain markdown
@@ -898,10 +904,11 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
         recordSession,
         async () => {},
       );
-      const body = renderText(filterForPrefs(finalState));
+      const body = renderText(displayForPrefs(finalState));
       if (body.trim()) {
         await channel.send(chatId, { markdown: body }, sendOpts);
       }
+      scheduleOutboundArtifacts(channel, chatId, filterForPrefs(finalState), cwd, sendOpts);
     }
   } catch (err) {
     log.fail('stream', err);
@@ -909,6 +916,18 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
     activePolicyFingerprints.delete(scope);
     scheduleWorkingReactionCleanup(channel, lastMsg.messageId, reactionPromise);
   }
+}
+
+function scheduleOutboundArtifacts(
+  channel: LarkChannel,
+  chatId: string,
+  state: RunState,
+  cwd: string,
+  sendOpts: SendOptions,
+): void {
+  void sendOutboundArtifacts(channel, chatId, state, cwd, sendOpts).catch((err) => {
+    log.fail('media', err, { step: 'outbound-artifacts' });
+  });
 }
 
 /**
@@ -1084,6 +1103,7 @@ async function awaitRenderAwareStream(input: {
       mode: input.mode,
       graceMs: STREAM_TERMINAL_GRACE_MS,
     });
+    await runFallbackReply(input.mode, first.state, input.fallback);
     void streamResult.then((result) => {
       if (!result.ok) {
         log.fail('stream', result.err, { mode: input.mode, step: 'stream-terminal-late' });
@@ -1091,7 +1111,10 @@ async function awaitRenderAwareStream(input: {
     });
     return;
   }
-  if (!terminal.ok) throw terminal.err;
+  if (!terminal.ok) {
+    log.fail('stream', terminal.err, { mode: input.mode, step: 'stream-terminal' });
+    await runFallbackReply(input.mode, first.state, input.fallback);
+  }
 }
 
 async function runFallbackReply(

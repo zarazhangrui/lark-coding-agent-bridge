@@ -156,6 +156,30 @@ describe('markdown stream startup failures', () => {
       ),
     );
   }, 10_000);
+
+  it('falls back when the stream does not finish after the agent reaches terminal state', async () => {
+    let streamProducerStarted = false;
+    const h = await createHarness({
+      stream: async (_chatId, input) => {
+        const producer = (input as {
+          markdown?: (ctrl: { setContent(markdown: string): Promise<void> }) => Promise<void>;
+        }).markdown;
+        if (producer) {
+          streamProducerStarted = true;
+          void producer({ setContent: vi.fn(async () => {}) });
+        }
+        await new Promise<void>(() => {});
+      },
+    });
+    await startTestBridge(h);
+
+    await h.channel.handlers.message?.(message('om_first', 'first'));
+    await waitFor(() => streamProducerStarted);
+    await waitFor(() => h.channel.sent.length > 0, 4500);
+
+    expect(lastMarkdown(h.channel)).toContain('agent 失败');
+    expect(lastMarkdown(h.channel)).toContain('codex exited with code 1');
+  }, 10_000);
 });
 
 async function createHarness(options: {

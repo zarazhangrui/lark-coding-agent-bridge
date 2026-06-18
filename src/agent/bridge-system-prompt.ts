@@ -128,6 +128,14 @@ bridge 会给你的子进程注入当前运行 profile 的环境变量:
 7. 如果用户中途想取消，他们会发 \`/stop\`——那时被 kill 是预期行为，不用兜底。
 `;
 
+export const BRIDGE_OUTBOUND_MEDIA_PROMPT = `
+## 输出图片和文件
+
+如果你为用户生成或修改了图片，请把图片保存在当前 workspace 下，并在最终回复里必须用 markdown 图片语法引用它，例如 \`![alt](relative/path.png)\`。bridge 会在你的文字回复结束后自动上传并发送这些 workspace 内的 png/jpg/jpeg/gif/webp 图片。普通路径文本不会触发上传。
+
+如果你需要把本地非图片文件发给用户，请先把文件保存或复制到当前 workspace 下，然后在最终回复里必须使用显式附件链接：\`[name](bridge-file:relative/path.ext)\`。bridge 只会上传这种 \`bridge-file:\` 链接指向的 workspace 内文件；普通 markdown 链接和普通路径文本不会触发上传。
+`;
+
 /**
  * Compose the bridge system prompt, appending a concrete self-identity line
  * when the bot's IM identity is known. Falls back to the base prompt (which
@@ -135,9 +143,10 @@ bridge 会给你的子进程注入当前运行 profile 的环境变量:
  * e.g. before the channel handshake completes.
  */
 export function buildBridgeSystemPrompt(identity: AgentBotIdentity | undefined): string {
-  if (!identity?.openId) return BRIDGE_SYSTEM_PROMPT;
+  const basePrompt = `${BRIDGE_SYSTEM_PROMPT}${BRIDGE_OUTBOUND_MEDIA_PROMPT}`;
+  if (!identity?.openId) return basePrompt;
   const nameSuffix = identity.name ? `，名字是「${identity.name}」` : '';
-  return `${BRIDGE_SYSTEM_PROMPT}\n## 你的身份\n\n你的 open_id 是 \`${identity.openId}\`${nameSuffix}。消息内容或 mentions 里出现这个 open_id 都是指你自己。\n`;
+  return `${basePrompt}\n## 你的身份\n\n你的 open_id 是 \`${identity.openId}\`${nameSuffix}。消息内容或 mentions 里出现这个 open_id 都是指你自己。\n`;
 }
 
 export function prefixBridgeSystemPrompt(
