@@ -35,30 +35,30 @@ export function workspacesCard(current: string | undefined, named: Record<string
   const entries = Object.entries(named);
   const elements: object[] = [];
 
-  elements.push(divMd(`当前 cwd：\`${escapeCode(current ?? '(未设置，使用 $HOME)')}\``));
+  elements.push(divMd(`Current cwd: \`${escapeCode(current ?? '(not set, using $HOME)')}\``));
 
   if (entries.length === 0) {
     elements.push(HR);
-    elements.push(divMd('暂无命名工作空间。'));
+    elements.push(divMd('No named workspaces yet.'));
     elements.push(
-      divMd('💡 发送 `/ws save <name>` 把当前 cwd 存为命名工作空间'),
+      divMd('💡 Send `/ws save <name>` to save the current cwd as a named workspace.'),
     );
   } else {
     elements.push(HR);
     entries.forEach(([name, path], i) => {
-      const marker = path === current ? '  ← 当前' : '';
+      const marker = path === current ? '  ← current' : '';
       elements.push(divMd(`**${escapeMd(name)}** → \`${escapeCode(path)}\`${marker}`));
       elements.push(
         actions([
-          { text: '切换到此处', value: { cmd: 'ws.use', name }, style: 'primary' },
-          { text: '删除', value: { cmd: 'ws.remove', name }, style: 'danger' },
+          { text: 'Switch here', value: { cmd: 'ws.use', name }, style: 'primary' },
+          { text: 'Delete', value: { cmd: 'ws.remove', name }, style: 'danger' },
         ]),
       );
       if (i < entries.length - 1) elements.push(HR);
     });
   }
 
-  return shell('📂 工作空间', elements);
+  return shell('📂 Workspaces', elements);
 }
 
 export interface StatusInfo {
@@ -74,13 +74,13 @@ export interface StatusInfo {
 
 export function statusCard(info: StatusInfo): object {
   const sessionLine = info.sessionId
-    ? `\`${info.sessionId.slice(0, 8)}…\`${info.sessionStale ? ' ⚠️ 旧 cwd，下一条会新建' : ''}`
-    : '(无)';
+    ? `\`${info.sessionId.slice(0, 8)}…\`${info.sessionStale ? ' ⚠️ stale cwd, the next message will start a new session' : ''}`
+    : '(none)';
   // For topic groups, surface that the scope is per-topic so the user
   // knows /cd / /new only affect this topic.
   const scopeLine =
     info.chatMode === 'topic'
-      ? `\`${escapeCode(info.scope)}\` _（话题独立 session）_`
+      ? `\`${escapeCode(info.scope)}\` _(per-topic session)_`
       : `\`${escapeCode(info.scope)}\``;
   const lines = [
     `🧭 **scope**: ${scopeLine}`,
@@ -88,14 +88,14 @@ export function statusCard(info: StatusInfo): object {
     `🔗 **session**: ${sessionLine}`,
     `🤖 **agent**: ${escapeMd(info.agentName)}`,
   ];
-  return shell('📊 当前状态', [
+  return shell('📊 Status', [
     divMd(lines.join('\n')),
     HR,
     actions([
-      { text: '🆕 新会话', value: { cmd: 'new' }, style: 'primary' },
-      { text: '🔁 恢复会话', value: { cmd: 'resume' } },
-      { text: '📂 工作空间', value: { cmd: 'ws.list' } },
-      { text: '💡 帮助', value: { cmd: 'help' } },
+      { text: '🆕 New session', value: { cmd: 'new' }, style: 'primary' },
+      { text: '🔁 Resume session', value: { cmd: 'resume' } },
+      { text: '📂 Workspaces', value: { cmd: 'ws.list' } },
+      { text: '💡 Help', value: { cmd: 'help' } },
     ]),
   ]);
 }
@@ -110,26 +110,26 @@ export interface ResumeEntry {
 
 export function resumeCard(cwd: string, entries: ResumeEntry[]): object {
   const elements: object[] = [];
-  elements.push(divMd(`当前 cwd：\`${escapeCode(cwd)}\``));
+  elements.push(divMd(`Current cwd: \`${escapeCode(cwd)}\``));
 
   if (entries.length === 0) {
     elements.push(HR);
-    elements.push(divMd('此 cwd 下没有历史会话。'));
-    return shell('🔁 恢复历史会话', elements);
+    elements.push(divMd('No previous sessions under this cwd.'));
+    return shell('🔁 Resume session', elements);
   }
 
   elements.push(HR);
   entries.forEach((e, i) => {
-    const marker = e.current ? '  ← 当前' : '';
+    const marker = e.current ? '  ← current' : '';
     elements.push(
       divMd(
-        `**${i + 1}.** ${escapeMd(e.preview)}${marker}\n\`${e.sessionId.slice(0, 8)}…\` · ${e.relTime} · ${e.lineCount} 条`,
+        `**${i + 1}.** ${escapeMd(e.preview)}${marker}\n\`${e.sessionId.slice(0, 8)}…\` · ${e.relTime} · ${e.lineCount} msgs`,
       ),
     );
     elements.push(
       actions([
         {
-          text: e.current ? '已是当前会话' : '▸ 恢复此会话',
+          text: e.current ? 'Already current session' : '▸ Resume this session',
           value: { cmd: 'resume.use', arg: e.sessionId },
           style: e.current ? 'default' : 'primary',
         },
@@ -138,40 +138,40 @@ export function resumeCard(cwd: string, entries: ResumeEntry[]): object {
     if (i < entries.length - 1) elements.push(HR);
   });
 
-  return shell('🔁 恢复历史会话', elements);
+  return shell('🔁 Resume session', elements);
 }
 
 export function helpCard(): object {
-  return shell('💡 使用帮助', [
+  return shell('💡 Help', [
     divMd(
       [
-        '**命令列表**',
+        '**Commands**',
         '',
-        '- `/new` `/reset` — 清空当前 chat 的会话',
-        '- `/new chat [name]` — 新建群+新会话，自动拉你进群',
-        '- `/resume [N]` — 列出并恢复历史会话（最多 N 条）',
-        '- `/cd <path>` — 切换工作目录（会重置 session）',
-        '- `/ws list|save <name>|use <name>|remove <name>` — 工作空间',
-        '- `/account` — 查看当前应用；`/account change` 换 appId/secret 并重连',
-        '- `/config` — 调整偏好（消息回复方式、工具调用显示）',
-        '- `/status` — 当前状态',
-        '- `/stop` — 结束当前正在跑的任务（也可点卡片底部 ⏹ 终止 按钮）',
-        '- `/timeout [N|off|default]` — 当前 session 的探活分钟数,`/config` 改全局默认',
-        '- `/ps` — 列出本机所有 bot,标识当前正在回复的那个',
-        '- `/exit <id|#>` — 关掉指定 bot(用 `/ps` 看 id/序号)',
-        '- `/reconnect` — 强制重连 WebSocket(网络抖动后 bot 没反应时用)',
-        '- `/doctor [描述]` — 把日志和描述喂给 Claude 自助诊断',
-        '- `/help` — 本帮助',
+        '- `/new` `/reset` — clear the current chat\'s session',
+        '- `/new chat [name]` — create a new group + fresh session, auto-invites you',
+        '- `/resume [N]` — list and resume historical sessions (up to N)',
+        '- `/cd <path>` — change working directory (resets the session)',
+        '- `/ws list|save <name>|use <name>|remove <name>` — manage workspaces',
+        '- `/account` — show the current Lark app; `/account change` to swap appId/secret and reconnect',
+        '- `/config` — tweak preferences (reply behavior, tool-call display)',
+        '- `/status` — current status',
+        '- `/stop` — stop the currently running task (also the ⏹ button at the bottom of the card)',
+        '- `/timeout [N|off|default]` — idle-watchdog minutes for this session; `/config` sets the global default',
+        '- `/ps` — list all bot processes on this machine; marks the one currently replying',
+        '- `/exit <id|#>` — kill a bot process (use `/ps` to look up id/index)',
+        '- `/reconnect` — force a WebSocket reconnect (use when the bot stops responding after a flaky network)',
+        '- `/doctor [description]` — feed logs + description to Claude for self-diagnosis',
+        '- `/help` — this help',
         '',
-        '其他内容直接交给 Claude。',
+        'Anything else goes straight to Claude.',
       ].join('\n'),
     ),
     HR,
     actions([
-      { text: '📊 状态', value: { cmd: 'status' }, style: 'primary' },
-      { text: '🔁 恢复会话', value: { cmd: 'resume' } },
-      { text: '📂 工作空间', value: { cmd: 'ws.list' } },
-      { text: '🆕 新会话', value: { cmd: 'new' } },
+      { text: '📊 Status', value: { cmd: 'status' }, style: 'primary' },
+      { text: '🔁 Resume session', value: { cmd: 'resume' } },
+      { text: '📂 Workspaces', value: { cmd: 'ws.list' } },
+      { text: '🆕 New session', value: { cmd: 'new' } },
     ]),
   ]);
 }

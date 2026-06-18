@@ -14,23 +14,23 @@ export interface CurrentInfo {
 export function accountCurrentCard(info: CurrentInfo): object {
   return {
     schema: '2.0',
-    config: { summary: { content: '当前应用' } },
+    config: { summary: { content: 'Current app' } },
     body: {
       elements: [
         {
           tag: 'markdown',
           content: [
-            '📋 **当前应用**',
+            '📋 **Current app**',
             '',
             `**App ID**: \`${maskAppId(info.appId)}\``,
-            `**Bot 名**: ${info.botName ?? '(未知)'}`,
+            `**Bot name**: ${info.botName ?? '(unknown)'}`,
             `**Tenant**: ${info.tenant}`,
           ].join('\n'),
         },
         { tag: 'hr' },
         {
           tag: 'button',
-          text: { tag: 'plain_text', content: '更换凭据' },
+          text: { tag: 'plain_text', content: 'Change credentials' },
           type: 'primary',
           behaviors: [{ type: 'callback', value: { cmd: 'account.change' } }],
         },
@@ -51,7 +51,7 @@ export function accountFormCard(opts: FormCardOpts = {}): object {
   if (errorMessage) {
     bodyElements.push({
       tag: 'markdown',
-      content: `❌ **校验失败**：${errorMessage}`,
+      content: `❌ **Validation failed**: ${errorMessage}`,
     });
   }
   bodyElements.push({
@@ -70,7 +70,7 @@ export function accountFormCard(opts: FormCardOpts = {}): object {
         tag: 'input',
         name: 'app_secret',
         label: { tag: 'plain_text', content: 'App Secret' },
-        placeholder: { tag: 'plain_text', content: '32 位字符串' },
+        placeholder: { tag: 'plain_text', content: '32-character string' },
         // Never prefill secret — even on validation retry. Pre-filled secrets
         // can leak into Lark's server-side card cache.
         required: true,
@@ -81,8 +81,8 @@ export function accountFormCard(opts: FormCardOpts = {}): object {
         name: 'tenant',
         initial_option: initialTenant,
         options: [
-          { text: { tag: 'plain_text', content: 'Feishu (国内)' }, value: 'feishu' },
-          { text: { tag: 'plain_text', content: 'Lark (海外)' }, value: 'lark' },
+          { text: { tag: 'plain_text', content: 'Feishu (China)' }, value: 'feishu' },
+          { text: { tag: 'plain_text', content: 'Lark (overseas)' }, value: 'lark' },
         ],
       },
       {
@@ -97,7 +97,7 @@ export function accountFormCard(opts: FormCardOpts = {}): object {
               {
                 tag: 'button',
                 name: 'submit_btn',
-                text: { tag: 'plain_text', content: '提交' },
+                text: { tag: 'plain_text', content: 'Submit' },
                 type: 'primary',
                 form_action_type: 'submit',
                 behaviors: [{ type: 'callback', value: { cmd: 'account.submit' } }],
@@ -111,7 +111,7 @@ export function accountFormCard(opts: FormCardOpts = {}): object {
               {
                 tag: 'button',
                 name: 'cancel_btn',
-                text: { tag: 'plain_text', content: '取消' },
+                text: { tag: 'plain_text', content: 'Cancel' },
                 behaviors: [{ type: 'callback', value: { cmd: 'account.cancel' } }],
               },
             ],
@@ -123,7 +123,7 @@ export function accountFormCard(opts: FormCardOpts = {}): object {
 
   return {
     schema: '2.0',
-    config: { summary: { content: '更换凭据' } },
+    config: { summary: { content: 'Change credentials' } },
     body: { elements: bodyElements },
   };
 }
@@ -131,28 +131,28 @@ export function accountFormCard(opts: FormCardOpts = {}): object {
 export function accountValidatingCard(): object {
   return {
     schema: '2.0',
-    config: { summary: { content: '正在校验...' } },
-    body: { elements: [{ tag: 'markdown', content: '⏳ **正在校验凭据...**' }] },
+    config: { summary: { content: 'Validating…' } },
+    body: { elements: [{ tag: 'markdown', content: '⏳ **Validating credentials…**' }] },
   };
 }
 
 export function accountSuccessCard(info: CurrentInfo): object {
   return {
     schema: '2.0',
-    config: { summary: { content: '已保存' } },
+    config: { summary: { content: 'Saved' } },
     body: {
       elements: [
         {
           tag: 'markdown',
           content: [
-            '✅ **凭据已保存**',
+            '✅ **Credentials saved**',
             '',
             `**App ID**: \`${maskAppId(info.appId)}\``,
-            info.botName ? `**Bot 名**: ${info.botName}` : '',
+            info.botName ? `**Bot name**: ${info.botName}` : '',
             `**Tenant**: ${info.tenant}`,
             '',
-            '正在用新凭据重连 WebSocket...',
-            '⚠️ 如果新 bot 不在此群，后续消息将由新 bot 接管，老 bot 不会再回复。',
+            'Reconnecting WebSocket with the new credentials…',
+            '⚠️ If the new bot isn\'t a member of this chat, subsequent messages will be handled by the new bot — the old bot will no longer reply.',
           ]
             .filter(Boolean)
             .join('\n'),
@@ -165,12 +165,12 @@ export function accountSuccessCard(info: CurrentInfo): object {
 export function accountFailureCard(reason: string): object {
   return {
     schema: '2.0',
-    config: { summary: { content: '校验失败' } },
+    config: { summary: { content: 'Validation failed' } },
     body: {
       elements: [
         {
           tag: 'markdown',
-          content: `❌ **校验失败**\n\n\`${reason}\`\n\n请检查 App ID 和 Secret 是否正确，重发 \`/account change\` 重试。`,
+          content: `❌ **Validation failed**\n\n\`${reason}\`\n\nCheck that the App ID and Secret are correct, then re-send \`/account change\` to retry.`,
         },
       ],
     },
@@ -180,7 +180,7 @@ export function accountFailureCard(reason: string): object {
 export function accountCancelledCard(): object {
   return {
     schema: '2.0',
-    config: { summary: { content: '已取消' } },
-    body: { elements: [{ tag: 'markdown', content: '已取消，未做任何修改。' }] },
+    config: { summary: { content: 'Cancelled' } },
+    body: { elements: [{ tag: 'markdown', content: 'Cancelled — no changes saved.' }] },
   };
 }

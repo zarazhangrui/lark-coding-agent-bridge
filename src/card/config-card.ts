@@ -47,7 +47,7 @@ function collapsedAccessPanel(title: string, elements: object[]): object {
  * profile) entirely client-side — the bridge doesn't fetch anything.
  */
 function atMentionLine(openIds: string[]): string {
-  if (openIds.length === 0) return '_（暂无）_';
+  if (openIds.length === 0) return '_(none)_';
   return openIds.map((id) => `<at id="${id}"></at>`).join('  ');
 }
 
@@ -57,10 +57,10 @@ function atMentionLine(openIds: string[]): string {
  * (zero extra API calls); unknown ids fall back to a short id suffix.
  */
 function chatList(chatIds: string[], known: KnownChat[]): string {
-  if (chatIds.length === 0) return '_（暂无）_';
+  if (chatIds.length === 0) return '_(none)_';
   const nameMap = new Map(known.map((c) => [c.id, c.name]));
   return chatIds
-    .map((id) => `- 💬 **${nameMap.get(id) ?? '(未知群)'}**（…${id.slice(-6)}）`)
+    .map((id) => `- 💬 **${nameMap.get(id) ?? '(unknown group)'}** (…${id.slice(-6)})`)
     .join('\n');
 }
 
@@ -73,46 +73,46 @@ export function configFormCard(opts: ConfigFormOpts): object {
     {
       tag: 'markdown',
       content:
-        '_控制谁能跟 bot 互动。**留空 = 不响应**。增删走命令，下面是当前状态。_',
+        '_Controls who can interact with the bot. **Empty = bot ignores everyone.** Add/remove via commands; the lines below show the current state._',
     },
     { tag: 'hr' },
     {
       tag: 'markdown',
       content:
-        `**允许私聊的用户**（共 ${opts.allowedUsers.length} 人）\n` +
+        `**Users allowed to DM** (${opts.allowedUsers.length} total)\n` +
         `${atMentionLine(opts.allowedUsers)}\n\n` +
-        '_加 / 删：_ `/invite user @某人`　`/remove user @某人`',
+        '_Add / remove:_ `/invite user @someone`　`/remove user @someone`',
     },
     { tag: 'hr' },
     {
       tag: 'markdown',
       content:
-        `**允许响应的群**（共 ${opts.allowedChats.length} 个）\n` +
+        `**Groups where the bot responds** (${opts.allowedChats.length} total)\n` +
         `${chatList(opts.allowedChats, opts.knownChats)}\n\n` +
-        '_一键加全部 bot 所在的群：_ `/invite all group`\n' +
-        '_加 / 删（在目标群里发）：_ `/invite group`　`/remove group`',
+        '_Add all groups the bot is already in:_ `/invite all group`\n' +
+        '_Add / remove (run inside the target group):_ `/invite group`　`/remove group`',
     },
     { tag: 'hr' },
     {
       tag: 'markdown',
       content:
-        `**管理员**（共 ${opts.admins.length} 人）\n` +
+        `**Admins** (${opts.admins.length} total)\n` +
         `${atMentionLine(opts.admins)}\n\n` +
-        '_可以跑敏感命令：`/account` `/config` `/exit` `/reconnect` `/doctor` `/cd` `/ws` `/invite` `/remove`。管理员也自动获得私聊权限。_\n\n' +
-        '_加 / 删：_ `/invite admin @某人`　`/remove admin @某人`',
+        '_Admins can run sensitive commands: `/account` `/config` `/exit` `/reconnect` `/doctor` `/cd` `/ws` `/invite` `/remove`. Admins also get DM access automatically._\n\n' +
+        '_Add / remove:_ `/invite admin @someone`　`/remove admin @someone`',
     },
   ];
 
   return {
     schema: '2.0',
-    config: { summary: { content: '偏好设置' } },
+    config: { summary: { content: 'Preferences' } },
     body: {
       elements: [
         {
           tag: 'markdown',
           content:
-            '⚙️ **偏好设置**\n\n' +
-            '调整 bot 的行为偏好。改完点提交，**立即生效**（无需重启）并写入 `~/.lark-channel/config.json`。',
+            '⚙️ **Preferences**\n\n' +
+            'Tweak the bot\'s behavior. Hit Submit to apply — **takes effect immediately** (no restart) and is written to `~/.lark-channel/config.json`.',
         },
         { tag: 'hr' },
         {
@@ -122,9 +122,9 @@ export function configFormCard(opts: ConfigFormOpts): object {
             {
               tag: 'markdown',
               content:
-                '**消息回复方式**\n' +
-                '_纯文本：agent 跑完一次性发出，不流式，体感最轻_\n' +
-                '_消息卡片：轻量流式 markdown 卡片，飞书原生打字机动画_',
+                '**Reply style**\n' +
+                '_Plain text: agent posts a single message after the run finishes — no streaming, lightest feel._\n' +
+                '_Message card: streaming markdown card with Lark\'s native typewriter animation._',
             },
             {
               tag: 'select_static',
@@ -132,32 +132,32 @@ export function configFormCard(opts: ConfigFormOpts): object {
               // 'card' is hidden — existing 'card' configs map to 'markdown' on display.
               initial_option: opts.messageReply === 'card' ? 'markdown' : opts.messageReply,
               options: [
-                { text: { tag: 'plain_text', content: '纯文本' }, value: 'text' },
-                { text: { tag: 'plain_text', content: '消息卡片（默认）' }, value: 'markdown' },
+                { text: { tag: 'plain_text', content: 'Plain text' }, value: 'text' },
+                { text: { tag: 'plain_text', content: 'Message card (default)' }, value: 'markdown' },
               ],
             },
             {
               tag: 'markdown',
               content:
-                '\n**工具调用显示**\n' +
-                '_显示：可以看到 bot 跑了什么命令、读了哪些文件等过程_\n' +
-                '_隐藏：只看 agent 最终的文字答复，跳过所有工具块_',
+                '\n**Tool-call display**\n' +
+                '_Show: see what commands the bot ran, which files it read, etc._\n' +
+                '_Hide: only the agent\'s final text reply, skip all tool blocks._',
             },
             {
               tag: 'select_static',
               name: 'show_tool_calls',
               initial_option: opts.showToolCalls ? 'show' : 'hide',
               options: [
-                { text: { tag: 'plain_text', content: '显示（默认）' }, value: 'show' },
-                { text: { tag: 'plain_text', content: '隐藏' }, value: 'hide' },
+                { text: { tag: 'plain_text', content: 'Show (default)' }, value: 'show' },
+                { text: { tag: 'plain_text', content: 'Hide' }, value: 'hide' },
               ],
             },
             {
               tag: 'markdown',
               content:
-                '\n**并发上限**\n' +
-                '_全局同时运行的 agent 进程数（主要影响话题群多话题并行场景）_\n' +
-                '_默认 10，范围 1-50。超出的请求会 FIFO 排队_',
+                '\n**Max concurrent runs**\n' +
+                '_Total agent processes running at once across the bridge (mostly relevant for topic groups with many parallel topics)._\n' +
+                '_Default 10, range 1–50. Excess requests queue FIFO._',
             },
             {
               tag: 'input',
@@ -169,9 +169,9 @@ export function configFormCard(opts: ConfigFormOpts): object {
             {
               tag: 'markdown',
               content:
-                '\n**run 探活（分钟）**\n' +
-                '_agent 长时间没输出时自动 kill，防止假死_\n' +
-                '_0 = 关闭（默认），范围 1-120。可被 `/timeout` 在单个 scope 覆盖_',
+                '\n**Run idle watchdog (minutes)**\n' +
+                '_Kills the agent automatically if it produces no output for N minutes — guards against hangs._\n' +
+                '_0 = disabled (default). Range 1–120. Can be overridden per scope with `/timeout`._',
             },
             {
               tag: 'input',
@@ -183,22 +183,22 @@ export function configFormCard(opts: ConfigFormOpts): object {
             {
               tag: 'markdown',
               content:
-                '\n**群里需要 @ bot**\n' +
-                '_是（默认）：群和话题群里，不 @ bot 的消息不会触发回复_\n' +
-                '_否：任何消息都会发给 agent（0.1.21 及更早版本的行为）_\n' +
-                '_私聊永远不需要 @；`@全员` 永远不响应_',
+                '\n**Require `@bot` in groups**\n' +
+                '_Yes (default): in groups and topic groups, messages that don\'t `@` the bot are ignored._\n' +
+                '_No: every message is sent to the agent (the 0.1.21-and-earlier behavior)._\n' +
+                '_DMs never require `@`; `@all` is never answered._',
             },
             {
               tag: 'select_static',
               name: 'require_mention_in_group',
               initial_option: opts.requireMentionInGroup ? 'yes' : 'no',
               options: [
-                { text: { tag: 'plain_text', content: '是（默认）' }, value: 'yes' },
-                { text: { tag: 'plain_text', content: '否' }, value: 'no' },
+                { text: { tag: 'plain_text', content: 'Yes (default)' }, value: 'yes' },
+                { text: { tag: 'plain_text', content: 'No' }, value: 'no' },
               ],
             },
             { tag: 'hr' },
-            collapsedAccessPanel('🔒 **访问控制**（点击展开）', accessElements),
+            collapsedAccessPanel('🔒 **Access control** (click to expand)', accessElements),
             {
               tag: 'column_set',
               flex_mode: 'flow',
@@ -211,7 +211,7 @@ export function configFormCard(opts: ConfigFormOpts): object {
                     {
                       tag: 'button',
                       name: 'submit_btn',
-                      text: { tag: 'plain_text', content: '提交' },
+                      text: { tag: 'plain_text', content: 'Submit' },
                       type: 'primary',
                       form_action_type: 'submit',
                       behaviors: [{ type: 'callback', value: { cmd: 'config.submit' } }],
@@ -225,7 +225,7 @@ export function configFormCard(opts: ConfigFormOpts): object {
                     {
                       tag: 'button',
                       name: 'cancel_btn',
-                      text: { tag: 'plain_text', content: '取消' },
+                      text: { tag: 'plain_text', content: 'Cancel' },
                       behaviors: [{ type: 'callback', value: { cmd: 'config.cancel' } }],
                     },
                   ],
@@ -242,31 +242,31 @@ export function configFormCard(opts: ConfigFormOpts): object {
 export function configSavedCard(opts: ConfigFormOpts): object {
   const replyLabel =
     opts.messageReply === 'card'
-      ? '交互卡片'
+      ? 'Interactive card'
       : opts.messageReply === 'markdown'
-        ? '消息卡片'
-        : '纯文本';
+        ? 'Message card'
+        : 'Plain text';
   const summarize = (list: string[]): string =>
-    list.length === 0 ? '_(空)_' : `${list.length} 项`;
+    list.length === 0 ? '_(empty)_' : `${list.length} entries`;
   return {
     schema: '2.0',
-    config: { summary: { content: '偏好已保存' } },
+    config: { summary: { content: 'Preferences saved' } },
     body: {
       elements: [
         {
           tag: 'markdown',
           content:
-            '✅ **偏好已保存**\n\n' +
-            `**消息回复方式**：${replyLabel}\n` +
-            `**工具调用显示**：\`${opts.showToolCalls ? 'show' : 'hide'}\`\n` +
-            `**并发上限**：\`${opts.maxConcurrentRuns}\`\n` +
-            `**run 探活**：\`${opts.runIdleTimeoutMinutes > 0 ? `${opts.runIdleTimeoutMinutes} 分钟` : '关闭'}\`\n` +
-            `**群里需要 @ bot**：\`${opts.requireMentionInGroup ? '是' : '否'}\`\n\n` +
-            '🔒 **访问控制**\n' +
-            `**允许私聊的用户**：${summarize(opts.allowedUsers)}\n` +
-            `**允许响应的群**：${summarize(opts.allowedChats)}\n` +
-            `**管理员**：${summarize(opts.admins)}\n\n` +
-            '下条消息开始生效。',
+            '✅ **Preferences saved**\n\n' +
+            `**Reply style**: ${replyLabel}\n` +
+            `**Tool-call display**: \`${opts.showToolCalls ? 'show' : 'hide'}\`\n` +
+            `**Max concurrent runs**: \`${opts.maxConcurrentRuns}\`\n` +
+            `**Run idle watchdog**: \`${opts.runIdleTimeoutMinutes > 0 ? `${opts.runIdleTimeoutMinutes} min` : 'disabled'}\`\n` +
+            `**Require @bot in groups**: \`${opts.requireMentionInGroup ? 'yes' : 'no'}\`\n\n` +
+            '🔒 **Access control**\n' +
+            `**Users allowed to DM**: ${summarize(opts.allowedUsers)}\n` +
+            `**Groups where bot responds**: ${summarize(opts.allowedChats)}\n` +
+            `**Admins**: ${summarize(opts.admins)}\n\n` +
+            'Takes effect on the next message.',
         },
       ],
     },
@@ -276,9 +276,9 @@ export function configSavedCard(opts: ConfigFormOpts): object {
 export function configCancelledCard(): object {
   return {
     schema: '2.0',
-    config: { summary: { content: '已取消' } },
+    config: { summary: { content: 'Cancelled' } },
     body: {
-      elements: [{ tag: 'markdown', content: '已取消，未做任何修改。' }],
+      elements: [{ tag: 'markdown', content: 'Cancelled — no changes saved.' }],
     },
   };
 }
