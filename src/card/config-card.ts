@@ -276,6 +276,53 @@ export function configSavedCard(opts: ConfigFormOpts): object {
   };
 }
 
+/**
+ * Shown after `/config` saves "群里不需要 @ bot" but the app is missing the
+ * `im:message.group_msg` scope. Guides the user through one-click incremental
+ * authorization via the link from `requestScopeGrantLink`.
+ */
+export function groupMsgScopeGrantCard(url: string, expireMins: number): object {
+  return {
+    schema: '2.0',
+    config: { summary: { content: '需要补授权' } },
+    body: {
+      elements: [
+        {
+          tag: 'markdown',
+          content:
+            '⚠️ **「群里不需要 @ bot」还差一个权限**\n\n' +
+            '你已开启「不 @ bot 也回复」，但当前应用没有 **获取群组中所有消息**（`im:message.group_msg`）权限。' +
+            '没有它，飞书不会把群里非 @ 的消息推给 bot，所以这个设置暂时不生效。\n\n' +
+            `**点下面的链接补授权**（约 ${expireMins} 分钟内有效）：\n` +
+            `[🔗 点此一键授权](${url})\n\n` +
+            '_扫码/点击后会进入确认页，新权限已预填好，确认即可。授权成功后，群里新消息开始自动生效，无需重启。_\n' +
+            `_若链接打不开，可复制：_\n\`${url}\`\n\n` +
+            '_授权后若群里仍收不到非 @ 消息，发 `/reconnect` 重连一次即可。_',
+        },
+      ],
+    },
+  };
+}
+
+/** Replaces {@link groupMsgScopeGrantCard} in place once authorization completes. */
+export function groupMsgScopeGrantedCard(): object {
+  return {
+    schema: '2.0',
+    config: { summary: { content: '授权成功' } },
+    body: {
+      elements: [
+        {
+          tag: 'markdown',
+          content:
+            '✅ **授权成功**\n\n' +
+            '`im:message.group_msg` 权限已生效，群里非 @ bot 的消息从现在开始会触发回复。\n\n' +
+            '_若仍未生效，发 `/reconnect` 重连一次。_',
+        },
+      ],
+    },
+  };
+}
+
 export function configCancelledCard(): object {
   return {
     schema: '2.0',

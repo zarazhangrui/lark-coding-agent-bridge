@@ -12,8 +12,8 @@ importers:
         specifier: ^1.4.0
         version: 1.4.0
       '@larksuite/channel':
-        specifier: ^0.1.2
-        version: 0.1.2
+        specifier: ^0.2.0
+        version: 0.2.0
       commander:
         specifier: ^12.1.0
         version: 12.1.0
@@ -372,12 +372,12 @@ packages:
   '@jridgewell/trace-mapping@0.3.31':
     resolution: {integrity: sha512-zzNR+SdQSDJzc8joaeP8QQoCQr8NuYx2dIIytl1QeBEZHJ9uW6hebsrYgbz8hJwUQao3TWCMtmfV8Nu1twOLAw==}
 
-  '@larksuite/channel@0.1.2':
-    resolution: {integrity: sha512-9bhxF8lCFsYiOq+E9Swg1/5nqJLJNPsVLTGIdEE8hcqRKg/Dwazh4UKP0jHjiFf8yI8KKTfsEkA2P6PUFmSZQw==}
+  '@larksuite/channel@0.2.0':
+    resolution: {integrity: sha512-XzbPxBLz+f05hVqggAZOciiNyW7DgXQBOSJANfACoeJxs4x+N2vKgX15cYQS4NAtBq1erqrHu+3QsjgRnLeXYA==}
     engines: {node: '>=18'}
 
-  '@larksuiteoapi/node-sdk@1.66.1':
-    resolution: {integrity: sha512-W1rIAs/8Oc/rEYuWc0sxGvR8iLwd8p5D2RS4ODMqs8htIxK8yIa8sb22EDv/OEBqUpKXZaNLydTz7Oq8HOQROg==}
+  '@larksuiteoapi/node-sdk@1.67.0':
+    resolution: {integrity: sha512-pr3iZbK+CkwgwIhUzt86mZGP/wLCzBDRmCy+Vt+/UAWx/KjwxwrRpfAKm4eOmd0uUd8AcG2mWC/ZSUMu7lZIqg==}
 
   '@protobufjs/aspromise@1.1.2':
     resolution: {integrity: sha512-j+gKExEuLmKwvz3OgROXtrJ2UG2x8Ch2YZUxahh+s1F2HZ+wAceUNLkvy6zKCPVRkU++ZWQrdxsUeQXmcg4uoQ==}
@@ -1333,9 +1333,9 @@ snapshots:
       '@jridgewell/resolve-uri': 3.1.2
       '@jridgewell/sourcemap-codec': 1.5.5
 
-  '@larksuite/channel@0.1.2':
+  '@larksuite/channel@0.2.0':
     dependencies:
-      '@larksuiteoapi/node-sdk': 1.66.1
+      '@larksuiteoapi/node-sdk': 1.67.0
       https-proxy-agent: 9.0.0
     transitivePeerDependencies:
       - bufferutil
@@ -1343,7 +1343,7 @@ snapshots:
       - supports-color
       - utf-8-validate
 
-  '@larksuiteoapi/node-sdk@1.66.1':
+  '@larksuiteoapi/node-sdk@1.67.0':
     dependencies:
       axios: 1.13.6
       lodash.identity: 3.0.0
