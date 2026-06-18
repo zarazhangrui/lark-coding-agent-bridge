@@ -69,6 +69,34 @@ describe('start runtime agent factory', () => {
     expect(profile.codex?.binaryPath).toBe('codex');
   });
 
+  it('creates AntigravityAdapter from canonical workspace permissions', () => {
+    const profile = createDefaultProfileConfig({
+      agentKind: 'antigravity',
+      accounts: appAccount(),
+      antigravity: { binaryPath: '/usr/local/bin/agy' },
+      permissions: { defaultAccess: 'workspace', maxAccess: 'workspace' },
+    });
+    const agent = createRuntimeAgent(profile, {
+      profileDir: '/tmp/lark-channel-bridge/profiles/antigravity-e2e',
+    });
+
+    expect(agent.id).toBe('antigravity');
+    expect(agent.displayName).toBe('Antigravity CLI');
+    expect(profile.sandbox).toMatchObject({
+      defaultMode: 'workspace-write',
+      maxMode: 'workspace-write',
+    });
+  });
+
+  it('seeds a default Antigravity binary when bootstrapping a new Antigravity profile', () => {
+    const profile = createRuntimeProfileConfig({
+      agentKind: 'antigravity',
+      accounts: appAccount(),
+    });
+
+    expect(profile.antigravity?.binaryPath).toBe('agy');
+  });
+
   it('updates the process registry before releasing the old app lock during reconnect', async () => {
     const source = await readFile(join(process.cwd(), 'src/cli/commands/start.ts'), 'utf8');
     const restartStart = source.indexOf('async restart()');

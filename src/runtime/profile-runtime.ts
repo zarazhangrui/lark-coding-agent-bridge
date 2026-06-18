@@ -4,6 +4,7 @@ import * as p from '@clack/prompts';
 import { runRegistrationWizard } from '../bot/wizard';
 import { detectInstalledAgents, type DetectedAgent } from '../cli/agent-detection';
 import {
+  createBootstrapAntigravityConfig,
   createBootstrapCodexConfig,
   createBootstrapProfileConfig,
   resolveBootstrapWorkspace,
@@ -60,6 +61,7 @@ export interface ResolveProfileRuntimeOptions {
   appId?: string;
   appSecret?: string;
   tenant?: string;
+  reuseActiveApp?: boolean;
   allowBootstrap?: boolean;
   selectAgent?: (detected: DetectedAgent[]) => AgentKind | undefined | Promise<AgentKind | undefined>;
   handleActiveBridgeMigrationConflict?: (
@@ -90,6 +92,13 @@ export function createRuntimeProfileConfig(
     ...(input.agentKind === 'codex'
       ? { codex: input.codex ?? { binaryPath: process.env.LARK_CHANNEL_CODEX_BIN ?? 'codex' } }
       : {}),
+    ...(input.agentKind === 'antigravity'
+      ? {
+          antigravity: input.antigravity ?? {
+            binaryPath: process.env.LARK_CHANNEL_ANTIGRAVITY_BIN ?? 'agy',
+          },
+        }
+      : {}),
   });
 }
 
@@ -108,7 +117,7 @@ export async function resolveProfileRuntime(
   if (!profile && opts.allowBootstrap) {
     const detected = await detectInstalledAgents();
     if (detected.length === 0) {
-      throw new Error('no supported local agent found; install claude or codex first');
+      throw new Error('no supported local agent found; install claude, codex, or agy first');
     }
     if (detected.length > 1) {
       const selected = await selectDetectedAgent(detected, opts.selectAgent);
@@ -137,6 +146,9 @@ export async function resolveProfileRuntime(
     ...(migrationAgent ? { agentKind: migrationAgent } : {}),
     ...(needsMigration && migrationAgent === 'codex'
       ? { codex: await createBootstrapCodexConfig(undefined) }
+      : {}),
+    ...(needsMigration && migrationAgent === 'antigravity'
+      ? { antigravity: await createBootstrapAntigravityConfig(undefined) }
       : {}),
   }, opts.handleActiveBridgeMigrationConflict);
 
@@ -235,7 +247,7 @@ async function bootstrapProfileIntoExistingRoot(args: {
   const { rootConfig, profile, requestedAgent, opts, appPaths, configPath } = args;
   const bootstrapAgent = resolveBootstrapAgent(requestedAgent, profile) ?? 'claude';
   const workspace = opts.workspace;
-  const fresh = await resolveBootstrapAppConfig(opts);
+  const fresh = await resolveBootstrapAppConfigForExistingRoot(rootConfig, appPaths, opts);
   const encrypted = await encryptedConfigForProfile(fresh, appPaths);
   const profileConfig = await createBootstrapProfileConfig({
     agentKind: bootstrapAgent,
@@ -267,6 +279,34 @@ async function bootstrapProfileIntoExistingRoot(args: {
     configPath,
     appPaths,
     profile,
+  };
+}
+
+async function resolveBootstrapAppConfigForExistingRoot(
+  rootConfig: RootConfig,
+  appPaths: AppPaths,
+  opts: ResolveProfileRuntimeOptions,
+): Promise<AppConfig> {
+  if (opts.appId || !opts.reuseActiveApp) return resolveBootstrapAppConfig(opts);
+  const sourceProfile = rootConfig.activeProfile;
+  const sourceProfileConfig = rootConfig.profiles[sourceProfile];
+  if (!sourceProfileConfig) {
+    throw new Error(
+      `active profile not found: ${sourceProfile}; pass --app-id and --app-secret to create a new profile`,
+    );
+  }
+  const sourcePaths = resolveAppPaths({ rootDir: appPaths.rootDir, profile: sourceProfile });
+  const sourceConfig = runtimeProfileConfig(rootConfig, sourceProfile);
+  const secret = await resolveAppSecret(sourceConfig, sourcePaths);
+  return {
+    accounts: {
+      app: {
+        id: sourceConfig.accounts.app.id,
+        secret,
+        tenant: sourceConfig.accounts.app.tenant,
+      },
+    },
+    preferences: sourceConfig.preferences,
   };
 }
 
@@ -395,7 +435,12 @@ function resolveBootstrapAgent(
   requestedAgent: AgentKind | undefined,
   profile: string | undefined,
 ): AgentKind | undefined {
-  return requestedAgent ?? (profile === 'codex' ? 'codex' : undefined);
+  return requestedAgent ??
+    (profile === 'codex'
+      ? 'codex'
+      : profile === 'agy' || profile === 'antigravity'
+        ? 'antigravity'
+        : undefined);
 }
 
 async function hasLegacyConfig(configPath: string): Promise<boolean> {
@@ -566,9 +611,9 @@ export async function materializeEnvSecretForService(
 function formatAmbiguousAgentSelectionError(
   detected: Array<{ kind: AgentKind; binaryPath: string }>,
 ): string {
-  const lines = detected.map((agent) => `  - ${agent.kind}: ${agent.binaryPath}`);
+  const lines = detected.map((agent) => `  - ${agent.kind === 'antigravity' ? 'agy' : agent.kind}: ${agent.binaryPath}`);
   return [
-    '检测到多个本地 agent，请使用 --agent <claude|codex> 指定要初始化哪一个。',
+    '检测到多个本地 agent，请使用 --agent <claude|codex|agy> 指定要初始化哪一个。',
     '已检测到：',
     ...lines,
   ].join('\n');
@@ -613,7 +658,9 @@ class UserCancelledError extends Error {
 }
 
 function displayAgentKind(kind: AgentKind): string {
-  return kind === 'claude' ? 'Claude Code' : 'Codex CLI';
+  if (kind === 'claude') return 'Claude Code';
+  if (kind === 'codex') return 'Codex CLI';
+  return 'Antigravity CLI';
 }
 
 async function maybeMigrateRootPlaintextSecret(

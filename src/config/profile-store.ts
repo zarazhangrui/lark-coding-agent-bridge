@@ -4,6 +4,7 @@ import * as lockfile from 'proper-lockfile';
 import { writeFileAtomic } from '../platform/atomic-write';
 import { resolveAppPaths } from './app-paths';
 import {
+  isAgentKind,
   normalizeProfileConfig,
   type AgentKind,
   type ProfileConfig,
@@ -56,6 +57,7 @@ type StoredProfileConfig = Pick<
   | 'workspaces'
   | 'permissions'
   | 'codex'
+  | 'antigravity'
   | 'attachments'
   | 'comments'
   | 'larkCli'
@@ -93,6 +95,7 @@ function serializeProfileConfig(profile: ProfileConfig): StoredProfileConfig {
     workspaces: profile.workspaces,
     permissions: profile.permissions,
     ...(profile.codex ? { codex: profile.codex } : {}),
+    ...(profile.antigravity ? { antigravity: profile.antigravity } : {}),
     attachments: profile.attachments,
     comments: {},
     larkCli: profile.larkCli,
@@ -292,7 +295,8 @@ async function pathExists(path: string): Promise<boolean> {
 }
 
 export function agentKindFromString(value: string | undefined): AgentKind | undefined {
-  if (value === 'claude' || value === 'codex') return value;
+  if (value === 'agy') return 'antigravity';
+  if (isAgentKind(value)) return value;
   if (value === undefined) return undefined;
   throw new Error(`unsupported agent: ${value}`);
 }

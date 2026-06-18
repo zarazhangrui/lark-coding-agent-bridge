@@ -2,6 +2,7 @@ import dns from 'node:dns';
 import os from 'node:os';
 import { createInterface } from 'node:readline';
 import pkg from '../../../package.json';
+import { AntigravityAdapter } from '../../agent/antigravity/adapter';
 import { ClaudeAdapter } from '../../agent/claude/adapter';
 import { CodexAdapter } from '../../agent/codex/adapter';
 import {
@@ -374,9 +375,14 @@ async function checkRuntimeAgentAvailability(agent: AgentAdapter): Promise<Agent
   if (ok) return { ok: true };
   const diagnostic = {
     code: 'agent-binary-not-found' as const,
-    agentId: agent.id === 'codex' ? 'codex' as const : 'claude' as const,
+    agentId:
+      agent.id === 'codex'
+        ? 'codex' as const
+        : agent.id === 'antigravity'
+          ? 'antigravity' as const
+          : 'claude' as const,
     agentName: agent.displayName,
-    command: agent.id === 'codex' ? 'codex' : 'claude',
+    command: agent.id === 'codex' ? 'codex' : agent.id === 'antigravity' ? 'agy' : 'claude',
   };
   return {
     ok: false,
@@ -430,6 +436,18 @@ export function createRuntimeAgent(
       inheritCodexHome: codex.inheritCodexHome === true,
       ignoreUserConfig: codex.ignoreUserConfig === true,
       ignoreRules: codex.ignoreRules !== false,
+      sandbox: profileConfig.sandbox.defaultMode,
+      larkChannel,
+    });
+  }
+  if (profileConfig.agentKind === 'antigravity') {
+    const antigravity = profileConfig.antigravity;
+    if (!antigravity?.binaryPath) {
+      throw new Error('antigravity profile requires antigravity.binaryPath');
+    }
+    return new AntigravityAdapter({
+      binary: antigravity.binaryPath,
+      profileStateDir: appPaths.profileDir,
       sandbox: profileConfig.sandbox.defaultMode,
       larkChannel,
     });

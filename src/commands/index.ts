@@ -3,7 +3,7 @@ import { readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, isAbsolute } from 'node:path';
 import type { LarkChannel, NormalizedMessage } from '@larksuite/channel';
-import { claudeCapability, codexCapability } from '../agent/capability';
+import { capabilityForProfile } from '../agent/capability';
 import type { AgentAdapter } from '../agent/types';
 import type { ActiveRuns } from '../bot/active-runs';
 import {
@@ -57,6 +57,11 @@ import {
   type CodexThreadHistoryEntry,
   type ListCodexThreadHistoryOptions,
 } from '../session/codex-history';
+import {
+  listAntigravityConversationHistory,
+  type AntigravityConversationHistoryEntry,
+  type ListAntigravityConversationHistoryOptions,
+} from '../session/antigravity-history';
 import type { SessionCatalog, SessionCatalogIdentity } from '../session/catalog';
 import { isAlive, readAndPrune, resolveTarget } from '../runtime/registry';
 import type { SessionStore } from '../session/store';
@@ -122,6 +127,9 @@ export interface CommandContext {
   codexHistoryProvider?: (
     options: ListCodexThreadHistoryOptions,
   ) => Promise<CodexThreadHistoryEntry[]>;
+  antigravityHistoryProvider?: (
+    options: ListAntigravityConversationHistoryOptions,
+  ) => Promise<AntigravityConversationHistoryEntry[]>;
   claudeHistoryProvider?: (cwd: string, limit: number) => Promise<SessionSummary[]>;
   /** Set when invoked from a CardKit 2.0 form submit. Keys are input `name`s. */
   formValue?: Record<string, unknown>;
@@ -135,7 +143,7 @@ type Handler = (args: string, ctx: CommandContext) => Promise<void>;
 
 interface ResumeCandidate {
   scopeId: string;
-  agentId: 'claude' | 'codex';
+  agentId: 'claude' | 'codex' | 'antigravity';
   cwdRealpath: string;
   policyFingerprint: string;
   sessionId?: string;
@@ -528,22 +536,31 @@ async function handleResume(args: string, ctx: CommandContext): Promise<void> {
     return;
   }
 
-  if (ctx.controls.profileConfig.agentKind === 'codex') {
+  if (
+    ctx.controls.profileConfig.agentKind === 'codex' ||
+    ctx.controls.profileConfig.agentKind === 'antigravity'
+  ) {
     const identity = ctx.sessionCatalogIdentity;
     const entry =
       ctx.sessionCatalog && identity
         ? ctx.sessionCatalog.activeFor(identity)
         : undefined;
-    const history = identity ? await listCodexResumeHistory(ctx, cwd, limit) : [];
+    const isAntigravity = ctx.controls.profileConfig.agentKind === 'antigravity';
+    const history = identity
+      ? isAntigravity
+        ? await listAntigravityResumeHistory(ctx, limit)
+        : await listCodexResumeHistory(ctx, cwd, limit)
+      : [];
     if (history.length > 0 && identity) {
       const entries = history.map((thread) => {
-        const nonce = issueResumeCandidate(identity, { threadId: thread.threadId });
+        const threadId = 'threadId' in thread ? thread.threadId : thread.conversationId;
+        const nonce = issueResumeCandidate(identity, { threadId });
         return {
           sessionId: nonce,
-          preview: thread.name || thread.preview,
+          preview: 'name' in thread ? thread.name || thread.preview : thread.preview,
           relTime: formatRelTime(thread.updatedAtMs),
-          detail: `Codex · ${thread.source}`,
-          current: thread.threadId === entry?.threadId,
+          detail: `${isAntigravity ? 'Antigravity' : 'Codex'} · ${thread.source}`,
+          current: threadId === entry?.threadId,
         };
       });
       const card = resumeCard(cwd, entries);
@@ -554,7 +571,7 @@ async function handleResume(args: string, ctx: CommandContext): Promise<void> {
       const nonce = issueResumeCandidate(identity, { threadId: entry.threadId });
       await reply(
         ctx,
-        `当前 Codex thread 可恢复。\n使用 \`/resume use ${nonce}\` 恢复（10 分钟内有效）。`,
+        `当前 ${isAntigravity ? 'Antigravity conversation' : 'Codex thread'} 可恢复。\n使用 \`/resume use ${nonce}\` 恢复（10 分钟内有效）。`,
       );
       return;
     }
@@ -586,10 +603,10 @@ async function applyResume(sessionId: string, ctx: CommandContext): Promise<void
     const resolved = consumeResumeCandidate(sessionId, ctx.sessionCatalogIdentity);
     if (resolved) {
       ctx.activeRuns.interrupt(ctx.scope);
-      if (ctx.sessionCatalogIdentity.agentId === 'codex') {
+      if (ctx.sessionCatalogIdentity.agentId !== 'claude') {
         ctx.sessionCatalog.upsertActive({
           scopeId: ctx.sessionCatalogIdentity.scopeId,
-          agentId: 'codex',
+          agentId: ctx.sessionCatalogIdentity.agentId,
           cwdRealpath: ctx.sessionCatalogIdentity.cwdRealpath,
           policyFingerprint: ctx.sessionCatalogIdentity.policyFingerprint,
           threadId: resolved.threadId!,
@@ -607,7 +624,7 @@ async function applyResume(sessionId: string, ctx: CommandContext): Promise<void
       await reply(ctx, RESUME_APPLIED_REPLY);
       return;
     }
-    if (ctx.sessionCatalogIdentity.agentId === 'codex') {
+    if (ctx.sessionCatalogIdentity.agentId !== 'claude') {
       await reply(ctx, '当前上下文不可恢复这个会话，请先用 `/resume` 重新生成恢复候选。');
       return;
     }
@@ -624,8 +641,16 @@ async function applyResume(sessionId: string, ctx: CommandContext): Promise<void
     return;
   }
 
-  if (ctx.controls.profileConfig.agentKind === 'codex') {
-    await reply(ctx, '当前上下文没有可恢复的 Codex thread，请先在当前工作区完成一次运行。');
+  if (
+    ctx.controls.profileConfig.agentKind === 'codex' ||
+    ctx.controls.profileConfig.agentKind === 'antigravity'
+  ) {
+    await reply(
+      ctx,
+      ctx.controls.profileConfig.agentKind === 'codex'
+        ? '当前上下文没有可恢复的 Codex thread，请先在当前工作区完成一次运行。'
+        : '当前上下文没有可恢复的 Antigravity conversation，请先在当前工作区完成一次运行。',
+    );
     return;
   }
 
@@ -671,7 +696,7 @@ function consumeResumeCandidate(
     candidate.cwdRealpath !== identity.cwdRealpath ||
     candidate.policyFingerprint !== identity.policyFingerprint ||
     (identity.agentId === 'claude' && !candidate.sessionId) ||
-    (identity.agentId === 'codex' && !candidate.threadId)
+    (identity.agentId !== 'claude' && !candidate.threadId)
   ) {
     return undefined;
   }
@@ -716,6 +741,21 @@ async function listCodexResumeHistory(
     });
   } catch (err) {
     log.warn('session', 'codex-history-failed', {
+      message: err instanceof Error ? err.message : String(err),
+    });
+    return [];
+  }
+}
+
+async function listAntigravityResumeHistory(
+  ctx: CommandContext,
+  limit: number,
+): Promise<AntigravityConversationHistoryEntry[]> {
+  const provider = ctx.antigravityHistoryProvider ?? listAntigravityConversationHistory;
+  try {
+    return await provider({ limit });
+  } catch (err) {
+    log.warn('session', 'antigravity-history-failed', {
       message: err instanceof Error ? err.message : String(err),
     });
     return [];
@@ -783,17 +823,19 @@ async function larkCliStatus(ctx: CommandContext): Promise<'app' | 'user-ready' 
 async function handleStatus(_args: string, ctx: CommandContext): Promise<void> {
   const cwd = effectiveWorkspaceCwd(ctx);
   const sess = ctx.sessions.getRaw(ctx.scope);
-  const isCodex = ctx.controls.profileConfig.agentKind === 'codex';
+  const usesThreadSession =
+    ctx.controls.profileConfig.agentKind === 'codex' ||
+    ctx.controls.profileConfig.agentKind === 'antigravity';
   const catalogEntry =
-    isCodex && ctx.sessionCatalog && ctx.sessionCatalogIdentity
+    usesThreadSession && ctx.sessionCatalog && ctx.sessionCatalogIdentity
       ? ctx.sessionCatalog.activeFor(ctx.sessionCatalogIdentity)
       : undefined;
   const card = statusCard({
     profileName: ctx.controls.profile,
     cwd,
-    sessionId: isCodex ? catalogEntry?.threadId : sess?.sessionId,
-    emptySessionText: isCodex ? '(未建立)' : undefined,
-    sessionStale: !isCodex && Boolean(cwd && sess && sess.cwd !== cwd),
+    sessionId: usesThreadSession ? catalogEntry?.threadId : sess?.sessionId,
+    emptySessionText: usesThreadSession ? '(未建立)' : undefined,
+    sessionStale: !usesThreadSession && Boolean(cwd && sess && sess.cwd !== cwd),
     agentName: ctx.agent.displayName,
     runtimeAccess: runtimeAccessStatus(ctx.controls.profileConfig),
     larkCliStatus: await larkCliStatus(ctx),
@@ -1097,10 +1139,7 @@ async function handleDoctor(args: string, ctx: CommandContext): Promise<void> {
   }
   doctorLastByOperator.set(rateKey, now);
 
-  const capability =
-    ctx.controls.profileConfig.agentKind === 'codex'
-      ? codexCapability(ctx.controls.profileConfig)
-      : claudeCapability(ctx.controls.profileConfig);
+  const capability = capabilityForProfile(ctx.controls.profileConfig);
   const policy = evaluateRunPolicy({
     scope: {
       source: 'im',

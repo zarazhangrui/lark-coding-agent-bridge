@@ -33,6 +33,7 @@ export interface ProfileCreateOptions extends ProfileCommandOptions {
   appId?: string;
   appSecret?: string;
   tenant?: string;
+  reuseActiveApp?: boolean;
 }
 
 export interface ProfileRemoveOptions extends ProfileCommandOptions {
@@ -68,7 +69,7 @@ export async function runProfileList(opts: ProfileCommandOptions = {}): Promise<
     return {
       active: profile.active ? '*' : '',
       profile: profile.name,
-      agent: profile.agentKind,
+      agent: profile.agentKind === 'antigravity' ? 'agy' : profile.agentKind,
       status: holders.length > 0 ? holders.join(', ') : '-',
     };
   });
@@ -130,6 +131,7 @@ export async function runProfileCreate(
       appId: opts.appId,
       appSecret: opts.appSecret,
       tenant: opts.tenant,
+      reuseActiveApp: opts.reuseActiveApp,
       allowBootstrap: true,
     });
   });
