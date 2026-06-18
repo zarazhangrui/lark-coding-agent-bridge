@@ -23,6 +23,7 @@ import {
   markIdleTimeout,
   markInterrupted,
   reduce,
+  type Block,
   type RunState,
 } from '../card/run-state';
 import { renderText } from '../card/text-renderer';
@@ -32,7 +33,7 @@ import {
   getAgentStopGraceMs,
   getMaxConcurrentRuns,
   getMessageReplyMode,
-  getRequireMentionInGroup,
+  getReceiveMode,
   getRunIdleTimeoutMs,
   getShowToolCalls,
 } from '../config/schema';
@@ -544,14 +545,15 @@ async function intakeMessage(deps: IntakeDeps): Promise<void> {
   }
 
   // Group-mention policy. p2p is always unrestricted; in groups (regular and
-  // topic) we drop messages that don't @bot when the user has opted into the
-  // quiet-by-default behavior. Slash commands are NOT exempt — the user
-  // chose strict mode so the group stays uniformly quiet unless mentioned.
-  // @全员 is already filtered by SDK (`respondToMentionAll: false`), so any
-  // event reaching here is either targeted or undirected chatter.
+  // topic) we drop messages that don't @bot when the chat's receive mode is
+  // 'mention'. Slash commands are NOT exempt — the user chose strict mode so
+  // the group stays uniformly quiet unless mentioned. In 'all' and 'smart'
+  // modes un-mentioned messages are let through (smart lets the agent decide
+  // whether to reply — see runAgentBatch). @全员 is already filtered by the
+  // SDK (`respondToMentionAll: false`).
   if (
     msg.chatType !== 'p2p' &&
-    getRequireMentionInGroup(controls.cfg) &&
+    getReceiveMode(controls.cfg, msg.chatId) === 'mention' &&
     !msg.mentionedBot
   ) {
     log.info('intake', 'skip-no-mention', { scope, chatType: msg.chatType });
@@ -588,6 +590,162 @@ async function intakeMessage(deps: IntakeDeps): Promise<void> {
 
   const size = pending.push(scope, msg);
   log.info('intake', 'queued', { scope, queueSize: size, debounceMs: DEBOUNCE_MS });
+}
+
+/**
+ * Sentinel the agent emits in 'smart' mode to decline replying to a message
+ * that didn't @-mention it. Nothing is posted to the chat (the transient
+ * "Typing" ack reaction is cleared), but the message still lands in the
+ * session history so it becomes context for later turns.
+ */
+const SMART_SILENT_MARKER = '[[silent]]';
+
+/** Instruction appended to the prompt for a 'smart'-mode un-mentioned batch. */
+const SMART_EVAL_HINT = [
+  '',
+  '---',
+  '【群消息 · 没有 @ 你】上面这条/这些群消息没有点名你。请像群里的一个普通成员那样判断：现在需要你主动开口吗？',
+  `- 不需要（闲聊、自言自语、与你无关、对方已自行解决、还没轮到你）：只输出 \`${SMART_SILENT_MARKER}\`，不要有任何其它内容。`,
+  '- 需要（在叫你、问题和你相关、你能实质帮上忙、有人等你跟进）：正常回复即可。',
+  '无论你这次是否开口，这些消息都会进入对话上下文，之后被叫到时你都能看到。',
+].join('\n');
+
+/**
+ * True when a smart-mode evaluation chose NOT to chime in: the agent's text
+ * output is empty or just the silence sentinel. Only the agent's TEXT blocks
+ * count — tool-call blocks are deliberately ignored, since `renderText` also
+ * renders tool lines (`> ✅ **Read** — …`) when showToolCalls is on (the
+ * default), so a tool-using-but-silent eval would otherwise look non-silent
+ * and leak the tool trace into the chat. Tolerates surrounding whitespace /
+ * backticks / bold so a slightly-formatted marker still counts as silence.
+ */
+export function isSmartSilentEval(state: RunState): boolean {
+  const text = state.blocks
+    .filter((b): b is Extract<Block, { kind: 'text' }> => b.kind === 'text')
+    .map((b) => b.content)
+    .join('');
+  const normalized = text.replace(/[`*\s]/g, '').toLowerCase();
+  return normalized === '' || normalized === SMART_SILENT_MARKER.toLowerCase();
+}
+
+/**
+ * Matches the silence sentinel anywhere in a text block, tolerating the same
+ * surrounding whitespace / backticks / bold that {@link isSmartSilentEval}
+ * tolerates, plus inner spacing (`[[ silent ]]`).
+ */
+const SILENT_MARKER_RE = /[`*\s]*\[\[\s*silent\s*\]\][`*\s]*/gi;
+
+/**
+ * Short ack posted when the agent was @-mentioned but produced nothing but the
+ * silence sentinel. We must answer a direct mention, so this beats leaking the
+ * marker or posting an empty bubble. Un-mentioned ('smart') batches stay silent
+ * via the quietEval branch instead and never reach this.
+ */
+const MENTIONED_EMPTY_FALLBACK = '在的~,有什么可以帮你的?';
+
+/**
+ * Defense-in-depth: strip the silence sentinel out of every text block so it can
+ * never reach the chat as literal `[[silent]]`. The sentinel is only meant to be
+ * intercepted on the un-mentioned ('smart') path, but the agent's persistent
+ * session learns the convention and can emit it on any turn — including a real
+ * @-mention, which renders normally and would otherwise post the raw marker.
+ */
+export function stripSilentMarker(state: RunState): RunState {
+  let touched = false;
+  const blocks = state.blocks.map((b) => {
+    if (b.kind !== 'text') return b;
+    const content = b.content.replace(SILENT_MARKER_RE, '');
+    if (content === b.content) return b;
+    touched = true;
+    return { ...b, content };
+  });
+  return touched ? { ...state, blocks } : state;
+}
+
+/**
+ * Render a reply as markdown text (marker already stripped via `filterForPrefs`).
+ * When the agent was @-mentioned (`mustReply`) and the run finished with nothing
+ * but the now-stripped sentinel, fall back to a short ack instead of an empty
+ * message. While still running, an empty render stays empty (no premature ack).
+ */
+export function renderReplyText(state: RunState, mustReply: boolean): string {
+  const body = renderText(state);
+  if (body.trim()) return body;
+  return mustReply && state.terminal !== 'running' ? MENTIONED_EMPTY_FALLBACK : '';
+}
+
+/**
+ * Max chars per post message before we split. Mirrors the SDK's default
+ * `textChunkLimit` (3500) so a chunk we hand to `channel.send` is never
+ * re-split internally — each send maps to exactly one Feishu message whose id
+ * we can chain the next chunk under.
+ */
+const POST_CHUNK_LIMIT = 3500;
+
+/**
+ * Split markdown into <=limit-char chunks, preferring to break at blank lines /
+ * headings and never mid-code-fence (a fence left open is reopened in the next
+ * chunk). Ported from the SDK's internal `splitWithCodeFences` so our chunking
+ * matches what `channel.send` would have done — we only take over the threading.
+ */
+export function splitMarkdownForPost(text: string, limit: number): string[] {
+  if (text.length <= limit) return [text];
+  const lines = text.split('\n');
+  const out: string[] = [];
+  let buf: string[] = [];
+  let bufLen = 0;
+  let fenceLang: string | null = null;
+  const flush = (): void => {
+    if (buf.length === 0) return;
+    let chunk = buf.join('\n');
+    if (fenceLang !== null) chunk += '\n```';
+    out.push(chunk);
+    buf = [];
+    bufLen = 0;
+    if (fenceLang !== null) {
+      const reopened = '```' + fenceLang;
+      buf.push(reopened);
+      bufLen = reopened.length;
+    }
+  };
+  for (const line of lines) {
+    const m = line.match(/^```(\w*)$/);
+    const lineLen = line.length + (buf.length > 0 ? 1 : 0);
+    const isHeading = /^#{1,6}\s/.test(line);
+    const nearFull = bufLen > limit * 0.75;
+    if (bufLen + lineLen > limit || (isHeading && nearFull && buf.length > 0)) {
+      flush();
+    }
+    buf.push(line);
+    bufLen += lineLen;
+    if (m) fenceLang = fenceLang === null ? m[1] || '' : null;
+  }
+  flush();
+  return out;
+}
+
+/**
+ * Post a (possibly long) markdown reply, keeping every chunk in one thread.
+ *
+ * `channel.send` chunks long markdown internally but only threads the FIRST
+ * chunk — continuation chunks post at top level, which in a topic group spawns
+ * stray new topics (upstream @larksuiteoapi/node-sdk bug in `sendMarkdown`). We
+ * split here and chain each chunk as a reply to the previous message instead.
+ * Chaining only kicks in for thread/topic replies (`replyInThread`); outside a
+ * thread, continuation chunks stay at top level to match Feishu's default.
+ */
+export async function sendThreadedMarkdown(
+  channel: LarkChannel,
+  chatId: string,
+  body: string,
+  sendOpts: { replyTo?: string; replyInThread?: boolean },
+): Promise<void> {
+  const chunks = splitMarkdownForPost(body, POST_CHUNK_LIMIT);
+  let replyTo = sendOpts.replyTo;
+  for (const chunk of chunks) {
+    const res = await channel.send(chatId, { markdown: chunk }, { ...sendOpts, replyTo });
+    replyTo = sendOpts.replyInThread ? (res?.messageId ?? replyTo) : undefined;
+  }
 }
 
 interface RunBatchDeps {
@@ -673,6 +831,20 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
   const prompt = buildPrompt(batch, attachments, quotes, channel.botIdentity);
   log.info('prompt', 'built', { promptChars: prompt.length, quotes: quotes.length });
 
+  // 'smart' mode: an un-mentioned group batch is a quiet evaluation — the
+  // agent sees the messages and decides whether to chime in, and may stay
+  // silent (no card, no reaction, nothing posted) while the messages still
+  // land in the session as context. A batch that @bot at all is a real
+  // interaction and runs normally.
+  const receiveMode =
+    firstMsg.chatType === 'p2p' ? 'all' : getReceiveMode(controls.cfg, chatId);
+  const batchMentionedBot = batch.some((m) => m.mentionedBot);
+  const quietEval = receiveMode === 'smart' && !batchMentionedBot;
+  const promptForRun = quietEval ? `${prompt}\n${SMART_EVAL_HINT}` : prompt;
+  if (quietEval) {
+    log.info('flush', 'smart-eval', { scope });
+  }
+
   // For topic groups: thread the reply so it lands in the same topic as the
   // user's message. Otherwise the SDK posts at top level and the user's
   // topic discussion breaks visually.
@@ -698,7 +870,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
   const flow = await startRunFlow({
     scopeId: scope,
     scope: scopeContext,
-    prompt,
+    prompt: promptForRun,
     attachments: attachments.map(toPolicyAttachment),
     access: accessDecision,
     capability,
@@ -772,8 +944,9 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
   // Re-read prefs on every flush so toggling /config mid-stream takes
   // effect immediately. Cheap object lookups, no allocation when on.
   const filterForPrefs = (state: RunState): RunState => {
-    if (getShowToolCalls(controls.cfg)) return state;
-    return { ...state, blocks: state.blocks.filter((b) => b.kind !== 'tool') };
+    const clean = stripSilentMarker(state);
+    if (getShowToolCalls(controls.cfg)) return clean;
+    return { ...clean, blocks: clean.blocks.filter((b) => b.kind !== 'tool') };
   };
   const cardRenderOptions = callbackAuth
     ? {
@@ -794,11 +967,41 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
   // a first streamed token (markdown mode) or the whole run ends (text mode).
   // Add a "Typing" reaction to the triggering message as an instant ack, but
   // never let that outbound API call block agent event draining.
+  //
+  // A quiet 'smart' evaluation also adds the reaction (it has no card to show
+  // it's working) so the user sees "TARS saw this and is considering it". The
+  // shared cleanup below removes it once the run ends — whether smart chose to
+  // reply or to stay silent — so a silent eval just flashes the ack and clears.
   const reactionPromise =
-    replyMode === 'card' ? undefined : addWorkingReaction(channel, lastMsg.messageId);
+    quietEval
+      ? addWorkingReaction(channel, lastMsg.messageId)
+      : replyMode === 'card'
+        ? undefined
+        : addWorkingReaction(channel, lastMsg.messageId);
 
   try {
-    if (replyMode === 'card') {
+    if (quietEval) {
+      // No live card: drain the run into a buffered RunState, then post only if
+      // the agent chose to chime in. The "Typing" ack reaction (added above)
+      // is removed by the shared cleanup when the run ends, so a silent eval
+      // just flashes the ack and leaves no message. Either way the messages are
+      // already in the session via recordSession, so they stay as context.
+      const finalState = await processAgentStream(
+        handle,
+        eventStream,
+        scope,
+        idleTimeoutMs,
+        recordSession,
+        async () => {},
+      );
+      if (finalState.terminal === 'done' && !isSmartSilentEval(finalState)) {
+        const body = renderText(filterForPrefs(finalState));
+        await sendThreadedMarkdown(channel, chatId, body, sendOpts);
+        log.info('flush', 'smart-reply', { scope, chars: body.length });
+      } else {
+        log.info('flush', 'smart-silent', { scope, terminal: finalState.terminal });
+      }
+    } else if (replyMode === 'card') {
       let latestState: RunState = initialState;
       let producerStarted = false;
       let cardCtrl:
@@ -858,7 +1061,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
         async (state) => {
           latestState = state;
           if (markdownCtrl) {
-            await markdownCtrl.setContent(renderText(filterForPrefs(state)));
+            await markdownCtrl.setContent(renderReplyText(filterForPrefs(state), !quietEval));
           }
         },
       );
@@ -868,7 +1071,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
           markdown: async (ctrl) => {
             producerStarted = true;
             markdownCtrl = ctrl;
-            await ctrl.setContent(renderText(filterForPrefs(latestState)));
+            await ctrl.setContent(renderReplyText(filterForPrefs(latestState), !quietEval));
             await renderDone;
           },
         },
@@ -880,9 +1083,9 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
         renderDone,
         producerStarted: () => producerStarted,
         fallback: async (state) => {
-          const body = renderText(filterForPrefs(state));
+          const body = renderReplyText(filterForPrefs(state), !quietEval);
           if (body.trim()) {
-            await channel.send(chatId, { markdown: body }, sendOpts);
+            await sendThreadedMarkdown(channel, chatId, body, sendOpts);
           }
         },
       });
@@ -898,9 +1101,9 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
         recordSession,
         async () => {},
       );
-      const body = renderText(filterForPrefs(finalState));
+      const body = renderReplyText(filterForPrefs(finalState), true);
       if (body.trim()) {
-        await channel.send(chatId, { markdown: body }, sendOpts);
+        await sendThreadedMarkdown(channel, chatId, body, sendOpts);
       }
     }
   } catch (err) {

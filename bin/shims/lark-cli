@@ -1,0 +1,120 @@
+#!/usr/bin/env node
+'use strict';
+
+/**
+ * lark-cli identity guard — shipped with lark-channel-bridge and prepended to
+ * the spawned agent's PATH (only the agent's; the daemon's own lark-cli calls
+ * are untouched).
+ *
+ * TARS may act as the user for non-messaging actions (e.g. creating docs as the
+ * user), but it must NOT send IM messages as the user's identity. So we rewrite
+ *   lark-cli im <send-ish> ... --as user      → ... --as bot
+ *   lark-cli im <send-ish> ... --as=user      → ... --as=bot
+ * and pass every other invocation (docs, config, auth, non-im, non-send) through
+ * to the real lark-cli completely unchanged.
+ */
+
+const { spawnSync } = require('node:child_process');
+const fs = require('node:fs');
+const path = require('node:path');
+
+const argv = process.argv.slice(2);
+const shimDir = __dirname;
+
+/** First `lark-cli` on PATH that isn't this shim. */
+function resolveReal() {
+  for (const dir of (process.env.PATH || '').split(path.delimiter)) {
+    if (!dir) continue;
+    let resolved;
+    try {
+      resolved = path.resolve(dir);
+    } catch {
+      continue;
+    }
+    if (resolved === path.resolve(shimDir)) continue;
+    const candidate = path.join(dir, 'lark-cli');
+    try {
+      fs.accessSync(candidate, fs.constants.X_OK);
+      return candidate;
+    } catch {
+      /* keep looking */
+    }
+  }
+  return null;
+}
+
+/**
+ * Does this look like an `im` command that POSTS a message? Covers both the
+ * friendly verbs (`send`, `reply`, `send-card`, `forward`, `urgent`) and the
+ * raw `+messages-*` / `+message-*` forms the bridge prompt actually tells the
+ * agent to use (`im +messages-send`). Read-only verbs (list/get/chat-history/
+ * download/members/recall/read/update) don't match.
+ */
+function isImSend(args) {
+  const imIdx = args.indexOf('im');
+  if (imIdx === -1) return false;
+  // The action is the first non-flag token after `im`.
+  const action = args.slice(imIdx + 1).find((a) => !a.startsWith('-'));
+  if (!action) return false;
+  return /(send|reply|forward|urgent|card)/i.test(action);
+}
+
+/**
+ * Force bot identity for an IM send: rewrite an explicit `--as user`, and when
+ * no `--as` was given at all, APPEND `--as bot` so lark-cli's `default-as auto`
+ * can't silently pick the user identity. Non-send / non-im invocations and
+ * already-`--as bot` sends are returned untouched.
+ */
+function forceBotForImSend(args) {
+  if (!isImSend(args)) return { args, changed: false };
+
+  let changed = false;
+  let sawAs = false;
+  const out = [];
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (a === '--as') {
+      sawAs = true;
+      if (args[i + 1] === 'user') {
+        out.push('--as', 'bot');
+        i += 1;
+        changed = true;
+        continue;
+      }
+    } else if (a === '--as=user') {
+      sawAs = true;
+      out.push('--as=bot');
+      changed = true;
+      continue;
+    } else if (a.startsWith('--as=')) {
+      sawAs = true;
+    }
+    out.push(a);
+  }
+  if (!sawAs) {
+    out.push('--as', 'bot');
+    changed = true;
+  }
+  return { args: out, changed };
+}
+
+const real = resolveReal();
+if (!real) {
+  process.stderr.write('lark-cli identity guard: real lark-cli not found on PATH\n');
+  process.exit(127);
+}
+
+const { args: finalArgs, changed } = forceBotForImSend(argv);
+if (changed) {
+  process.stderr.write(
+    'lark-cli identity guard: forced `im` message send to `--as bot` ' +
+      '(TARS may not send messages as the user)\n',
+  );
+}
+
+const res = spawnSync(real, finalArgs, { stdio: 'inherit' });
+if (res.error) {
+  process.stderr.write(`lark-cli identity guard: ${res.error.message}\n`);
+  process.exit(127);
+}
+process.exit(res.status === null ? 1 : res.status);

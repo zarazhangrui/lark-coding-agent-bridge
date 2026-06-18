@@ -24,11 +24,18 @@ import { GROUP_MSG_SCOPE, hasGroupMsgScope } from '../bot/app-scope';
 import { requestScopeGrantLink } from '../bot/wizard';
 import { forgetManagedCard, sendManagedCard, updateManagedCard } from '../card/managed';
 import { helpCard, resumeCard, statusCard, workspacesCard } from '../card/templates';
-import type { AppConfig, AppPreferences, MessageReplyMode, TenantBrand } from '../config/schema';
+import type {
+  AppConfig,
+  AppPreferences,
+  MessageReplyMode,
+  ReceiveMode,
+  TenantBrand,
+} from '../config/schema';
 import {
   getAgentStopGraceMs,
   getMaxConcurrentRuns,
   getMessageReplyMode,
+  getReceiveMode,
   getRequireMentionInGroup,
   getRunIdleTimeoutMs,
   getShowToolCalls,
@@ -167,6 +174,7 @@ const handlers: Record<string, Handler> = {
   '/help': handleHelp,
   '/account': handleAccount,
   '/config': handleConfig,
+  '/receive': handleReceive,
   '/stop': handleStop,
   '/timeout': handleTimeout,
   '/ps': handlePs,
@@ -186,6 +194,7 @@ const handlers: Record<string, Handler> = {
 const ADMIN_COMMANDS = new Set([
   '/account',
   '/config',
+  '/receive',
   '/ps',
   '/exit',
   '/reconnect',
@@ -2102,6 +2111,116 @@ async function savePreferencesConfig(
         requireMentionInGroup,
       },
       larkCli,
+    };
+    await saveRootConfig(root, ctx.controls.configPath);
+    ctx.controls.profileConfig = root.profiles[ctx.controls.profile]!;
+    ctx.controls.cfg = runtimeProfileConfig(root, ctx.controls.profile);
+  });
+}
+
+// ─── /receive ───────────────────────────────────────────────────────────────
+// Per-chat group receive mode. Admin-only (gated by ADMIN_COMMANDS in
+// tryHandleCommand / runCommandHandler). Persisted to
+// preferences.perChatReceiveMode so it survives restarts and is scoped to this
+// deployment's own config — no hardcoded paths. Note: in a group that is quiet
+// by default, the enabling `/receive all|smart` itself must @bot to clear the
+// intake mention-gate; once set, subsequent messages need no @.
+function describeReceiveMode(mode: ReceiveMode): string {
+  switch (mode) {
+    case 'all':
+      return '消息全回复（无需 @）';
+    case 'smart':
+      return '智能判断（@必回；没 @ 时自己决定是否搭话，不回的也记进上下文）';
+    case 'mention':
+    default:
+      return '必须 @ 才回复';
+  }
+}
+
+async function handleReceive(args: string, ctx: CommandContext): Promise<void> {
+  if (ctx.msg.chatType === 'p2p') {
+    await reply(ctx, 'ℹ️ `/receive` 只对群聊有意义 —— 私聊本来就消息全收。');
+    return;
+  }
+  const chatId = ctx.msg.chatId;
+  const sub = args.trim().toLowerCase();
+  const usage =
+    '\n\n用法:\n' +
+    '- `/receive all` 本群全回复，无需 @\n' +
+    '- `/receive smart` @必回；没 @ 时它自己判断要不要搭话\n' +
+    '- `/receive mention` 本群必须 @ 才回复\n' +
+    '- `/receive default` 取消本群单独设置，跟随全局默认\n' +
+    '- `/receive` 查看当前状态';
+
+  // /receive | /receive status — show effective mode + where it comes from
+  if (sub === '' || sub === 'status') {
+    const effective = getReceiveMode(ctx.controls.cfg, chatId);
+    const hasOverride = ctx.controls.cfg.preferences?.perChatReceiveMode?.[chatId] !== undefined;
+    const globalMode: ReceiveMode = getRequireMentionInGroup(ctx.controls.cfg) ? 'mention' : 'all';
+    const source = hasOverride
+      ? '本群单独设置'
+      : `跟随全局默认（${describeReceiveMode(globalMode)}）`;
+    await reply(ctx, `📥 本群当前：**${describeReceiveMode(effective)}**\n来源：${source}${usage}`);
+    return;
+  }
+
+  let target: ReceiveMode | undefined;
+  if (sub === 'all') target = 'all';
+  else if (sub === 'smart') target = 'smart';
+  else if (sub === 'mention') target = 'mention';
+  else if (sub === 'default') target = undefined;
+  else {
+    await reply(ctx, `未知参数 \`${sub}\`。${usage}`);
+    return;
+  }
+
+  await setPerChatReceiveMode(ctx, chatId, target);
+  log.info('command', 'receive-set', { chatId, mode: target ?? 'default' });
+
+  if (target === undefined) {
+    await reply(
+      ctx,
+      `✅ 本群已恢复跟随全局默认：**${describeReceiveMode(getReceiveMode(ctx.controls.cfg, chatId))}**`,
+    );
+    return;
+  }
+  await reply(ctx, `✅ 本群已设为：**${describeReceiveMode(target)}**`);
+}
+
+/**
+ * Persist a per-chat receive-mode override. `mode === undefined` clears the
+ * override (the chat reverts to the global default). Mirrors
+ * savePreferencesConfig's load/lock/save/reload pattern; only the
+ * `perChatReceiveMode` map is touched, leaving every other field intact.
+ */
+async function setPerChatReceiveMode(
+  ctx: CommandContext,
+  chatId: string,
+  mode: ReceiveMode | undefined,
+): Promise<void> {
+  await withConfigFileLock(ctx.controls.configPath, async () => {
+    const root = await loadRootConfig(ctx.controls.configPath);
+    if (!root) {
+      const prefs: AppPreferences = { ...(ctx.controls.cfg.preferences ?? {}) };
+      const map = { ...(prefs.perChatReceiveMode ?? {}) };
+      if (mode === undefined) delete map[chatId];
+      else map[chatId] = mode;
+      prefs.perChatReceiveMode = map;
+      ctx.controls.cfg.preferences = prefs;
+      await saveConfig(ctx.controls.cfg, ctx.controls.configPath);
+      return;
+    }
+    const profile = root.profiles[ctx.controls.profile];
+    if (!profile) throw new Error(`profile not found: ${ctx.controls.profile}`);
+    const map = { ...(profile.preferences?.perChatReceiveMode ?? {}) };
+    if (mode === undefined) delete map[chatId];
+    else map[chatId] = mode;
+    root.profiles[ctx.controls.profile] = {
+      ...profile,
+      preferences: {
+        ...profile.preferences,
+        perChatReceiveMode: map,
+      },
     };
     await saveRootConfig(root, ctx.controls.configPath);
     ctx.controls.profileConfig = root.profiles[ctx.controls.profile]!;

@@ -69,6 +69,14 @@ export interface SecretsConfig {
 export type MessageReplyMode = 'card' | 'markdown' | 'text';
 
 /**
+ * Per-chat group receive behavior. `'mention'` = quiet unless @bot;
+ * `'all'` = reply to everything; `'smart'` = @bot always replies while
+ * un-mentioned messages are shown to the agent, which decides whether to
+ * chime in (and may stay silent). See `AppPreferences.perChatReceiveMode`.
+ */
+export type ReceiveMode = 'mention' | 'all' | 'smart';
+
+/**
  * Access control settings. Empty lists are fail-closed in the v2 policy:
  * no DM senders, no group chats, and only the runtime owner can administer
  * the bot. Runtime owner/admin bypass is applied by the policy layer because
@@ -126,6 +134,19 @@ export interface AppPreferences {
    * Cloud-doc comments still require @-mention unconditionally.
    */
   requireMentionInGroup?: boolean;
+  /**
+   * Per-chat override of the group receive behavior, keyed by chat_id:
+   *  - `'mention'` — quiet unless someone @bot (the default for groups).
+   *  - `'all'`     — reply to every message in that group.
+   *  - `'smart'`   — @bot always replies; messages that don't @bot are still
+   *                  shown to the agent, which decides for itself whether to
+   *                  chime in and may stay silent. Un-replied messages still
+   *                  become conversation context for later turns.
+   * A chat with an entry here wins over the global `requireMentionInGroup`
+   * default; chats with no entry follow it. Managed in-chat via the
+   * `/receive` command (admin-only). p2p is unaffected (always unrestricted).
+   */
+  perChatReceiveMode?: Record<string, ReceiveMode>;
   /** Access control — user/chat allowlists + admin gating. See AppAccess. */
   access?: AppAccess;
   /**
@@ -226,6 +247,21 @@ export function getRequireMentionInGroup(cfg: AppConfig): boolean {
     return profileAccess.requireMentionInGroup;
   }
   return true;
+}
+
+/**
+ * Per-chat resolution of the group receive mode. A chat with an explicit
+ * entry in `preferences.perChatReceiveMode` overrides the global default;
+ * chats without an entry derive it from `getRequireMentionInGroup`
+ * (`true` → `'mention'`, `false` → `'all'`). Only meaningful for group/topic
+ * chats — p2p is always unrestricted.
+ */
+export function getReceiveMode(cfg: AppConfig, chatId: string): ReceiveMode {
+  const override = cfg.preferences?.perChatReceiveMode?.[chatId];
+  if (override === 'mention' || override === 'all' || override === 'smart') {
+    return override;
+  }
+  return getRequireMentionInGroup(cfg) ? 'mention' : 'all';
 }
 
 /**
