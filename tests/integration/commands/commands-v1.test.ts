@@ -2,10 +2,15 @@ import { mkdir, realpath, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { NormalizedMessage } from '@larksuite/channel';
+import { codexCapability } from '../../../src/agent/capability.js';
 import { ActiveRuns } from '../../../src/bot/active-runs.js';
+import { ProcessPool } from '../../../src/bot/process-pool.js';
 import { tryHandleCommand, type CommandContext, type Controls } from '../../../src/commands/index.js';
 import { createDefaultProfileConfig, type ProfileConfig } from '../../../src/config/profile-schema.js';
 import { createRootConfig, loadRootConfig, saveRootConfig } from '../../../src/config/profile-store.js';
+import { evaluateRunPolicy } from '../../../src/policy/run-policy.js';
+import { RunExecutor } from '../../../src/runtime/run-executor.js';
+import { SessionCatalog } from '../../../src/session/catalog.js';
 import { SessionStore } from '../../../src/session/store.js';
 import { WorkspaceStore } from '../../../src/workspace/store.js';
 import { createFakeAgent } from '../../helpers/fake-agent.js';
@@ -24,11 +29,17 @@ interface Harness {
   tmp: TmpProfile;
   channel: FakeChannel;
   sessions: SessionStore;
+  sessionCatalog: SessionCatalog;
   workspaces: WorkspaceStore;
   activeRuns: ActiveRuns;
   agent: ReturnType<typeof createFakeAgent>;
   controls: Controls;
+  runExecutor: RunExecutor;
   run(content: string, overrides?: RunOverrides): Promise<boolean>;
+}
+
+interface HarnessOptions {
+  agentKind?: 'claude' | 'codex';
 }
 
 const cleanups: Array<() => Promise<void>> = [];
@@ -238,6 +249,58 @@ describe('Bridge command contracts', () => {
     expect(status).toContain(jsonStringFragment(await realpath(h.tmp.workspace)));
   });
 
+  it('compacts an active Codex thread into a one-shot handoff', async () => {
+    const h = await createHarness({ agentKind: 'codex' });
+    const cwdRealpath = await realpath(h.tmp.workspace);
+    const policy = evaluateRunPolicy({
+      scope: { source: 'im', chatId: 'chat-1', actorId: 'ou-admin' },
+      attachments: [],
+      prompt: '',
+      requestedCwd: cwdRealpath,
+      cwdRealpath,
+      access: { ok: true, reason: 'allowed-admin' },
+      capability: codexCapability(h.controls.profileConfig),
+      profileConfig: h.controls.profileConfig,
+      now: 1000,
+    });
+    expect(policy.ok).toBe(true);
+    if (!policy.ok) throw new Error('expected allowed policy');
+    h.sessionCatalog.upsertActive({
+      scopeId: 'chat-1',
+      agentId: 'codex',
+      cwdRealpath,
+      policyFingerprint: policy.policyFingerprint,
+      threadId: 'thread-old',
+      now: 1000,
+    });
+    expect(
+      h.sessionCatalog.activeFor({
+        scopeId: 'chat-1',
+        agentId: 'codex',
+        cwdRealpath,
+        policyFingerprint: policy.policyFingerprint,
+      }),
+    ).toMatchObject({ threadId: 'thread-old' });
+    h.agent.setEvents([
+      { type: 'text', delta: 'Handoff summary' },
+      { type: 'done', terminationReason: 'normal' },
+    ]);
+
+    await expect(h.run('/compact')).resolves.toBe(true);
+
+    expect(lastMarkdown(h.channel)).toContain('已压缩并开始新会话');
+    expect(h.agent.runOptions[0]).toMatchObject({ threadId: 'thread-old' });
+    expect(h.sessions.getPendingCompactSummary('chat-1', cwdRealpath)).toBe('Handoff summary');
+    expect(
+      h.sessionCatalog.activeFor({
+        scopeId: 'chat-1',
+        agentId: 'codex',
+        cwdRealpath,
+        policyFingerprint: policy.policyFingerprint,
+      }),
+    ).toBeUndefined();
+  });
+
   it('shows workspace paths in group-visible /status replies', async () => {
     const h = await createHarness();
 
@@ -313,19 +376,21 @@ describe('Bridge command contracts', () => {
   });
 });
 
-async function createHarness(): Promise<Harness> {
+async function createHarness(options: HarnessOptions = {}): Promise<Harness> {
   const tmp = await createTmpProfile('commands-v1-');
   const channel = createFakeChannel();
   const sessions = new SessionStore(join(tmp.profile, 'sessions.json'));
+  const sessionCatalog = new SessionCatalog(join(tmp.profile, 'sessions.catalog.json'));
   const workspaces = new WorkspaceStore(join(tmp.profile, 'workspaces.json'));
   const activeRuns = new ActiveRuns();
   const agent = createFakeAgent();
   const workspaceRealpath = await realpath(tmp.workspace);
-  const profileConfig = appConfig(workspaceRealpath);
+  const agentKind = options.agentKind ?? 'claude';
+  const profileConfig = appConfig(workspaceRealpath, agentKind);
   const configPath = join(tmp.root, 'config.json');
-  await saveRootConfig(createRootConfig('claude', profileConfig), configPath);
+  await saveRootConfig(createRootConfig(agentKind, profileConfig), configPath);
   const controls = {
-    profile: 'claude',
+    profile: agentKind,
     profileConfig,
     botOwnerId: 'ou-owner',
     ownerRefreshState: 'ok',
@@ -337,6 +402,13 @@ async function createHarness(): Promise<Harness> {
     cfg: profileConfig,
     processId: 'proc-1',
   } satisfies Controls;
+  const runExecutor = new RunExecutor({
+    agent,
+    pool: new ProcessPool(() => 10),
+    activeRuns,
+    createRunId: () => `run-${agent.runOptions.length + 1}`,
+    now: () => 1000,
+  });
 
   workspaces.setCwd('chat-1', workspaceRealpath);
 
@@ -356,25 +428,39 @@ async function createHarness(): Promise<Harness> {
       workspaces,
       agent,
       activeRuns,
+      sessionCatalog,
+      runExecutor,
       controls,
     });
   };
 
   cleanups.push(async () => {
-    await Promise.all([sessions.flush(), workspaces.flush()]);
+    await Promise.all([sessions.flush(), sessionCatalog.flush(), workspaces.flush()]);
     await tmp.cleanup();
   });
 
-  return { tmp, channel, sessions, workspaces, activeRuns, agent, controls, run };
+  return {
+    tmp,
+    channel,
+    sessions,
+    sessionCatalog,
+    workspaces,
+    activeRuns,
+    agent,
+    controls,
+    runExecutor,
+    run,
+  };
 }
 
-function appConfig(defaultWorkspace: string): ProfileConfig {
+function appConfig(defaultWorkspace: string, agentKind: 'claude' | 'codex' = 'claude'): ProfileConfig {
   const config = createDefaultProfileConfig({
-    agentKind: 'claude',
+    agentKind,
     accounts: { app: { id: 'app-id', secret: 'secret', tenant: 'feishu' } },
     access: { admins: ['ou-admin'] },
     sandbox: { defaultMode: 'read-only', maxMode: 'workspace-write' },
     preferences: { maxConcurrentRuns: 2 },
+    ...(agentKind === 'codex' ? { codex: { binaryPath: 'codex' } } : {}),
   });
   config.workspaces.default = defaultWorkspace;
   return config;

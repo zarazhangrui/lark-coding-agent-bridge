@@ -73,6 +73,19 @@ export interface RecordRunSessionEventInput {
   event: AgentEvent;
 }
 
+const COMPACT_HANDOFF_PREFIX = [
+  'Bridge compact handoff: the previous session was summarized to continue in a fresh session.',
+  'Use the handoff summary as continuity context, but follow the new user request normally.',
+  '',
+  '<handoff_summary>',
+].join('\n');
+
+const COMPACT_HANDOFF_SUFFIX = [
+  '</handoff_summary>',
+  '',
+  'New user request:',
+].join('\n');
+
 export async function startRunFlow(input: StartRunFlowInput): Promise<StartRunFlowResult> {
   const requestedCwd =
     input.workspaces.cwdFor(input.scopeId) ?? input.profileConfig.workspaces.default ?? '';
@@ -88,7 +101,7 @@ export async function startRunFlow(input: StartRunFlowInput): Promise<StartRunFl
     };
   }
 
-  const policy = evaluateRunPolicy({
+  const basePolicy = evaluateRunPolicy({
     scope: input.scope,
     attachments: input.attachments,
     prompt: input.prompt,
@@ -101,10 +114,10 @@ export async function startRunFlow(input: StartRunFlowInput): Promise<StartRunFl
     codexHome: input.profileConfig.codex?.codexHome,
     inheritCodexHome: input.profileConfig.codex?.inheritCodexHome,
   });
-  if (!policy.ok) {
+  if (!basePolicy.ok) {
     return {
       ok: false,
-      rejectReason: policy.rejectReason,
+      rejectReason: basePolicy.rejectReason,
       workspace,
     };
   }
@@ -117,7 +130,7 @@ export async function startRunFlow(input: StartRunFlowInput): Promise<StartRunFl
       scopeId: input.scopeId,
       agentId: input.capability.agentId,
       cwdRealpath: workspace.cwdRealpath,
-      policyFingerprint: policy.policyFingerprint,
+      policyFingerprint: basePolicy.policyFingerprint,
     });
     if (catalogEntry?.agentId === 'claude') {
       sessionId = catalogEntry.sessionId;
@@ -135,6 +148,16 @@ export async function startRunFlow(input: StartRunFlowInput): Promise<StartRunFl
       input.sessions.clear(input.scopeId);
     }
   }
+
+  const pendingCompactSummary = resumeFrom
+    ? undefined
+    : input.sessions.getPendingCompactSummary(input.scopeId, workspace.cwdRealpath);
+  const policy: RunPolicyAllow = pendingCompactSummary
+    ? {
+        ...basePolicy,
+        prompt: buildCompactHandoffPrompt(pendingCompactSummary, input.prompt),
+      }
+    : basePolicy;
 
   let execution: RunExecution;
   try {
@@ -172,6 +195,10 @@ export async function startRunFlow(input: StartRunFlowInput): Promise<StartRunFl
     throw err;
   }
 
+  if (pendingCompactSummary) {
+    input.sessions.consumePendingCompactSummary(input.scopeId, workspace.cwdRealpath);
+  }
+
   return {
     ok: true,
     execution,
@@ -179,6 +206,10 @@ export async function startRunFlow(input: StartRunFlowInput): Promise<StartRunFl
     cwdRealpath: workspace.cwdRealpath,
     ...(resumeFrom ? { resumeFrom } : {}),
   };
+}
+
+function buildCompactHandoffPrompt(summary: string, prompt: string): string {
+  return `${COMPACT_HANDOFF_PREFIX}\n${summary.trim()}\n${COMPACT_HANDOFF_SUFFIX}\n${prompt}`;
 }
 
 export function recordRunSessionEvent(input: RecordRunSessionEventInput): void {
