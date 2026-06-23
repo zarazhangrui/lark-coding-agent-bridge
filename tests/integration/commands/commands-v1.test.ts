@@ -2,7 +2,7 @@ import { mkdir, realpath, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { NormalizedMessage } from '@larksuite/channel';
-import { codexCapability } from '../../../src/agent/capability.js';
+import { claudeCapability, codexCapability } from '../../../src/agent/capability.js';
 import { ActiveRuns } from '../../../src/bot/active-runs.js';
 import { ProcessPool } from '../../../src/bot/process-pool.js';
 import { tryHandleCommand, type CommandContext, type Controls } from '../../../src/commands/index.js';
@@ -11,6 +11,7 @@ import { createRootConfig, loadRootConfig, saveRootConfig } from '../../../src/c
 import { evaluateRunPolicy } from '../../../src/policy/run-policy.js';
 import { RunExecutor } from '../../../src/runtime/run-executor.js';
 import { SessionCatalog } from '../../../src/session/catalog.js';
+import type { CompactCodexThreadOptions } from '../../../src/session/codex-compact.js';
 import { SessionStore } from '../../../src/session/store.js';
 import { WorkspaceStore } from '../../../src/workspace/store.js';
 import { createFakeAgent } from '../../helpers/fake-agent.js';
@@ -35,6 +36,7 @@ interface Harness {
   agent: ReturnType<typeof createFakeAgent>;
   controls: Controls;
   runExecutor: RunExecutor;
+  codexCompactCalls: CompactCodexThreadOptions[];
   run(content: string, overrides?: RunOverrides): Promise<boolean>;
 }
 
@@ -249,7 +251,7 @@ describe('Bridge command contracts', () => {
     expect(status).toContain(jsonStringFragment(await realpath(h.tmp.workspace)));
   });
 
-  it('compacts an active Codex thread into a one-shot handoff', async () => {
+  it('compacts an active Codex thread through native app-server compact', async () => {
     const h = await createHarness({ agentKind: 'codex' });
     const cwdRealpath = await realpath(h.tmp.workspace);
     const policy = evaluateRunPolicy({
@@ -281,6 +283,47 @@ describe('Bridge command contracts', () => {
         policyFingerprint: policy.policyFingerprint,
       }),
     ).toMatchObject({ threadId: 'thread-old' });
+
+    await expect(h.run('/compact')).resolves.toBe(true);
+
+    expect(lastMarkdown(h.channel)).toContain('Codex 原生 compact 已完成');
+    expect(h.codexCompactCalls).toMatchObject([{ threadId: 'thread-old', binary: 'codex' }]);
+    expect(h.agent.runOptions).toHaveLength(0);
+    expect(h.sessions.getPendingCompactSummary('chat-1', cwdRealpath)).toBeUndefined();
+    expect(
+      h.sessionCatalog.activeFor({
+        scopeId: 'chat-1',
+        agentId: 'codex',
+        cwdRealpath,
+        policyFingerprint: policy.policyFingerprint,
+      }),
+    ).toMatchObject({ threadId: 'thread-old' });
+  });
+
+  it('compacts a Claude session into a one-shot handoff', async () => {
+    const h = await createHarness({ agentKind: 'claude' });
+    const cwdRealpath = await realpath(h.tmp.workspace);
+    const policy = evaluateRunPolicy({
+      scope: { source: 'im', chatId: 'chat-1', actorId: 'ou-admin' },
+      attachments: [],
+      prompt: '',
+      requestedCwd: cwdRealpath,
+      cwdRealpath,
+      access: { ok: true, reason: 'allowed-admin' },
+      capability: claudeCapability(h.controls.profileConfig),
+      profileConfig: h.controls.profileConfig,
+      now: 1000,
+    });
+    expect(policy.ok).toBe(true);
+    if (!policy.ok) throw new Error('expected allowed policy');
+    h.sessionCatalog.upsertActive({
+      scopeId: 'chat-1',
+      agentId: 'claude',
+      cwdRealpath,
+      policyFingerprint: policy.policyFingerprint,
+      sessionId: 'session-old',
+      now: 1000,
+    });
     h.agent.setEvents([
       { type: 'text', delta: 'Handoff summary' },
       { type: 'done', terminationReason: 'normal' },
@@ -289,12 +332,12 @@ describe('Bridge command contracts', () => {
     await expect(h.run('/compact')).resolves.toBe(true);
 
     expect(lastMarkdown(h.channel)).toContain('已压缩并开始新会话');
-    expect(h.agent.runOptions[0]).toMatchObject({ threadId: 'thread-old' });
+    expect(h.agent.runOptions[0]).toMatchObject({ sessionId: 'session-old' });
     expect(h.sessions.getPendingCompactSummary('chat-1', cwdRealpath)).toBe('Handoff summary');
     expect(
       h.sessionCatalog.activeFor({
         scopeId: 'chat-1',
-        agentId: 'codex',
+        agentId: 'claude',
         cwdRealpath,
         policyFingerprint: policy.policyFingerprint,
       }),
@@ -384,6 +427,7 @@ async function createHarness(options: HarnessOptions = {}): Promise<Harness> {
   const workspaces = new WorkspaceStore(join(tmp.profile, 'workspaces.json'));
   const activeRuns = new ActiveRuns();
   const agent = createFakeAgent();
+  const codexCompactCalls: CompactCodexThreadOptions[] = [];
   const workspaceRealpath = await realpath(tmp.workspace);
   const agentKind = options.agentKind ?? 'claude';
   const profileConfig = appConfig(workspaceRealpath, agentKind);
@@ -430,6 +474,9 @@ async function createHarness(options: HarnessOptions = {}): Promise<Harness> {
       activeRuns,
       sessionCatalog,
       runExecutor,
+      codexCompactProvider: async (compactOptions) => {
+        codexCompactCalls.push(compactOptions);
+      },
       controls,
     });
   };
@@ -449,6 +496,7 @@ async function createHarness(options: HarnessOptions = {}): Promise<Harness> {
     agent,
     controls,
     runExecutor,
+    codexCompactCalls,
     run,
   };
 }

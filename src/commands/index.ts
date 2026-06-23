@@ -66,6 +66,10 @@ import {
   type CodexThreadHistoryEntry,
   type ListCodexThreadHistoryOptions,
 } from '../session/codex-history';
+import {
+  compactCodexThread,
+  type CompactCodexThreadOptions,
+} from '../session/codex-compact';
 import type { SessionCatalog, SessionCatalogIdentity } from '../session/catalog';
 import { isAlive, readAndPrune, resolveTarget } from '../runtime/registry';
 import type { SessionStore } from '../session/store';
@@ -131,6 +135,7 @@ export interface CommandContext {
   codexHistoryProvider?: (
     options: ListCodexThreadHistoryOptions,
   ) => Promise<CodexThreadHistoryEntry[]>;
+  codexCompactProvider?: (options: CompactCodexThreadOptions) => Promise<void>;
   claudeHistoryProvider?: (cwd: string, limit: number) => Promise<SessionSummary[]>;
   /** Set when invoked from a CardKit 2.0 form submit. Keys are input `name`s. */
   formValue?: Record<string, unknown>;
@@ -418,9 +423,35 @@ async function handleCompact(_args: string, ctx: CommandContext): Promise<void> 
     return;
   }
 
-  await reply(ctx, '正在压缩当前会话：会先生成交接摘要，成功后再开始新会话。');
+  await reply(
+    ctx,
+    capability.agentId === 'codex'
+      ? '正在调用 Codex 原生 compact；成功后会保留当前 thread。'
+      : '正在压缩当前会话：会先生成交接摘要，成功后再开始新会话。',
+  );
   compactInFlightScopes.add(ctx.scope);
   try {
+    if (capability.agentId === 'codex' && threadId) {
+      const codex = ctx.controls.profileConfig.codex;
+      const binary = codex?.binaryPath;
+      if (!binary) {
+        await reply(ctx, '❌ 当前 Codex profile 没有配置 binaryPath，无法调用原生 compact。');
+        return;
+      }
+      const provider = ctx.codexCompactProvider ?? compactCodexThread;
+      await provider({
+        binary,
+        threadId,
+        profileStateDir: commandProfilePaths(ctx).profileDir,
+        ...(codex.codexHome ? { codexHome: codex.codexHome } : {}),
+        ...(codex.inheritCodexHome !== undefined
+          ? { inheritCodexHome: codex.inheritCodexHome }
+          : {}),
+      });
+      await reply(ctx, '✓ Codex 原生 compact 已完成，当前 thread 保持不变。');
+      return;
+    }
+
     const execution = await ctx.runExecutor.submit({
       scopeId: `${ctx.scope}:compact`,
       policy,
