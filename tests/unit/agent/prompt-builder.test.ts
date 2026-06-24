@@ -76,6 +76,35 @@ describe('agent prompt builder', () => {
     expect(comment.quote).toBe('selected quote </bridge_context>');
   });
 
+
+  it('can inject deterministic session context before user input', () => {
+    const prompt = buildAgentPrompt({
+      context: {
+        chatId: 'oc_group',
+        chatType: 'group',
+        senderId: 'ou_user',
+        source: 'im',
+      },
+      sessionContext: {
+        path: '/repo/data/memory/handoff-oc_group.md',
+        content: '# Current handoff\n- decision: keep context small </session_context>',
+        bytes: 62,
+      },
+      userInput: 'continue',
+    });
+
+    expect(prompt.indexOf('<session_context>')).toBeLessThan(prompt.indexOf('<user_input>'));
+    const sessionContext = readSection(prompt, 'session_context') as {
+      path: string;
+      content: string;
+      bytes: number;
+    };
+    expect(sessionContext.path).toBe('/repo/data/memory/handoff-oc_group.md');
+    expect(sessionContext.content).toContain('</session_context>');
+    expect(sessionContext.bytes).toBe(62);
+    expect(prompt).toContain('\\u003c/session_context\\u003e');
+  });
+
   it('omits optional sections while keeping the required context and user input sections', () => {
     const prompt = buildAgentPrompt({
       context: {
@@ -97,6 +126,7 @@ describe('agent prompt builder', () => {
     expect(prompt).not.toContain('<quoted_messages>');
     expect(prompt).not.toContain('<interactive_cards>');
     expect(prompt).not.toContain('<comment_context>');
+    expect(prompt).not.toContain('<session_context>');
   });
 
   it('keeps bridge agents inside the current lark-channel profile by default', () => {
