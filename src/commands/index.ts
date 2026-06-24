@@ -443,6 +443,8 @@ async function handleCompact(_args: string, ctx: CommandContext): Promise<void> 
         binary,
         threadId,
         profileStateDir: commandProfilePaths(ctx).profileDir,
+        cwd: workspace.cwdRealpath,
+        sandbox: policy.sandbox,
         ...(codex.codexHome ? { codexHome: codex.codexHome } : {}),
         ...(codex.inheritCodexHome !== undefined
           ? { inheritCodexHome: codex.inheritCodexHome }

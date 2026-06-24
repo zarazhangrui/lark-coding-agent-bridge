@@ -287,7 +287,9 @@ describe('Bridge command contracts', () => {
     await expect(h.run('/compact')).resolves.toBe(true);
 
     expect(lastMarkdown(h.channel)).toContain('Codex 原生 compact 已完成');
-    expect(h.codexCompactCalls).toMatchObject([{ threadId: 'thread-old', binary: 'codex' }]);
+    expect(h.codexCompactCalls).toMatchObject([
+      { threadId: 'thread-old', binary: 'codex', cwd: cwdRealpath, sandbox: 'read-only' },
+    ]);
     expect(h.agent.runOptions).toHaveLength(0);
     expect(h.sessions.getPendingCompactSummary('chat-1', cwdRealpath)).toBeUndefined();
     expect(

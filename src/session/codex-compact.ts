@@ -13,6 +13,8 @@ export interface CompactCodexThreadOptions {
   binary: string;
   threadId: string;
   profileStateDir: string;
+  cwd?: string;
+  sandbox?: string;
   codexHome?: string;
   inheritCodexHome?: boolean;
   timeoutMs?: number;
@@ -34,7 +36,7 @@ export class CodexCompactError extends Error {
   }
 }
 
-const DEFAULT_COMPACT_TIMEOUT_MS = 3 * 60 * 1000;
+const DEFAULT_COMPACT_TIMEOUT_MS = 10 * 60 * 1000;
 
 export async function compactCodexThread(options: CompactCodexThreadOptions): Promise<void> {
   const child = spawnCodexAppServer(options);
@@ -82,6 +84,10 @@ export async function compactCodexThread(options: CompactCodexThreadOptions): Pr
     rl.on('line', (line) => {
       const trimmed = line.trim();
       if (!trimmed) return;
+      if (trimmed.startsWith('{"id":2,"result"')) {
+        return;
+      }
+
       let msg: unknown;
       try {
         msg = JSON.parse(trimmed);
@@ -91,6 +97,13 @@ export async function compactCodexThread(options: CompactCodexThreadOptions): Pr
       const response = recordValue(msg);
       if (!response) return;
       if (response.id === 2) {
+        if (response.error) {
+          reject(new CodexCompactError('app-server-error', appServerErrorMessage(response.error)));
+          cleanup({ kill: true });
+        }
+        return;
+      }
+      if (response.id === 3) {
         if (response.error) {
           reject(new CodexCompactError('app-server-error', appServerErrorMessage(response.error)));
           cleanup({ kill: true });
@@ -128,7 +141,11 @@ export async function compactCodexThread(options: CompactCodexThreadOptions): Pr
 
     try {
       child.stdin.write(
-        `${JSON.stringify(initializeRequest())}\n${JSON.stringify(compactRequest(options.threadId))}\n`,
+        [
+          initializeRequest(),
+          resumeRequest(options),
+          compactRequest(options.threadId),
+        ].map((request) => JSON.stringify(request)).join('\n') + '\n',
         'utf8',
         (err?: Error | null) => {
           if (err) fail(err);
@@ -174,8 +191,20 @@ function initializeRequest() {
 function compactRequest(threadId: string) {
   return {
     method: 'thread/compact/start',
-    id: 2,
+    id: 3,
     params: { threadId },
+  };
+}
+
+function resumeRequest(options: CompactCodexThreadOptions) {
+  return {
+    method: 'thread/resume',
+    id: 2,
+    params: {
+      threadId: options.threadId,
+      ...(options.cwd ? { cwd: options.cwd } : {}),
+      ...(options.sandbox ? { sandbox: options.sandbox } : {}),
+    },
   };
 }
 
