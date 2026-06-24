@@ -4,6 +4,7 @@ import { createInterface } from 'node:readline';
 import pkg from '../../../package.json';
 import { ClaudeAdapter } from '../../agent/claude/adapter';
 import { CodexAdapter } from '../../agent/codex/adapter';
+import { CursorAdapter } from '../../agent/cursor/adapter';
 import {
   AgentPreflightError,
   formatAgentPreflightDiagnostic,
@@ -431,6 +432,12 @@ export function createRuntimeAgent(
       ignoreUserConfig: codex.ignoreUserConfig === true,
       ignoreRules: codex.ignoreRules !== false,
       sandbox: profileConfig.sandbox.defaultMode,
+      larkChannel,
+    });
+  }
+  if (profileConfig.agentKind === 'cursor') {
+    return new CursorAdapter({
+      binary: process.env.LARK_CHANNEL_CURSOR_BIN ?? 'cursor',
       larkChannel,
     });
   }

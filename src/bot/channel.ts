@@ -5,7 +5,7 @@ import type {
 } from '@larksuite/channel';
 import { createLarkChannel } from '@larksuite/channel';
 import { dirname, join } from 'node:path';
-import { claudeCapability, codexCapability } from '../agent/capability';
+import { claudeCapability, codexCapability, cursorCapability } from '../agent/capability';
 import {
   buildAgentPrompt,
   type BridgePromptInteractiveCard,
@@ -694,7 +694,9 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
   const capability =
     controls.profileConfig.agentKind === 'codex'
       ? codexCapability(controls.profileConfig)
-      : claudeCapability(controls.profileConfig);
+      : controls.profileConfig.agentKind === 'cursor'
+        ? cursorCapability(controls.profileConfig)
+        : claudeCapability(controls.profileConfig);
   const flow = await startRunFlow({
     scopeId: scope,
     scope: scopeContext,
