@@ -1,5 +1,6 @@
 import type { Block, RunState, ToolEntry } from './run-state';
 import { toolHeaderText } from './tool-render';
+import { normalizeAtTags } from './at-tag';
 
 /**
  * Render `RunState` as plain markdown text — used in `messageReply: 'text'`
@@ -30,7 +31,9 @@ export function renderText(state: RunState): string {
     parts.push(footerLine(state.footer));
   }
 
-  return parts.join('\n\n');
+  // Normalize any `<at id=...>` (card spelling) to `<at user_id=...>` so that
+  // @-mentions actually render in a post/markdown message body. See at-tag.ts.
+  return normalizeAtTags(parts.join('\n\n'));
 }
 
 function renderBlock(block: Block): string {

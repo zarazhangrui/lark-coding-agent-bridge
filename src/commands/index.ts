@@ -1557,7 +1557,7 @@ async function handleInvite(args: string, ctx: CommandContext): Promise<void> {
   if (targets.length === 0) {
     await reply(
       ctx,
-      `❌ 没检测到 @ 的用户。请像这样发：\`/invite ${kind} @某人\`（注意 @ 用户不是 @ bot）。`,
+      `❌ 没检测到 @ 的用户。请像这样发：\`/invite ${kind} @某人\`（也可以 @ 另一个 bot）。`,
     );
     return;
   }
@@ -1666,7 +1666,7 @@ async function handleRemove(args: string, ctx: CommandContext): Promise<void> {
 
 function mentionTargets(ctx: CommandContext): Array<{ openId: string; name?: string }> {
   return (ctx.msg.mentions ?? [])
-    .filter((mention) => !mention.isBot && typeof mention.openId === 'string' && mention.openId)
+    .filter((mention) => typeof mention.openId === 'string' && mention.openId)
     .map((mention) => ({
       openId: mention.openId as string,
       ...(mention.name ? { name: mention.name } : {}),

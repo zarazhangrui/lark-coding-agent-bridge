@@ -15,13 +15,13 @@ describe('bridge system prompt bot collaboration rules', () => {
     expect(BRIDGE_SYSTEM_PROMPT).toContain('人类用户');
   });
 
-  it('tells the agent not to mention other bots by default to avoid loops', () => {
-    expect(BRIDGE_SYSTEM_PROMPT).toContain('默认不要 @ 其他 bot');
-    expect(BRIDGE_SYSTEM_PROMPT).toContain('死循环');
+  it('tells the agent to turn normally when mentioned by another bot', () => {
+    expect(BRIDGE_SYSTEM_PROMPT).toContain('被其他 bot @ 时正常 turn 回应');
+    expect(BRIDGE_SYSTEM_PROMPT).toContain('一视同仁');
   });
 
-  it('allows mentioning a bot when the user explicitly asks for a handoff', () => {
-    expect(BRIDGE_SYSTEM_PROMPT).toContain('用户明确要求');
+  it('allows the agent to proactively mention other bots', () => {
+    expect(BRIDGE_SYSTEM_PROMPT).toContain('可以主动 @ 其他 bot');
   });
 
   it('points self-identification at the bridge_context botOpenId field', () => {
