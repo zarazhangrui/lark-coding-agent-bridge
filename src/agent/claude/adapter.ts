@@ -1,5 +1,8 @@
+import { unlinkSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { createInterface } from 'node:readline';
-import type { Readable } from 'node:stream';
+import type { Readable, Writable } from 'node:stream';
 import { log } from '../../core/logger';
 import { mergeProcessEnv, spawnProcess, type SpawnedProcessByStdio } from '../../platform/spawn';
 import { buildBridgeSystemPrompt } from '../bridge-system-prompt';
@@ -20,7 +23,7 @@ export interface ClaudeAdapterOptions {
   larkChannel?: LarkChannelEnvContext;
 }
 
-type ClaudeChild = SpawnedProcessByStdio<null, Readable, Readable>;
+type ClaudeChild = SpawnedProcessByStdio<Writable, Readable, Readable>;
 
 export class ClaudeAdapter implements AgentAdapter {
   readonly id = 'claude';
@@ -57,16 +60,29 @@ export class ClaudeAdapter implements AgentAdapter {
       throw new Error('cwd is required for ClaudeAdapter.run');
     }
 
+    // Windows: cross-spawn invokes `claude.cmd` through `cmd.exe /d /s /c`,
+    // which treats `<` and `>` in argv as I/O redirect operators and silently
+    // strips them. The bridge prompt contains `<bridge_context>` XML, so the
+    // argv-passed prompt arrives at claude effectively empty and claude
+    // responds with its default greeting. Route the user prompt through
+    // stdin and the append-system-prompt through a temp file to avoid the
+    // cmd.exe argument parser entirely. This mirrors the Codex adapter's
+    // existing stdin pattern (see src/agent/codex/adapter.ts).
+    const sysPromptFile = join(
+      tmpdir(),
+      `lcb-claude-sys-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.txt`,
+    );
+    writeFileSync(sysPromptFile, buildBridgeSystemPrompt(this.botIdentity), 'utf8');
+
     const args = [
       '-p',
-      opts.prompt,
       '--output-format',
       'stream-json',
       '--verbose',
       '--permission-mode',
       opts.permissionMode ?? CLAUDE_DEFAULT_PERMISSION_MODE,
-      '--append-system-prompt',
-      buildBridgeSystemPrompt(this.botIdentity),
+      '--append-system-prompt-file',
+      sysPromptFile,
     ];
     if (opts.sessionId) args.push('--resume', opts.sessionId);
     if (opts.model) args.push('--model', opts.model);
@@ -74,8 +90,23 @@ export class ClaudeAdapter implements AgentAdapter {
     const child = spawnProcess(this.binary, args, {
       cwd: opts.cwd,
       env: mergeProcessEnv(process.env, buildLarkChannelEnv(this.larkChannel)),
-      stdio: ['ignore', 'pipe', 'pipe'],
+      stdio: ['pipe', 'pipe', 'pipe'],
     }) as ClaudeChild;
+
+    try {
+      child.stdin.end(opts.prompt, 'utf8');
+    } catch (e) {
+      log.warn('agent', 'stdin-write-failed', {
+        error: (e as Error)?.message ?? String(e),
+      });
+    }
+    child.once('exit', () => {
+      try {
+        unlinkSync(sysPromptFile);
+      } catch {
+        /* best-effort cleanup */
+      }
+    });
 
     log.info('agent', 'spawn', {
       pid: child.pid ?? null,
