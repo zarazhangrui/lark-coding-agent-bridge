@@ -12,6 +12,10 @@ coverage/
 .DS_Store
 .idea/
 .vscode/
+.claude/
+
+# Runtime logs
+logs/
 
 # Local maintenance scripts and unreleased changelog are not part of the package
 scripts/

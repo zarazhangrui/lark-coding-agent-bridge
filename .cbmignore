@@ -1,0 +1,22 @@
+# codebase-memory index exclusions
+# syntax: same as .gitignore. Layered on top of the hardcoded patterns
+# and the project .gitignore.
+
+# Dependency lockfiles — not source, only bloats the symbol graph
+pnpm-lock.yaml
+package-lock.json
+yarn.lock
+
+# Build output (already gitignored — reinforced here for safety)
+dist/
+coverage/
+*.tsbuildinfo
+
+# Runtime logs / status dumps
+logs/
+
+# Binary / media assets — no source semantics for tree-sitter
+assets/
+
+# Local agent & IDE settings (not part of the shipped package)
+.claude/
