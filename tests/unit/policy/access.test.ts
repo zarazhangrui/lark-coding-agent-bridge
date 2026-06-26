@@ -38,7 +38,9 @@ describe('access policy', () => {
   });
 
   it('does not grant creator access without a cached owner', () => {
-    const profile = profileWithAccess();
+    // Use a populated allowlist (a user other than the owner) so open-mode is
+    // OFF and the only path to access is being recognized as the owner.
+    const profile = profileWithAccess({ allowedUsers: ['ou_someone_else'] });
     const controls: RuntimeControls = {
       ownerRefreshState: 'failed',
       ownerRefreshError: 'permission denied',
@@ -50,7 +52,7 @@ describe('access policy', () => {
   });
 
   it('does not grant creator access before owner refresh has resolved', () => {
-    const profile = profileWithAccess();
+    const profile = profileWithAccess({ allowedUsers: ['ou_someone_else'] });
     const controls: RuntimeControls = {
       botOwnerId: 'ou_owner',
       ownerRefreshState: 'unknown',
@@ -61,21 +63,28 @@ describe('access policy', () => {
     expect(canRunAdminCommand(profile, controls, 'ou_owner').ok).toBe(false);
   });
 
-  it('fails closed for non-owner DMs unless allowedUsers or admins include sender', () => {
-    const closed = profileWithAccess();
-    expect(canUseDm(closed, ownerControls, 'ou_other').ok).toBe(false);
+  it('opens DMs to everyone when the allowlists are empty (open mode)', () => {
+    const open = profileWithAccess();
+    expect(canUseDm(open, ownerControls, 'ou_other')).toEqual({ ok: true, reason: 'open' });
 
+    // Once any allowlist is populated, open mode turns off and gating returns.
     const byUser = profileWithAccess({ allowedUsers: ['ou_other'] });
     expect(canUseDm(byUser, ownerControls, 'ou_other').ok).toBe(true);
+    expect(canUseDm(byUser, ownerControls, 'ou_nobody').ok).toBe(false);
 
     const byAdmin = profileWithAccess({ admins: ['ou_other'] });
     expect(canUseDm(byAdmin, ownerControls, 'ou_other').ok).toBe(true);
+    expect(canUseDm(byAdmin, ownerControls, 'ou_nobody').ok).toBe(false);
   });
 
-  it('fails closed for groups unless owner, admin, or allowedChats includes the chat', () => {
-    const closed = profileWithAccess();
-    expect(canUseGroup(closed, ownerControls, 'chat_allowed', 'ou_other').ok).toBe(false);
+  it('opens groups to everyone when the allowlists are empty (open mode)', () => {
+    const open = profileWithAccess();
+    expect(canUseGroup(open, ownerControls, 'chat_any', 'ou_other')).toEqual({
+      ok: true,
+      reason: 'open',
+    });
 
+    // A populated chat allowlist restores per-chat gating.
     const allowed = profileWithAccess({ allowedChats: ['chat_allowed'] });
     expect(canUseGroup(allowed, ownerControls, 'chat_allowed', 'ou_other').ok).toBe(true);
     expect(canUseGroup(allowed, ownerControls, 'chat_other', 'ou_other').ok).toBe(false);

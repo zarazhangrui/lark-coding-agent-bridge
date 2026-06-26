@@ -17,6 +17,7 @@ export interface AccessDecision {
     | 'allowed-user'
     | 'allowed-admin'
     | 'allowed-chat'
+    | 'open'
     | 'comment-mention'
     | 'denied-user'
     | 'denied-chat'
@@ -36,6 +37,10 @@ export function canUseDm(
   if (isCreator(controls, senderId)) return allow('owner');
   if (profile.access.allowedUsers.includes(senderId)) return allow('allowed-user');
   if (profile.access.admins.includes(senderId)) return allow('allowed-admin');
+  // Open DM: an empty user allowlist means "everyone" (no opt-in required).
+  if (profile.access.allowedUsers.length === 0 && profile.access.admins.length === 0) {
+    return allow('open');
+  }
   return deny('denied-user');
 }
 
@@ -48,6 +53,10 @@ export function canUseGroup(
   if (isCreator(controls, senderId)) return allow('owner');
   if (profile.access.admins.includes(senderId)) return allow('allowed-admin');
   if (profile.access.allowedChats.includes(chatId)) return allow('allowed-chat');
+  // Open group: an empty chat allowlist means "any group the bot is in".
+  if (profile.access.allowedChats.length === 0 && profile.access.admins.length === 0) {
+    return allow('open');
+  }
   return deny('denied-chat');
 }
 
