@@ -1175,6 +1175,25 @@ function buildPrompt(
   const senderType = senderTypeOf(first);
   const mentions = mergeMentions(batch);
 
+  // Make the triggering sender a mentionable target so the agent can @ them
+  // back with a structured mention — essential for bot-to-bot relays, where
+  // the other bot can only receive messages that structurally @ it. The
+  // sender's id is an open_id, so it's a valid <at user_id="..."> target.
+  // We do NOT inject our own botOpenId (the agent is told that separately and
+  // must never @ itself).
+  const senderIsSelf = Boolean(botIdentity?.openId && first.senderId === botIdentity.openId);
+  const mentionable =
+    !senderIsSelf && first.senderId
+      ? [
+          {
+            openId: first.senderId,
+            ...(first.senderName ? { name: first.senderName } : {}),
+            ...(senderType ? { isBot: senderType === 'bot' } : {}),
+          },
+          ...mentions,
+        ]
+      : mentions;
+
   return buildAgentPrompt({
     context: {
       chatId: first.chatId,
@@ -1183,7 +1202,7 @@ function buildPrompt(
       ...(first.senderName ? { senderName: first.senderName } : {}),
       ...(senderType ? { senderType } : {}),
       ...(botIdentity?.openId ? { botOpenId: botIdentity.openId } : {}),
-      ...(mentions.length > 0 ? { mentions } : {}),
+      ...(mentionable.length > 0 ? { mentions: mentionable } : {}),
       ...(first.threadId ? { threadId: first.threadId } : {}),
       messageIds: batch.map((m) => m.messageId),
       source: 'im',

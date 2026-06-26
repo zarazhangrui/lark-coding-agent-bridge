@@ -15,13 +15,18 @@ describe('bridge system prompt bot collaboration rules', () => {
     expect(BRIDGE_SYSTEM_PROMPT).toContain('人类用户');
   });
 
-  it('tells the agent to turn normally when mentioned by another bot', () => {
-    expect(BRIDGE_SYSTEM_PROMPT).toContain('被其他 bot @ 时正常 turn 回应');
-    expect(BRIDGE_SYSTEM_PROMPT).toContain('一视同仁');
+  it('leaves the decision to @ up to the agent with no hard rule', () => {
+    expect(BRIDGE_SYSTEM_PROMPT).toContain('自行判断');
+    expect(BRIDGE_SYSTEM_PROMPT).toContain('没有硬性规则');
   });
 
-  it('allows the agent to proactively mention other bots', () => {
-    expect(BRIDGE_SYSTEM_PROMPT).toContain('可以主动 @ 其他 bot');
+  it('clarifies that quote-replying is not the same as a structured @', () => {
+    expect(BRIDGE_SYSTEM_PROMPT).toContain('引用回复 / 回复按钮');
+    expect(BRIDGE_SYSTEM_PROMPT).toContain('引用不等于 @');
+  });
+
+  it('documents that the sender is available as a mentionable target', () => {
+    expect(BRIDGE_SYSTEM_PROMPT).toContain('发送者也被自动放进去了');
   });
 
   it('points self-identification at the bridge_context botOpenId field', () => {

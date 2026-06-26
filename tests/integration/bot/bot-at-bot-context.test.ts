@@ -107,7 +107,11 @@ describe('sender identity in bridge_context', () => {
     };
     expect(context.senderType).toBe('bot');
     expect(context.botOpenId).toBe('ou_bot');
+    // The triggering sender is injected as a mentionable target first (so the
+    // agent can @ the bot back with a structured mention), followed by the
+    // accounts mentioned in the message.
     expect(context.mentions).toEqual([
+      { openId: 'ou_hermes', name: 'HermesBot', isBot: true },
       { openId: 'ou_bot', name: 'Bridge', isBot: true },
       { openId: 'ou_human', name: '张三', isBot: false },
     ]);
