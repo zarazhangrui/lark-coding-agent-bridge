@@ -8,6 +8,7 @@ import {
   AgentPreflightError,
   formatAgentPreflightDiagnostic,
   type AgentAvailability,
+  type LocalAgentId,
 } from '../../agent/preflight';
 import type { AgentAdapter } from '../../agent/types';
 import { startChannel, type BridgeChannel } from '../../bot/channel';
@@ -374,9 +375,9 @@ async function checkRuntimeAgentAvailability(agent: AgentAdapter): Promise<Agent
   if (ok) return { ok: true };
   const diagnostic = {
     code: 'agent-binary-not-found' as const,
-    agentId: agent.id === 'codex' ? 'codex' as const : 'claude' as const,
+    agentId: agent.id as LocalAgentId,
     agentName: agent.displayName,
-    command: agent.id === 'codex' ? 'codex' : 'claude',
+    command: agent.id,
   };
   return {
     ok: false,
@@ -433,6 +434,9 @@ export function createRuntimeAgent(
       sandbox: profileConfig.sandbox.defaultMode,
       larkChannel,
     });
+  }
+  if (profileConfig.agentKind === 'opencode') {
+    throw new Error('OpenCode adapter is not yet implemented');
   }
   return new ClaudeAdapter({ larkChannel });
 }
