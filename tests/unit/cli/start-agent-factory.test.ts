@@ -60,6 +60,20 @@ describe('start runtime agent factory', () => {
     expect(agent.displayName).toBe('Codex CLI');
   });
 
+  it('creates PiAdapter from a pi profile', () => {
+    const agent = createRuntimeAgent(
+      createDefaultProfileConfig({
+        agentKind: 'pi',
+        accounts: appAccount(),
+        pi: { binaryPath: '/usr/local/bin/pi' },
+      }),
+      { profileDir: '/tmp/lark-channel-bridge/profiles/pi-e2e' },
+    );
+
+    expect(agent.id).toBe('pi');
+    expect(agent.displayName).toBe('pi coding agent');
+  });
+
   it('seeds a default Codex binary when bootstrapping a new Codex profile', () => {
     const profile = createRuntimeProfileConfig({
       agentKind: 'codex',
@@ -96,6 +110,8 @@ describe('start runtime agent factory', () => {
   it('rejects reconnect when a profile changes agent kind in place', () => {
     expect(() => assertReconnectAgentKindUnchanged('claude', 'codex')).toThrow(/agent kind/i);
     expect(() => assertReconnectAgentKindUnchanged('codex', 'codex')).not.toThrow();
+    expect(() => assertReconnectAgentKindUnchanged('pi', 'pi')).not.toThrow();
+    expect(() => assertReconnectAgentKindUnchanged('claude', 'pi')).toThrow(/agent kind/i);
   });
 });
 

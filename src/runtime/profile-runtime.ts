@@ -90,6 +90,9 @@ export function createRuntimeProfileConfig(
     ...(input.agentKind === 'codex'
       ? { codex: input.codex ?? { binaryPath: process.env.LARK_CHANNEL_CODEX_BIN ?? 'codex' } }
       : {}),
+    ...(input.agentKind === 'pi'
+      ? { pi: input.pi ?? { binaryPath: process.env.LARK_CHANNEL_PI_BIN ?? 'pi' } }
+      : {}),
   });
 }
 
@@ -395,7 +398,7 @@ function resolveBootstrapAgent(
   requestedAgent: AgentKind | undefined,
   profile: string | undefined,
 ): AgentKind | undefined {
-  return requestedAgent ?? (profile === 'codex' ? 'codex' : undefined);
+  return requestedAgent ?? (profile === 'codex' ? 'codex' : profile === 'pi' ? 'pi' : undefined);
 }
 
 async function hasLegacyConfig(configPath: string): Promise<boolean> {
@@ -613,7 +616,9 @@ class UserCancelledError extends Error {
 }
 
 function displayAgentKind(kind: AgentKind): string {
-  return kind === 'claude' ? 'Claude Code' : 'Codex CLI';
+  if (kind === 'claude') return 'Claude Code';
+  if (kind === 'pi') return 'pi coding agent';
+  return 'Codex CLI';
 }
 
 async function maybeMigrateRootPlaintextSecret(

@@ -30,6 +30,17 @@ describe('static architecture contracts', () => {
     }
   });
 
+  it('does not import pi internals in shared bot/card code either', () => {
+    const sharedFiles = [
+      ...collectTsFiles('src/bot'),
+      ...collectTsFiles('src/card'),
+      'src/commands/index.ts',
+    ];
+    for (const file of sharedFiles) {
+      expect(read(file), file).not.toMatch(/agent\/pi/);
+    }
+  });
+
   it('does not keep legacy open access semantics in config helpers', () => {
     const schema = read('src/config/schema.ts');
     expect(schema).not.toMatch(/legacy-open|access\.semantics/);

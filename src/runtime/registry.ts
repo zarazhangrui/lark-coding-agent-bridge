@@ -64,7 +64,7 @@ function isValidEntry(e: unknown): e is ProcessEntry {
     typeof x.appId === 'string' &&
     (x.tenant === 'feishu' || x.tenant === 'lark') &&
     typeof x.profileName === 'string' &&
-    (x.agentKind === 'claude' || x.agentKind === 'codex') &&
+    (x.agentKind === 'claude' || x.agentKind === 'codex' || x.agentKind === 'pi') &&
     typeof x.configPath === 'string' &&
     typeof x.startedAt === 'string' &&
     typeof x.version === 'string'

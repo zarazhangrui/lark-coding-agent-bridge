@@ -4,6 +4,7 @@ import { createInterface } from 'node:readline';
 import pkg from '../../../package.json';
 import { ClaudeAdapter } from '../../agent/claude/adapter';
 import { CodexAdapter } from '../../agent/codex/adapter';
+import { PiAdapter } from '../../agent/pi/adapter';
 import {
   AgentPreflightError,
   formatAgentPreflightDiagnostic,
@@ -374,9 +375,10 @@ async function checkRuntimeAgentAvailability(agent: AgentAdapter): Promise<Agent
   if (ok) return { ok: true };
   const diagnostic = {
     code: 'agent-binary-not-found' as const,
-    agentId: agent.id === 'codex' ? 'codex' as const : 'claude' as const,
+    agentId:
+      agent.id === 'codex' ? 'codex' as const : agent.id === 'pi' ? 'pi' as const : 'claude' as const,
     agentName: agent.displayName,
-    command: agent.id === 'codex' ? 'codex' : 'claude',
+    command: agent.id,
   };
   return {
     ok: false,
@@ -431,6 +433,21 @@ export function createRuntimeAgent(
       ignoreUserConfig: codex.ignoreUserConfig === true,
       ignoreRules: codex.ignoreRules !== false,
       sandbox: profileConfig.sandbox.defaultMode,
+      larkChannel,
+    });
+  }
+  if (profileConfig.agentKind === 'pi') {
+    const pi = profileConfig.pi;
+    if (!pi?.binaryPath) {
+      throw new Error('pi profile requires pi.binaryPath');
+    }
+    return new PiAdapter({
+      binary: pi.binaryPath,
+      profileStateDir: appPaths.profileDir,
+      ...(pi.piAgentDir ? { piAgentDir: pi.piAgentDir } : {}),
+      inheritPiAgentDir: pi.inheritPiAgentDir === true,
+      ...(pi.gatewayBaseUrl ? { gatewayBaseUrl: pi.gatewayBaseUrl } : {}),
+      ...(pi.gatewayApiKeyEnv ? { gatewayApiKeyEnv: pi.gatewayApiKeyEnv } : {}),
       larkChannel,
     });
   }

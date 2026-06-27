@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { BRIDGE_SYSTEM_PROMPT } from '../../../src/agent/bridge-system-prompt';
-import { claudeCapability, codexCapability } from '../../../src/agent/capability';
+import { claudeCapability, codexCapability, piCapability } from '../../../src/agent/capability';
 import { createDefaultProfileConfig } from '../../../src/config/profile-schema';
 
 describe('agent capability contract', () => {
@@ -71,5 +71,40 @@ describe('agent capability contract', () => {
     });
 
     expect(codexCapability(profile).permissions.maxAccess).toBe('read-only');
+  });
+
+  it('defines pi capability with session-based history and append-system-prompt', () => {
+    const profile = createDefaultProfileConfig({
+      agentKind: 'pi',
+      accounts: {
+        app: {
+          id: 'cli_test',
+          secret: '${APP_SECRET}',
+          tenant: 'feishu',
+        },
+      },
+      pi: {
+        binaryPath: '/usr/local/bin/pi',
+      },
+      permissions: {
+        defaultAccess: 'workspace',
+        maxAccess: 'workspace',
+      },
+    });
+
+    expect(piCapability(profile)).toMatchObject({
+      agentId: 'pi',
+      sessionKind: 'pi-session',
+      promptInjection: 'append-system-prompt',
+      supportsNativeHistory: true,
+      systemPrompt: BRIDGE_SYSTEM_PROMPT,
+      callback: {
+        marker: '__bridge_cb',
+        legacyMarkers: [],
+      },
+      permissions: {
+        maxAccess: 'workspace',
+      },
+    });
   });
 });
