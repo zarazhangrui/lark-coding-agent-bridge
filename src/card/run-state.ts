@@ -26,6 +26,9 @@ export interface RunState {
   /** Set when terminal === 'idle_timeout' — how long claude was idle before
    * the watchdog gave up (so the message can say "N 分钟无响应"). */
   idleTimeoutMinutes?: number;
+  /** Set by `windowState` when any text was dropped, so the caller can resend
+   * the full text as a standalone message (C2 fallback). */
+  truncated?: boolean;
 }
 
 export const initialState: RunState = {
@@ -165,5 +168,103 @@ export function finalizeIfRunning(state: RunState): RunState {
     reasoning: { ...state.reasoning, active: false },
     terminal: 'done',
     footer: null,
+  };
+}
+
+export interface WindowOptions {
+  maxTools: number;
+  maxTextChars: number;
+}
+
+/**
+ * Bound a RunState's blocks for card rendering: collapse old tool calls into a
+ * single summary block and trim accumulated text to the most recent window.
+ * Sets `truncated` when any text was dropped so the caller can resend the full
+ * text as a standalone message (C2 fallback). Pure function; input untouched.
+ */
+export function windowState(state: RunState, opts: WindowOptions): RunState {
+  const { maxTools, maxTextChars } = opts;
+  const blocks = state.blocks;
+
+  // Step 1: collapse old tool blocks into one summary when over maxTools.
+  let blocksAfterTools: Block[] = blocks;
+  if (maxTools >= 0) {
+    const toolIndices: number[] = [];
+    blocks.forEach((b, i) => {
+      if (b.kind === 'tool') toolIndices.push(i);
+    });
+    if (toolIndices.length > maxTools) {
+      const collapseCount = toolIndices.length - maxTools;
+      const collapseSet = new Set(toolIndices.slice(0, collapseCount));
+      const collapsedTools = toolIndices
+        .slice(0, collapseCount)
+        .map((i) => (blocks[i] as { kind: 'tool'; tool: ToolEntry }).tool);
+      const headerList = collapsedTools.map((t) => `- ${t.name}`).join('\n');
+      const summaryBlock: Block = {
+        kind: 'text',
+        content: `☕ ${collapseCount} earlier tool calls\n${headerList}`,
+        streaming: false,
+      };
+      const rebuilt: Block[] = [];
+      let inserted = false;
+      blocks.forEach((b, i) => {
+        if (collapseSet.has(i)) {
+          if (!inserted) {
+            rebuilt.push(summaryBlock);
+            inserted = true;
+          }
+          return;
+        }
+        rebuilt.push(b);
+      });
+      blocksAfterTools = rebuilt;
+    }
+  }
+
+  // Step 2: trim text from the front (keep the latest) when over maxTextChars.
+  let totalText = 0;
+  for (const b of blocksAfterTools) {
+    if (b.kind === 'text') totalText += b.content.length;
+  }
+  let finalBlocks = blocksAfterTools;
+  let textTruncated = false;
+  if (totalText > maxTextChars) {
+    textTruncated = true;
+    let remaining = maxTextChars;
+    const reversedOut: Block[] = [];
+    for (let i = blocksAfterTools.length - 1; i >= 0; i--) {
+      const b = blocksAfterTools[i]!;
+      if (b.kind !== 'text') {
+        reversedOut.push(b);
+        continue;
+      }
+      const len = b.content.length;
+      if (remaining >= len) {
+        reversedOut.push(b);
+        remaining -= len;
+      } else if (remaining > 0) {
+        const keep = b.content.slice(len - remaining);
+        const omitted = len - remaining;
+        reversedOut.push({
+          kind: 'text',
+          content: `…(omitted ${omitted} chars)\n${keep}`,
+          streaming: false,
+        });
+        remaining = 0;
+      } else {
+        reversedOut.push({
+          kind: 'text',
+          content: `…(omitted ${len} chars)`,
+          streaming: false,
+        });
+      }
+    }
+    finalBlocks = reversedOut.reverse();
+  }
+
+  return {
+    ...state,
+    blocks: finalBlocks,
+    truncated: textTruncated,
   };
 }

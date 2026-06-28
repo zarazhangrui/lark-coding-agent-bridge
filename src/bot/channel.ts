@@ -23,7 +23,9 @@ import {
   markIdleTimeout,
   markInterrupted,
   reduce,
+  windowState,
   type RunState,
+  type WindowOptions,
 } from '../card/run-state';
 import { renderText } from '../card/text-renderer';
 import { tryHandleCommand, type Controls } from '../commands';
@@ -769,6 +771,34 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
   const replyMode = getMessageReplyMode(controls.cfg);
   log.info('flush', 'reply-mode', { mode: replyMode });
 
+  // Heartbeat / completion / full-result hooks — independent plain messages
+  // so the user sees progress and outcome even if the card stream stalls.
+  const hooks: StreamHooks = {
+    onHeartbeat: (elapsedMs, currentTool) => {
+      const mins = Math.max(1, Math.round(elapsedMs / 60_000));
+      const toolPart = currentTool ? ` · 当前工具 ${currentTool}` : '';
+      void channel
+        .send(chatId, { markdown: `⏳ 运行中 · 已 ${mins}m${toolPart}` }, sendOpts)
+        .catch((err) => log.fail('stream', err, { step: 'heartbeat' }));
+    },
+    onTerminal: (state, elapsedMs, fullText, truncated) => {
+      const mins = Math.max(1, Math.round(elapsedMs / 60_000));
+      const toolCount = state.blocks.filter((b) => b.kind === 'tool').length;
+      void channel
+        .send(
+          chatId,
+          { markdown: `✅ 完成 · 耗时 ${mins}m · ${toolCount} 工具 · /doctor 查详情` },
+          sendOpts,
+        )
+        .catch((err) => log.fail('stream', err, { step: 'completion' }));
+      if (truncated && fullText.trim()) {
+        void channel
+          .send(chatId, { markdown: fullText }, sendOpts)
+          .catch((err) => log.fail('stream', err, { step: 'fulltext' }));
+      }
+    },
+  };
+
   // Re-read prefs on every flush so toggling /config mid-stream takes
   // effect immediately. Cheap object lookups, no allocation when on.
   const filterForPrefs = (state: RunState): RunState => {
@@ -816,6 +846,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
             await cardCtrl.update(renderCard(filterForPrefs(state), cardRenderOptions));
           }
         },
+        hooks,
       );
       const streamDone = channel.stream(
         chatId,
@@ -861,6 +892,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
             await markdownCtrl.setContent(renderText(filterForPrefs(state)));
           }
         },
+        hooks,
       );
       const streamDone = channel.stream(
         chatId,
@@ -897,6 +929,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
         idleTimeoutMs,
         recordSession,
         async () => {},
+        hooks,
       );
       const body = renderText(filterForPrefs(finalState));
       if (body.trim()) {
@@ -916,16 +949,29 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
  * on every state transition. Used by both card and markdown reply modes —
  * the only difference between the two is what `flush` does with the state.
  */
-async function processAgentStream(
+const WINDOW_OPTS: WindowOptions = { maxTools: 8, maxTextChars: 4000 };
+
+const HEARTBEAT_INTERVAL_MS = 3 * 60_000;
+
+export interface StreamHooks {
+  onHeartbeat?: (elapsedMs: number, currentTool: string | undefined) => void;
+  onTerminal?: (state: RunState, elapsedMs: number, fullText: string, truncated: boolean) => void;
+  heartbeatIntervalMs?: number;
+}
+
+export async function processAgentStream(
   handle: RunHandle,
   events: AsyncIterable<AgentEvent>,
   scope: string,
   idleTimeoutMs: number | undefined,
   recordSession: (event: AgentEvent) => void,
   flush: (state: RunState) => Promise<void>,
+  hooks?: StreamHooks,
 ): Promise<RunState> {
   const runStart = Date.now();
   let state: RunState = initialState;
+  let fullText = '';
+  let currentTool: string | undefined;
 
   // Idle watchdog: claude going silent for `idleTimeoutMs` is treated as
   // "presumed hung", we stop() and surface a timeout marker on the card.
@@ -960,6 +1006,30 @@ async function processAgentStream(
   };
   armOrPauseIdle();
 
+  // Heartbeat: fires every heartbeatIntervalMs regardless of tool silence
+  // (unlike idle watchdog, which pauses during in-flight tools). Gives the
+  // user a progress signal during long silent tool calls.
+  let heartbeatTimer: NodeJS.Timeout | undefined;
+  const heartbeatMs = hooks?.heartbeatIntervalMs ?? HEARTBEAT_INTERVAL_MS;
+  const armHeartbeat = (): void => {
+    if (!hooks?.onHeartbeat) return;
+    if (heartbeatTimer) clearTimeout(heartbeatTimer);
+    heartbeatTimer = setTimeout(() => {
+      try {
+        hooks.onHeartbeat?.(Date.now() - runStart, currentTool);
+      } catch (err) {
+        log.fail('stream', err, { step: 'heartbeat' });
+      }
+      armHeartbeat();
+    }, heartbeatMs);
+  };
+  const resetHeartbeat = (): void => {
+    if (!hooks?.onHeartbeat) return;
+    if (heartbeatTimer) clearTimeout(heartbeatTimer);
+    armHeartbeat();
+  };
+  armHeartbeat();
+
   try {
     for await (const evt of events) {
       if (handle.interrupted) break;
@@ -969,6 +1039,7 @@ async function processAgentStream(
       // closes it. Other event types are bookkept after the if/else.
       if (evt.type === 'tool_use') {
         inFlightTools.add(evt.id);
+        currentTool = evt.name;
         log.info('agent', 'tool-in-flight', {
           tool: evt.name,
           inFlight: inFlightTools.size,
@@ -978,6 +1049,8 @@ async function processAgentStream(
         log.info('agent', 'tool-done', { inFlight: inFlightTools.size });
       }
       armOrPauseIdle();
+      resetHeartbeat();
+      if (evt.type === 'text') fullText += evt.delta;
 
       if (evt.type === 'system') {
         recordSession(evt);
@@ -1004,7 +1077,7 @@ async function processAgentStream(
       if (state.footer !== prevFooter || state.terminal !== prevTerminal) {
         log.info('card', 'transition', { footer: state.footer, terminal: state.terminal });
       }
-      await flush(state);
+      await flush(windowState(state, WINDOW_OPTS));
       // Stop iterating as soon as we have a terminal state. Some claude
       // versions don't close stdout immediately after the result event, which
       // would leave the for-await waiting forever otherwise.
@@ -1012,6 +1085,7 @@ async function processAgentStream(
     }
   } finally {
     if (timer) clearTimeout(timer);
+    if (heartbeatTimer) clearTimeout(heartbeatTimer);
   }
 
   // If state already reached a terminal event (done/error/etc.) before the
@@ -1029,14 +1103,20 @@ async function processAgentStream(
   }
   log.info('card', 'final', { terminal: state.terminal, interrupted: handle.interrupted });
   reportMetric('run_e2e_ms', Date.now() - runStart, { terminal: state.terminal });
-  await flush(state);
+  const windowedFinal = windowState(state, WINDOW_OPTS);
+  await flush(windowedFinal);
+  try {
+    hooks?.onTerminal?.(state, Date.now() - runStart, fullText, windowedFinal.truncated ?? false);
+  } catch (err) {
+    log.fail('stream', err, { step: 'onTerminal' });
+  }
   if (handle.interrupted) {
     await handle.run.stop();
   }
   return state;
 }
 
-async function awaitRenderAwareStream(input: {
+export async function awaitRenderAwareStream(input: {
   mode: 'card' | 'markdown';
   streamDone: Promise<unknown>;
   renderDone: Promise<RunState>;
