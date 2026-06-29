@@ -56,7 +56,12 @@ export class ClaudeAdapter implements AgentAdapter {
     if (!opts.cwd) {
       throw new Error('cwd is required for ClaudeAdapter.run');
     }
+    return createRetryingRun(opts, () => this.spawnAttempt(opts));
+  }
 
+  // One spawn of the claude CLI. The public run() wraps this with transparent
+  // retry on transient auth/403 failures — see createRetryingRun.
+  private spawnAttempt(opts: AgentRunOptions): AgentRun {
     const args = [
       '-p',
       opts.prompt,
@@ -166,6 +171,145 @@ export class ClaudeAdapter implements AgentAdapter {
       },
     };
   }
+}
+
+// At most 3 re-spawns after the initial attempt, backing off before each.
+const MAX_AUTH_RETRIES = 3;
+const AUTH_RETRY_BACKOFF_MS = [1000, 2000, 4000];
+
+/**
+ * A 403 "Request not allowed" / 401 from the API is usually a *permanent*
+ * rejection (geo-block, revoked creds) — retrying won't fix that. But it can
+ * also be a transient blip (a flaky proxy hop, a momentary edge rejection),
+ * and that's the only case retry helps. So we retry ONLY this error class,
+ * bounded and backed off; every other failure is reported immediately.
+ */
+export function isTransientAuthError(message: string): boolean {
+  return /failed to authenticate|authentication failed|authentication_failed|request not allowed|unauthorized|\b40[13]\b/i.test(
+    message,
+  );
+}
+
+// Events that represent real model output. Once any of these has streamed we
+// must NOT retry — the words are already on the user's screen, we can't unsend
+// them. (The synthetic auth-error text is suppressed in translateEvent, so it
+// never counts as real content here.)
+function isRealContent(evt: AgentEvent): boolean {
+  return (
+    evt.type === 'text' ||
+    evt.type === 'thinking' ||
+    evt.type === 'tool_use' ||
+    evt.type === 'tool_result'
+  );
+}
+
+/**
+ * Wrap single-shot spawns with transparent retry on transient auth/403.
+ *
+ * Each attempt's events are buffered until we either (a) see real output — at
+ * which point we commit: flush the buffer and stream the rest live, never
+ * retrying again — or (b) the attempt ends. If it ended with a transient auth
+ * error before any output, we discard the buffered events, back off, and
+ * re-spawn (up to MAX_AUTH_RETRIES). Any non-auth error, an auth error after
+ * output already streamed, or a clean done is passed through untouched.
+ *
+ * The first attempt is spawned eagerly so run() returns a live process
+ * synchronously, matching the non-retrying contract callers depend on.
+ */
+function createRetryingRun(opts: AgentRunOptions, spawn: () => AgentRun): AgentRun {
+  let current = spawn();
+  let stopped = false;
+  let abortBackoff: (() => void) | undefined;
+
+  async function* stream(): AsyncGenerator<AgentEvent> {
+    let attempt = 1;
+    while (true) {
+      const inner = current;
+      const buffer: AgentEvent[] = [];
+      let committed = false;
+      let terminalError: Extract<AgentEvent, { type: 'error' }> | null = null;
+
+      for await (const evt of inner.events) {
+        if (committed) {
+          yield evt;
+          continue;
+        }
+        if (isRealContent(evt)) {
+          committed = true;
+          for (const buffered of buffer) yield buffered;
+          buffer.length = 0;
+          yield evt;
+          continue;
+        }
+        if (evt.type === 'error') {
+          // Terminal. Stop draining here so we don't also consume the trailing
+          // "exited with code N" event the stream emits after an error result.
+          terminalError = evt;
+          break;
+        }
+        // system / usage / done — buffer until we know whether to retry.
+        buffer.push(evt);
+        if (evt.type === 'done') break;
+      }
+
+      if (committed) return;
+
+      const retriable =
+        terminalError !== null &&
+        !stopped &&
+        attempt <= MAX_AUTH_RETRIES &&
+        isTransientAuthError(terminalError.message);
+
+      if (!retriable) {
+        for (const buffered of buffer) yield buffered;
+        if (terminalError) yield terminalError;
+        return;
+      }
+
+      log.warn('agent', 'auth-retry', {
+        attempt,
+        maxRetries: MAX_AUTH_RETRIES,
+        backoffMs: AUTH_RETRY_BACKOFF_MS[attempt - 1] ?? 0,
+        reason: terminalError!.message.slice(0, 200),
+      });
+
+      // Reap the dead child before re-spawning so we don't stack processes.
+      if (!(await inner.waitForExit(2000))) await inner.stop().catch(() => {});
+
+      const delay =
+        AUTH_RETRY_BACKOFF_MS[attempt - 1] ??
+        AUTH_RETRY_BACKOFF_MS[AUTH_RETRY_BACKOFF_MS.length - 1]!;
+      await new Promise<void>((resolve) => {
+        const timer = setTimeout(resolve, delay);
+        abortBackoff = () => {
+          clearTimeout(timer);
+          resolve();
+        };
+      });
+      abortBackoff = undefined;
+      if (stopped) return;
+
+      current = spawn();
+      if (stopped) {
+        await current.stop().catch(() => {});
+        return;
+      }
+      attempt++;
+    }
+  }
+
+  return {
+    runId: opts.runId,
+    events: stream(),
+    async stop() {
+      stopped = true;
+      abortBackoff?.();
+      await current.stop();
+    },
+    waitForExit(timeoutMs: number): Promise<boolean> {
+      return current.waitForExit(timeoutMs);
+    },
+  };
 }
 
 async function* createEventStream(

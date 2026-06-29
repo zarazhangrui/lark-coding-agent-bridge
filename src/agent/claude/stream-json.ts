@@ -18,13 +18,22 @@ interface ClaudeRawEvent {
   session_id?: string;
   cwd?: string;
   model?: string;
-  message?: { content?: ContentBlock[] };
+  message?: { content?: ContentBlock[]; model?: string };
   usage?: {
     input_tokens?: number;
     output_tokens?: number;
     cache_read_input_tokens?: number;
   };
   total_cost_usd?: number;
+  // `result` events carry the run outcome. On an API/auth failure the CLI
+  // still exits via a result line with is_error set (subtype stays "success"),
+  // the failing HTTP status in api_error_status, and the message in `result`.
+  is_error?: boolean;
+  api_error_status?: number;
+  result?: string;
+  // Top-level marker on a synthetic assistant turn that wraps an API error
+  // (e.g. "authentication_failed"). Its message.model is "<synthetic>".
+  error?: string;
 }
 
 export function* translateEvent(raw: unknown): Generator<AgentEvent> {
@@ -42,6 +51,12 @@ export function* translateEvent(raw: unknown): Generator<AgentEvent> {
   }
 
   if (evt.type === 'assistant' && evt.message?.content) {
+    // A synthetic assistant turn carrying an API error (e.g. 403 auth) arrives
+    // with a top-level `error` ("authentication_failed") and model
+    // "<synthetic>". Its only "content" is the error string — don't stream it
+    // as a normal reply. The trailing `result` event (is_error) carries the
+    // failure to the bridge instead, so it surfaces exactly once.
+    if (evt.error) return;
     for (const block of evt.message.content) {
       if (block.type === 'text' && typeof block.text === 'string' && block.text) {
         yield { type: 'text', delta: block.text };
@@ -80,6 +95,19 @@ export function* translateEvent(raw: unknown): Generator<AgentEvent> {
         costUsd: evt.total_cost_usd,
       };
     }
+    // is_error means the run failed (API/auth error, exceeded turns, etc.).
+    // subtype is unreliable here — a 403 still reports subtype "success" — so
+    // key off is_error and surface a real error event instead of a clean done.
+    if (evt.is_error) {
+      yield { type: 'error', message: resultErrorMessage(evt), terminationReason: 'failed' };
+      return;
+    }
     yield { type: 'done', sessionId: evt.session_id, terminationReason: 'normal' };
   }
+}
+
+function resultErrorMessage(evt: ClaudeRawEvent): string {
+  if (typeof evt.result === 'string' && evt.result.trim()) return evt.result.trim();
+  if (typeof evt.api_error_status === 'number') return `claude API error ${evt.api_error_status}`;
+  return 'claude reported an error';
 }
