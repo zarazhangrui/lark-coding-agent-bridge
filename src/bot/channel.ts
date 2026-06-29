@@ -54,6 +54,7 @@ import type { WorkspaceStore } from '../workspace/store';
 import { ActiveRuns, type RunHandle } from './active-runs';
 import { ChatModeCache, type ChatMode } from './chat-mode-cache';
 import { handleCommentMention } from './comments';
+import { deviceAuthForwardMessage, extractDeviceAuthUrl } from './device-auth';
 import { recordRunSessionEvent, startRunFlow } from './run-flow';
 import { commandSessionCatalogIdentity } from './session-catalog-identity';
 import { startKeepalive } from './keepalive';
@@ -875,6 +876,23 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
   const reactionPromise =
     cotEnabled || replyMode === 'card' ? undefined : addWorkingReaction(channel, lastMsg.messageId);
 
+  // Forward a device-flow OAuth URL into the chat as a safety net (the agent is
+  // supposed to surface it but doesn't always). In a p2p chat we send the link
+  // directly; in a group we must not (whoever clicks first binds the token to
+  // the wrong identity), so we steer the user to DM instead — and only once.
+  let groupAuthHintSent = false;
+  const forwardDeviceAuthUrl = async (url: string): Promise<void> => {
+    const forward = deviceAuthForwardMessage(firstMsg.chatType, url);
+    // The group variant carries no URL and is identical for every code, so send
+    // it at most once even if the agent regenerates the device code.
+    if (!forward.includesUrl) {
+      if (groupAuthHintSent) return;
+      groupAuthHintSent = true;
+    }
+    log.info('agent', 'device-auth-url-forwarded', { scope, chatType: firstMsg.chatType });
+    await channel.send(chatId, { markdown: forward.markdown }, sendOpts);
+  };
+
   try {
     if (cotEnabled) {
       const cotPublisher = new CotPublisher({
@@ -940,6 +958,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
             await cardCtrl.update(renderCard(filterForPrefs(state), cardRenderOptions));
           }
         },
+        forwardDeviceAuthUrl,
       );
       const streamDone = channel.stream(
         chatId,
@@ -985,6 +1004,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
             await markdownCtrl.setContent(renderText(filterForPrefs(state)));
           }
         },
+        forwardDeviceAuthUrl,
       );
       const streamDone = channel.stream(
         chatId,
@@ -1021,6 +1041,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
         idleTimeoutMs,
         recordSession,
         async () => {},
+        forwardDeviceAuthUrl,
       );
       await sendFinalReply({
         channel,
@@ -1152,6 +1173,7 @@ async function processAgentStream(
   idleTimeoutMs: number | undefined,
   recordSession: (event: AgentEvent) => void,
   flush: (state: RunState) => Promise<void>,
+  onDeviceAuthUrl?: (url: string) => void | Promise<void>,
 ): Promise<RunState> {
   const runStart = Date.now();
   let state: RunState = initialState;
@@ -1173,6 +1195,9 @@ async function processAgentStream(
   let idleFired = false;
   let timer: NodeJS.Timeout | undefined;
   const inFlightTools = new Set<string>();
+  // Device-flow verification URLs we've already forwarded, so a re-run of the
+  // same `--no-wait` call doesn't spam the chat with duplicate links.
+  const forwardedAuthUrls = new Set<string>();
   const armOrPauseIdle = (): void => {
     if (!idleTimeoutMs) return;
     if (timer) clearTimeout(timer);
@@ -1205,6 +1230,21 @@ async function processAgentStream(
       } else if (evt.type === 'tool_result') {
         inFlightTools.delete(evt.id);
         log.info('agent', 'tool-done', { inFlight: inFlightTools.size });
+        // Safety net: if a tool surfaced a device-flow auth URL, forward it to
+        // the chat ourselves. The agent is told to do this (see the OAuth
+        // section of the bridge system prompt) but doesn't always comply, and
+        // the subsequent `--device-code` poll blocks silently for ~10 minutes
+        // with no link for the user to click. The poll keeps running while we
+        // forward — once the user authorizes, it completes on its own.
+        if (onDeviceAuthUrl) {
+          const url = extractDeviceAuthUrl(evt.output);
+          if (url && !forwardedAuthUrls.has(url)) {
+            forwardedAuthUrls.add(url);
+            void Promise.resolve(onDeviceAuthUrl(url)).catch((err) =>
+              log.warn('agent', 'device-auth-forward-failed', { err: String(err) }),
+            );
+          }
+        }
       }
       armOrPauseIdle();
 
