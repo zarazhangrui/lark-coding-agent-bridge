@@ -60,6 +60,38 @@ describe('profile schema', () => {
     ).toThrow(/codex/i);
   });
 
+  it('requires antigravity configuration when agentKind is antigravity', () => {
+    expect(() =>
+      normalizeProfileConfig({
+        schemaVersion: 2,
+        agentKind: 'antigravity',
+        accounts: { app },
+      }),
+    ).toThrow(/antigravity/i);
+  });
+
+  it('normalizes Antigravity binary metadata', () => {
+    const cfg = createDefaultProfileConfig({
+      agentKind: 'antigravity',
+      accounts: { app },
+      antigravity: {
+        binaryPath: '/usr/local/bin/agy',
+        version: '1.0.8',
+        sha256: 'abc123',
+        owner: 501,
+        mode: 0o755,
+      },
+    });
+
+    expect(cfg.antigravity).toEqual({
+      binaryPath: '/usr/local/bin/agy',
+      version: '1.0.8',
+      sha256: 'abc123',
+      owner: 501,
+      mode: 0o755,
+    });
+  });
+
   it('rejects sandbox defaults that exceed max capability as a permission error', () => {
     expect(() =>
       normalizeProfileConfig({

@@ -122,7 +122,7 @@ export async function startRunFlow(input: StartRunFlowInput): Promise<StartRunFl
     if (catalogEntry?.agentId === 'claude') {
       sessionId = catalogEntry.sessionId;
       resumeFrom = sessionId;
-    } else if (catalogEntry?.agentId === 'codex') {
+    } else if (catalogEntry?.agentId === 'codex' || catalogEntry?.agentId === 'antigravity') {
       threadId = catalogEntry.threadId;
       resumeFrom = threadId;
     }
@@ -199,6 +199,16 @@ export function recordRunSessionEvent(input: RecordRunSessionEventInput): void {
     input.sessionCatalog?.upsertActive({
       scopeId: input.scopeId,
       agentId: 'codex',
+      cwdRealpath: input.policy.cwdRealpath,
+      policyFingerprint: input.policy.policyFingerprint,
+      threadId: input.event.threadId,
+    });
+    return;
+  }
+  if (input.capability.agentId === 'antigravity' && input.event.threadId) {
+    input.sessionCatalog?.upsertActive({
+      scopeId: input.scopeId,
+      agentId: 'antigravity',
       cwdRealpath: input.policy.cwdRealpath,
       policyFingerprint: input.policy.policyFingerprint,
       threadId: input.event.threadId,

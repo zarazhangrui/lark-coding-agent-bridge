@@ -103,6 +103,63 @@ describe('profile create command', () => {
     });
   });
 
+  it('requires explicit app credentials or reuse when adding a profile non-interactively', async () => {
+    const root = await makeRoot();
+    await writeProfiles(root, 'claude', ['claude']);
+
+    await expect(
+      runProfileCreate('agy', {
+        rootDir: root,
+        agent: 'agy',
+      }),
+    ).rejects.toThrow(/非交互模式无法完成扫码创建应用|pass --app-id/);
+  });
+
+  it('creates a named agy profile by explicitly reusing the active app credentials', async () => {
+    const root = await makeRoot();
+    const workspace = join(root, 'workspace');
+    await mkdir(workspace, { recursive: true });
+    await writeProfiles(root, 'claude', ['claude']);
+    const agy = await writeVersionExecutable(root, 'agy', 'agy 1.0.8');
+    const oldAgyBin = process.env.LARK_CHANNEL_ANTIGRAVITY_BIN;
+    const oldAppSecret = process.env.APP_SECRET;
+    process.env.LARK_CHANNEL_ANTIGRAVITY_BIN = agy;
+    process.env.APP_SECRET = 'reused-secret';
+
+    try {
+      await runProfileCreate('agy', {
+        rootDir: root,
+        agent: 'agy',
+        workspace,
+        reuseActiveApp: true,
+      });
+    } finally {
+      if (oldAgyBin === undefined) {
+        delete process.env.LARK_CHANNEL_ANTIGRAVITY_BIN;
+      } else {
+        process.env.LARK_CHANNEL_ANTIGRAVITY_BIN = oldAgyBin;
+      }
+      if (oldAppSecret === undefined) {
+        delete process.env.APP_SECRET;
+      } else {
+        process.env.APP_SECRET = oldAppSecret;
+      }
+    }
+
+    const configPath = join(root, 'config.json');
+    const saved = JSON.parse(await readFile(configPath, 'utf8')) as RootConfig;
+    const appPaths = resolveAppPaths({ rootDir: root, profile: 'agy' });
+    const secret = await getSecret(secretKeyForApp('cli_claude'), appPaths);
+    const workspaceRealpath = await realpath(workspace);
+
+    expect(auth.validateAppCredentials).not.toHaveBeenCalled();
+    expect(saved.activeProfile).toBe('claude');
+    expect(saved.profiles.agy?.agentKind).toBe('antigravity');
+    expect(saved.profiles.agy?.antigravity?.binaryPath).toBe(agy);
+    expect(saved.profiles.agy?.workspaces.default).toBe(workspaceRealpath);
+    expect(secret).toBe('reused-secret');
+  });
+
   it('refuses to overwrite an existing profile', async () => {
     const root = await makeRoot();
     await writeProfiles(root, 'claude', ['claude']);
