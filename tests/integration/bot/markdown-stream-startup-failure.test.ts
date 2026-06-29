@@ -94,8 +94,8 @@ describe('markdown stream startup failures', () => {
         path: { message_id: 'om_first', reaction_id: 'reaction_1' },
       }),
     );
-    expect(lastMarkdown(h.channel)).toContain('agent 失败');
-    expect(lastMarkdown(h.channel)).toContain('codex exited with code 1');
+    expect(sentMarkdownIncludes(h.channel, 'agent 失败')).toBe(true);
+    expect(sentMarkdownIncludes(h.channel, 'codex exited with code 1')).toBe(true);
   });
 
   it('does not wait for the working reaction before draining a failed agent run', async () => {
@@ -111,7 +111,7 @@ describe('markdown stream startup failures', () => {
     await h.channel.handlers.message?.(message('om_second', 'second'));
     await waitFor(() => h.agent.runOptions.length === 2, 1000);
 
-    expect(lastMarkdown(h.channel)).toContain('agent 失败');
+    expect(sentMarkdownIncludes(h.channel, 'agent 失败')).toBe(true);
 
     reaction.resolve({ data: { reaction_id: 'reaction_1' } });
     await waitFor(() => h.channel.rawClient.im.v1.messageReaction.delete.mock.calls.length > 0);
@@ -355,10 +355,10 @@ function message(messageId: string, content: string): NormalizedMessage {
   } as unknown as NormalizedMessage;
 }
 
-function lastMarkdown(channel: FakeLarkChannel): string {
-  const content = channel.sent.at(-1)?.content as { markdown?: string } | undefined;
-  expect(content?.markdown).toBeTypeOf('string');
-  return content?.markdown ?? '';
+function sentMarkdownIncludes(channel: FakeLarkChannel, substr: string): boolean {
+  return channel.sent.some(
+    (s) => (((s.content as { markdown?: string } | undefined)?.markdown) ?? '').includes(substr),
+  );
 }
 
 async function waitFor(predicate: () => boolean, timeoutMs = 3000): Promise<void> {

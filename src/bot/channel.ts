@@ -18,7 +18,7 @@ import { CallbackAuth } from '../card/callback-auth';
 import { CallbackNonceStore } from '../card/callback-store';
 import { renderCard } from '../card/run-renderer';
 import {
-  buildCompletionNotice,
+  buildTerminalNotice,
   finalizeIfRunning,
   finalReplyText,
   initialState,
@@ -790,7 +790,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
       void channel
         .send(
           chatId,
-          { markdown: buildCompletionNotice({ mins, toolCount, truncated }) },
+          { markdown: buildTerminalNotice(state, { mins, toolCount, truncated }) },
           sendOpts,
         )
         .catch((err) => log.fail('stream', err, { step: 'completion' }));
@@ -910,9 +910,9 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
         renderDone,
         producerStarted: () => producerStarted,
         fallback: async (state) => {
-          const body = renderText(filterForPrefs(state));
-          if (body.trim()) {
-            await channel.send(chatId, { markdown: body }, sendOpts);
+          const reply = finalReplyText(filterForPrefs(state));
+          if (reply?.trim()) {
+            await channel.send(chatId, { markdown: reply }, sendOpts);
           }
         },
       });

@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   finalReplyText,
   buildCompletionNotice,
+  buildTerminalNotice,
   initialState,
   type RunState,
   type Block,
@@ -74,5 +75,60 @@ describe('buildCompletionNotice', () => {
   it('UT-008: truncated → appends /last recall hint', () => {
     const out = buildCompletionNotice({ mins: 8, toolCount: 18, truncated: true });
     expect(out).toContain('输出较长，回复 /last 查看完整');
+  });
+});
+
+describe('buildTerminalNotice', () => {
+  it('UT-009: done → ✅ 完成 completion notice', () => {
+    const s: RunState = { ...initialState, terminal: 'done' };
+    const out = buildTerminalNotice(s, { mins: 5, toolCount: 3, truncated: false });
+    expect(out).toContain('✅ 完成 · 耗时 5m · 3 工具');
+    expect(out).toContain('/doctor 查详情');
+  });
+
+  it('UT-010: error with errorMsg → ⚠️ agent 失败 + msg, no ✅ 完成', () => {
+    const s: RunState = {
+      ...initialState,
+      terminal: 'error',
+      errorMsg: 'codex exited with code 1: Error loading config.toml',
+    };
+    const out = buildTerminalNotice(s, { mins: 1, toolCount: 0, truncated: false });
+    expect(out).toContain('⚠️ agent 失败');
+    expect(out).toContain('codex exited with code 1: Error loading config.toml');
+    expect(out).not.toContain('✅ 完成');
+  });
+
+  it('UT-011: error without errorMsg → ⚠️ agent 失败 + fallback text', () => {
+    const s: RunState = { ...initialState, terminal: 'error' };
+    const out = buildTerminalNotice(s, { mins: 1, toolCount: 0, truncated: false });
+    expect(out).toContain('⚠️ agent 失败');
+    expect(out).not.toContain('✅ 完成');
+  });
+
+  it('UT-012: interrupted → ⏹ 已被中断, no ✅ 完成', () => {
+    const s: RunState = { ...initialState, terminal: 'interrupted' };
+    const out = buildTerminalNotice(s, { mins: 1, toolCount: 0, truncated: false });
+    expect(out).toContain('⏹ 已被中断');
+    expect(out).not.toContain('✅ 完成');
+  });
+
+  it('UT-013: idle_timeout → ⏱ N 分钟无响应, no ✅ 完成', () => {
+    const s: RunState = { ...initialState, terminal: 'idle_timeout', idleTimeoutMinutes: 7 };
+    const out = buildTerminalNotice(s, { mins: 7, toolCount: 0, truncated: false });
+    expect(out).toContain('⏱ 7 分钟无响应');
+    expect(out).not.toContain('✅ 完成');
+  });
+
+  it('UT-014: done truncated → /last hint (delegates to buildCompletionNotice)', () => {
+    const s: RunState = { ...initialState, terminal: 'done' };
+    const out = buildTerminalNotice(s, { mins: 5, toolCount: 3, truncated: true });
+    expect(out).toContain('输出较长，回复 /last 查看完整');
+  });
+
+  it('UT-015: idle_timeout without idleTimeoutMinutes → ⏱ 0 分钟 (default ?? 0, consistent with renderText/renderCard)', () => {
+    const s: RunState = { ...initialState, terminal: 'idle_timeout' };
+    const out = buildTerminalNotice(s, { mins: 1, toolCount: 0, truncated: false });
+    expect(out).toContain('⏱ 0 分钟无响应');
+    expect(out).not.toContain('✅ 完成');
   });
 });

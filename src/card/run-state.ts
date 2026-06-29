@@ -318,3 +318,31 @@ export function buildCompletionNotice(opts: {
   const truncPart = opts.truncated ? ' · 输出较长，回复 /last 查看完整' : '';
   return `✅ 完成 · 耗时 ${opts.mins}m · ${opts.toolCount} 工具${truncPart} · /doctor 查详情`;
 }
+
+/**
+ * Build the standalone terminal notice posted when a run reaches a terminal
+ * state. Reflects the actual outcome instead of always saying `✅ 完成` —
+ * failed runs post `⚠️ agent 失败`, interrupts post `⏹ 已被中断`, idle
+ * timeouts post `⏱ N 分钟无响应`. `done` (and the default, e.g. `running`)
+ * delegates to `buildCompletionNotice`.
+ *
+ * Used by `onTerminal` in `src/bot/channel.ts`. Pure function; input untouched.
+ */
+export function buildTerminalNotice(
+  state: RunState,
+  opts: { mins: number; toolCount: number; truncated: boolean },
+): string {
+  switch (state.terminal) {
+    case 'error':
+      return `⚠️ agent 失败：${state.errorMsg ?? '未知错误'}`;
+    case 'interrupted':
+      return '⏹ 已被中断 · /doctor 查详情';
+    case 'idle_timeout': {
+      const mins = state.idleTimeoutMinutes ?? 0;
+      return `⏱ ${mins} 分钟无响应,已自动终止 · /doctor 查详情`;
+    }
+    case 'done':
+    default:
+      return buildCompletionNotice(opts);
+  }
+}
