@@ -11,9 +11,9 @@ importers:
       '@clack/prompts':
         specifier: ^1.4.0
         version: 1.4.0
-      '@larksuiteoapi/node-sdk':
-        specifier: ^1.65.0
-        version: 1.65.0
+      '@larksuite/channel':
+        specifier: ^0.2.0
+        version: 0.2.0
       commander:
         specifier: ^12.1.0
         version: 12.1.0
@@ -23,9 +23,6 @@ importers:
       graceful-fs:
         specifier: ^4.2.11
         version: 4.2.11
-      https-proxy-agent:
-        specifier: ^9.0.0
-        version: 9.0.0
       proper-lockfile:
         specifier: ^4.1.2
         version: 4.1.2
@@ -375,8 +372,12 @@ packages:
   '@jridgewell/trace-mapping@0.3.31':
     resolution: {integrity: sha512-zzNR+SdQSDJzc8joaeP8QQoCQr8NuYx2dIIytl1QeBEZHJ9uW6hebsrYgbz8hJwUQao3TWCMtmfV8Nu1twOLAw==}
 
-  '@larksuiteoapi/node-sdk@1.65.0':
-    resolution: {integrity: sha512-SkMeiFvi4mMVGrmBBh50vWPOgAvfbcpdcAW+iryheFFHUmji49aDch/YtxsKGFtzFlL/rseQXFzNFL8+LdQQ5Q==}
+  '@larksuite/channel@0.2.0':
+    resolution: {integrity: sha512-XzbPxBLz+f05hVqggAZOciiNyW7DgXQBOSJANfACoeJxs4x+N2vKgX15cYQS4NAtBq1erqrHu+3QsjgRnLeXYA==}
+    engines: {node: '>=18'}
+
+  '@larksuiteoapi/node-sdk@1.67.0':
+    resolution: {integrity: sha512-pr3iZbK+CkwgwIhUzt86mZGP/wLCzBDRmCy+Vt+/UAWx/KjwxwrRpfAKm4eOmd0uUd8AcG2mWC/ZSUMu7lZIqg==}
 
   '@protobufjs/aspromise@1.1.2':
     resolution: {integrity: sha512-j+gKExEuLmKwvz3OgROXtrJ2UG2x8Ch2YZUxahh+s1F2HZ+wAceUNLkvy6zKCPVRkU++ZWQrdxsUeQXmcg4uoQ==}
@@ -1332,7 +1333,17 @@ snapshots:
       '@jridgewell/resolve-uri': 3.1.2
       '@jridgewell/sourcemap-codec': 1.5.5
 
-  '@larksuiteoapi/node-sdk@1.65.0':
+  '@larksuite/channel@0.2.0':
+    dependencies:
+      '@larksuiteoapi/node-sdk': 1.67.0
+      https-proxy-agent: 9.0.0
+    transitivePeerDependencies:
+      - bufferutil
+      - debug
+      - supports-color
+      - utf-8-validate
+
+  '@larksuiteoapi/node-sdk@1.67.0':
     dependencies:
       axios: 1.13.6
       lodash.identity: 3.0.0

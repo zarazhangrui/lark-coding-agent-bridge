@@ -1,4 +1,4 @@
-import type { NormalizedMessage } from '@larksuiteoapi/node-sdk';
+import type { NormalizedMessage } from '@larksuite/channel';
 import { realpath } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -16,8 +16,8 @@ const sdkMock = vi.hoisted(() => ({
   }),
 }));
 
-vi.mock('@larksuiteoapi/node-sdk', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@larksuiteoapi/node-sdk')>();
+vi.mock('@larksuite/channel', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@larksuite/channel')>();
   return {
     ...actual,
     createLarkChannel: sdkMock.createLarkChannel,
@@ -34,18 +34,8 @@ interface FakeLarkChannel {
   botIdentity: { openId: string; name: string };
   rawClient: {
     request: ReturnType<typeof vi.fn>;
-    application: {
-      v6: {
-        application: {
-          get: ReturnType<typeof vi.fn>;
-        };
-      };
-    };
     im: {
       v1: {
-        message: {
-          get: ReturnType<typeof vi.fn>;
-        };
         messageReaction: {
           create: ReturnType<typeof vi.fn>;
           delete: ReturnType<typeof vi.fn>;
@@ -53,6 +43,9 @@ interface FakeLarkChannel {
       };
     };
   };
+  getAppInfo: ReturnType<typeof vi.fn>;
+  listChats: ReturnType<typeof vi.fn>;
+  fetchRawMessage: ReturnType<typeof vi.fn>;
   on(handlers: MessageHandlerMap): void;
   connect(): Promise<void>;
   disconnect(): Promise<void>;
@@ -93,7 +86,7 @@ describe('topic message quote handling', () => {
     expect(prompt).toContain('"threadId":"omt_topic"');
     expect(prompt).not.toContain('<quoted_messages>');
     expect(prompt).not.toContain('topic root content');
-    expect(h.channel.rawClient.im.v1.message.get).not.toHaveBeenCalled();
+    expect(h.channel.fetchRawMessage).not.toHaveBeenCalled();
   });
 
   it('keeps regular group reply quotes as quoted context', async () => {
@@ -119,10 +112,9 @@ describe('topic message quote handling', () => {
     const prompt = h.agent.runOptions[0]?.prompt ?? '';
     expect(prompt).toContain('<quoted_messages>');
     expect(prompt).toContain('regular quoted content');
-    expect(h.channel.rawClient.im.v1.message.get).toHaveBeenCalledWith(
-      expect.objectContaining({
-        path: { message_id: 'om_quote_target' },
-      }),
+    expect(h.channel.fetchRawMessage).toHaveBeenCalledWith(
+      'om_quote_target',
+      expect.objectContaining({ cardContentType: 'user_card_content' }),
     );
   });
 
@@ -149,10 +141,9 @@ describe('topic message quote handling', () => {
     const prompt = h.agent.runOptions[0]?.prompt ?? '';
     expect(prompt).toContain('<quoted_messages>');
     expect(prompt).toContain('topic parent content');
-    expect(h.channel.rawClient.im.v1.message.get).toHaveBeenCalledWith(
-      expect.objectContaining({
-        path: { message_id: 'om_topic_parent' },
-      }),
+    expect(h.channel.fetchRawMessage).toHaveBeenCalledWith(
+      'om_topic_parent',
+      expect.objectContaining({ cardContentType: 'user_card_content' }),
     );
   });
 });
@@ -246,39 +237,8 @@ function createFakeLarkChannel(options: {
     botIdentity: { openId: 'ou_bot', name: 'Bridge' },
     rawClient: {
       request: vi.fn(async () => ({ data: { items: [] } })),
-      application: {
-        v6: {
-          application: {
-            get: vi.fn(async () => ({
-              data: { app: { owner: { owner_id: 'ou_owner' } } },
-            })),
-          },
-        },
-      },
       im: {
         v1: {
-          message: {
-            get: vi.fn(async (params: { path?: { message_id?: string } }) => {
-              const messageId = params.path?.message_id ?? 'om_topic_root';
-              return {
-                data: {
-                  items: [
-                    {
-                      message_id: messageId,
-                      msg_type: 'text',
-                      body: {
-                        content: JSON.stringify({
-                          text: quotedMessages[messageId] ?? 'quoted content',
-                        }),
-                      },
-                      create_time: '1760000000000',
-                      sender: { id: 'ou_quote_sender' },
-                    },
-                  ],
-                },
-              };
-            }),
-          },
           messageReaction: {
             create: vi.fn(async () => ({ data: { reaction_id: 'reaction_1' } })),
             delete: vi.fn(async () => ({})),
@@ -286,6 +246,21 @@ function createFakeLarkChannel(options: {
         },
       },
     },
+    getAppInfo: vi.fn(async () => ({ ownerId: 'ou_owner' })),
+    listChats: vi.fn(async () => []),
+    fetchRawMessage: vi.fn(async (messageId: string) => [
+      {
+        message_id: messageId,
+        msg_type: 'text',
+        body: {
+          content: JSON.stringify({
+            text: quotedMessages[messageId] ?? 'quoted content',
+          }),
+        },
+        create_time: '1760000000000',
+        sender: { id: 'ou_quote_sender' },
+      },
+    ]),
     on(nextHandlers) {
       Object.assign(handlers, nextHandlers);
     },

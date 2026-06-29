@@ -1,5 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { createOwnerRefreshController, refreshOwnerControls } from '../../../src/policy/owner';
+import {
+  createOwnerRefreshController,
+  refreshOwnerControls,
+  type AppInfoSource,
+} from '../../../src/policy/owner';
 import { isCreator, type RuntimeControls } from '../../../src/policy/access';
 
 describe('owner refresh', () => {
@@ -9,16 +13,16 @@ describe('owner refresh', () => {
 
   it('refreshes bot owner from the application API', async () => {
     const controls: RuntimeControls = { ownerRefreshState: 'unknown' };
-    const rawClient = fakeRawClient(['ou_owner']);
+    const source = fakeAppInfoSource(['ou_owner']);
 
-    await refreshOwnerControls(controls, rawClient, 'cli_test');
+    await refreshOwnerControls(controls, source, 'cli_test');
 
     expect(controls).toMatchObject({
       botOwnerId: 'ou_owner',
       ownerRefreshState: 'ok',
     });
     expect(controls.ownerRefreshedAt).toBeTypeOf('number');
-    expect(rawClient.calls).toEqual(['cli_test']);
+    expect(source.calls).toBe(1);
   });
 
   it('keeps cached owner available when a refresh fails', async () => {
@@ -26,9 +30,9 @@ describe('owner refresh', () => {
       botOwnerId: 'ou_previous',
       ownerRefreshState: 'ok',
     };
-    const rawClient = fakeRawClient([new Error('permission denied')]);
+    const source = fakeAppInfoSource([new Error('permission denied')]);
 
-    await refreshOwnerControls(controls, rawClient, 'cli_test');
+    await refreshOwnerControls(controls, source, 'cli_test');
 
     expect(controls.botOwnerId).toBe('ou_previous');
     expect(controls.ownerRefreshState).toBe('failed');
@@ -38,9 +42,9 @@ describe('owner refresh', () => {
 
   it('fails closed when owner refresh fails without a cached owner', async () => {
     const controls: RuntimeControls = { ownerRefreshState: 'unknown' };
-    const rawClient = fakeRawClient([new Error('permission denied')]);
+    const source = fakeAppInfoSource([new Error('permission denied')]);
 
-    await refreshOwnerControls(controls, rawClient, 'cli_test');
+    await refreshOwnerControls(controls, source, 'cli_test');
 
     expect(controls.botOwnerId).toBeUndefined();
     expect(controls.ownerRefreshState).toBe('failed');
@@ -51,10 +55,10 @@ describe('owner refresh', () => {
   it('refreshes immediately and then every 30 minutes while the controller is running', async () => {
     vi.useFakeTimers();
     const controls: RuntimeControls = { ownerRefreshState: 'unknown' };
-    const rawClient = fakeRawClient(['ou_first', 'ou_second']);
+    const source = fakeAppInfoSource(['ou_first', 'ou_second']);
     const controller = createOwnerRefreshController({
       controls,
-      rawClient,
+      source,
       appId: 'cli_test',
     });
 
@@ -63,35 +67,20 @@ describe('owner refresh', () => {
 
     await vi.advanceTimersByTimeAsync(30 * 60 * 1000);
     expect(controls.botOwnerId).toBe('ou_second');
-    expect(rawClient.calls).toEqual(['cli_test', 'cli_test']);
+    expect(source.calls).toBe(2);
 
     controller.stop();
   });
 });
 
-function fakeRawClient(results: Array<string | Error>) {
-  const calls: string[] = [];
+function fakeAppInfoSource(results: Array<string | Error>): AppInfoSource & { calls: number } {
   return {
-    calls,
-    application: {
-      v6: {
-        application: {
-          async get(payload: { path: { app_id: string } }) {
-            calls.push(payload.path.app_id);
-            const next = results.shift();
-            if (next instanceof Error) throw next;
-            return {
-              data: {
-                app: {
-                  owner: {
-                    owner_id: next,
-                  },
-                },
-              },
-            };
-          },
-        },
-      },
+    calls: 0,
+    async getAppInfo() {
+      this.calls += 1;
+      const next = results.shift();
+      if (next instanceof Error) throw next;
+      return { ownerId: next };
     },
   };
 }

@@ -1,7 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { NormalizedMessage } from '@larksuiteoapi/node-sdk';
+import type { NormalizedMessage } from '@larksuite/channel';
 import { ActiveRuns } from '../../../src/bot/active-runs';
 import { ProcessPool } from '../../../src/bot/process-pool';
 import { tryHandleCommand, type CommandContext, type Controls } from '../../../src/commands/index';

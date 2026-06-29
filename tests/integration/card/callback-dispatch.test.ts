@@ -1,4 +1,4 @@
-import type { CardActionEvent } from '@larksuiteoapi/node-sdk';
+import type { CardActionEvent } from '@larksuite/channel';
 import { afterEach, describe, expect, it } from 'vitest';
 import { ActiveRuns } from '../../../src/bot/active-runs.js';
 import type { ChatModeCache } from '../../../src/bot/chat-mode-cache.js';
@@ -79,6 +79,27 @@ describe('signed card callback dispatch', () => {
     expect(h.pending.cancel('oc_group')).toHaveLength(0);
   });
 
+  it('scopes topic-group callbacks by the carrier message thread_id', async () => {
+    const h = await createHarness({ chatMode: 'topic' });
+    // The dispatcher must read items[0].thread_id from the raw message get to
+    // compose the `${chatId}:${threadId}` scope. A regression here (e.g. using
+    // channel.fetchMessage, whose normalized shape drops thread_id) would fall
+    // back to the bare chatId and route the click into the wrong session.
+    h.channel.rawThreadIds.set('om_card', 'th_topic');
+    h.activeRuns.register('oc_group:th_topic', h.agent.run({ runId: 'run-active', prompt: 'running' }));
+
+    await h.dispatch({
+      __bridge_cb: true,
+      bridge_token: h.token('agent_callback', { nonce: 'nonce-topic', scope: 'oc_group:th_topic' }),
+      choice: 'a',
+    });
+
+    expect(h.pending.cancel('oc_group')).toHaveLength(0);
+    const queued = h.pending.cancel('oc_group:th_topic');
+    expect(queued).toHaveLength(1);
+    expect(queued[0]?.content).toBe('[card-click] {"choice":"a"}');
+  });
+
   it('rejects bridge callbacks when callback auth is unavailable', async () => {
     const h = await createHarness({ callbackAuth: false });
     const activeRun = h.agent.run({ runId: 'run-active', prompt: 'running' }) as FakeAgentRun;
@@ -105,10 +126,15 @@ type Harness = {
   pending: PendingQueue;
   auth: CallbackAuth;
   dispatch(value: Record<string, unknown>, formValue?: Record<string, unknown>): Promise<void>;
-  token(action: string, overrides?: { operatorOpenId?: string; nonce?: string }): string;
+  token(
+    action: string,
+    overrides?: { operatorOpenId?: string; nonce?: string; scope?: string },
+  ): string;
 };
 
-async function createHarness(opts: { callbackAuth?: boolean } = {}): Promise<Harness> {
+async function createHarness(
+  opts: { callbackAuth?: boolean; chatMode?: 'p2p' | 'group' | 'topic' } = {},
+): Promise<Harness> {
   const tmp = await createTmpProfile('callback-dispatch-test-');
   const channel = createFakeChannel();
   const sessions = new SessionStore(`${tmp.profile}/sessions.json`);
@@ -145,7 +171,7 @@ async function createHarness(opts: { callbackAuth?: boolean } = {}): Promise<Har
     createNonce: () => nonce,
   });
   const chatModeCache = {
-    resolve: async () => 'group',
+    resolve: async () => opts.chatMode ?? 'group',
   } as unknown as ChatModeCache;
   cleanups.push(async () => {
     pending.cancelAll();
@@ -167,7 +193,7 @@ async function createHarness(opts: { callbackAuth?: boolean } = {}): Promise<Har
       nonce = overrides.nonce ?? `nonce-${action}`;
       return auth.sign({
         runId: 'run-active',
-        scope: 'oc_group',
+        scope: overrides.scope ?? 'oc_group',
         chatId: 'oc_group',
         operatorOpenId: overrides.operatorOpenId ?? 'ou_operator',
         action,

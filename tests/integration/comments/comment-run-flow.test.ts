@@ -1,7 +1,7 @@
 import { realpath, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import type { CommentEvent } from '@larksuiteoapi/node-sdk';
+import type { CommentEvent } from '@larksuite/channel';
 import type { AgentAdapter, AgentEvent, AgentRun, AgentRunOptions } from '../../../src/agent/types.js';
 import { ActiveRuns } from '../../../src/bot/active-runs.js';
 import { handleCommentMention } from '../../../src/bot/comments.js';
@@ -15,6 +15,7 @@ import { SessionCatalog } from '../../../src/session/catalog.js';
 import { SessionStore } from '../../../src/session/store.js';
 import { WorkspaceStore } from '../../../src/workspace/store.js';
 import { FakeAgentAdapter } from '../../helpers/fake-agent.js';
+import { makeFakeCommentSurface } from '../../helpers/fake-comment-surface.js';
 import { createTmpProfile, type TmpProfile } from '../../helpers/tmp-profile.js';
 
 interface RequestRecord {
@@ -25,6 +26,7 @@ interface RequestRecord {
 
 interface FakeCommentChannel {
   requests: RequestRecord[];
+  comments: ReturnType<typeof makeFakeCommentSurface>;
   rawClient: {
     request(input: RequestRecord): Promise<unknown>;
     wiki: { v2: { space: { getNode(input: unknown): Promise<unknown> } } };
@@ -234,42 +236,44 @@ async function createHarness(options: {
       },
     ]);
   const agent = new FakeAgentAdapter({ events: eventRuns });
-  const channel: FakeCommentChannel = {
-    requests,
-    rawClient: {
-      async request(input) {
-        requests.push(input);
-        if (input.url.includes('/comments/reaction')) {
-          if (options.reactionFails) throw new Error('reaction failed');
-          return {};
-        }
-        if (input.url.includes('/replies?')) {
-          inThreadReplies.push(extractText(input.data));
-          return {};
-        }
+  const rawClient: FakeCommentChannel['rawClient'] = {
+    async request(input) {
+      requests.push(input);
+      if (input.url.includes('/comments/reaction')) {
+        if (options.reactionFails) throw new Error('reaction failed');
         return {};
-      },
-      wiki: {
-        v2: { space: { async getNode() { throw apiError(131005); } } },
-      },
-      drive: {
-        v1: {
-          fileComment: {
-            async get(input) {
-              const commentId = input.path.comment_id;
-              const replyId = commentId === 'comment-2' ? 'reply-2' : 'reply-1';
-              return commentGet(replyId, '@bot question');
-            },
-            async list() {
-              return { data: { items: [] } };
-            },
-            async create() {
-              return {};
-            },
+      }
+      if (input.url.includes('/replies?')) {
+        inThreadReplies.push(extractText(input.data));
+        return {};
+      }
+      return {};
+    },
+    wiki: {
+      v2: { space: { async getNode() { throw apiError(131005); } } },
+    },
+    drive: {
+      v1: {
+        fileComment: {
+          async get(input) {
+            const commentId = input.path.comment_id;
+            const replyId = commentId === 'comment-2' ? 'reply-2' : 'reply-1';
+            return commentGet(replyId, '@bot question');
+          },
+          async list() {
+            return { data: { items: [] } };
+          },
+          async create() {
+            return {};
           },
         },
       },
     },
+  };
+  const channel: FakeCommentChannel = {
+    requests,
+    rawClient,
+    comments: makeFakeCommentSurface(rawClient),
   };
   const sessions = new SessionStore(join(tmp.profile, 'sessions.json'));
   const sessionCatalog = new SessionCatalog(join(tmp.profile, 'session-catalog.json'));
@@ -337,34 +341,36 @@ async function createBlockingHarness(options: {
   const tmp = await createTmpProfile('comment-run-flow-blocking-');
   const requests: RequestRecord[] = [];
   const agent = new BlockingAgentAdapter(options.threadIds);
-  const channel: FakeCommentChannel = {
-    requests,
-    rawClient: {
-      async request(input) {
-        requests.push(input);
-        return {};
-      },
-      wiki: {
-        v2: { space: { async getNode() { throw apiError(131005); } } },
-      },
-      drive: {
-        v1: {
-          fileComment: {
-            async get(input) {
-              const commentId = input.path.comment_id;
-              const replyId = commentId === 'comment-2' ? 'reply-2' : 'reply-1';
-              return commentGet(replyId, '@bot question');
-            },
-            async list() {
-              return { data: { items: [] } };
-            },
-            async create() {
-              return {};
-            },
+  const rawClient: FakeCommentChannel['rawClient'] = {
+    async request(input) {
+      requests.push(input);
+      return {};
+    },
+    wiki: {
+      v2: { space: { async getNode() { throw apiError(131005); } } },
+    },
+    drive: {
+      v1: {
+        fileComment: {
+          async get(input) {
+            const commentId = input.path.comment_id;
+            const replyId = commentId === 'comment-2' ? 'reply-2' : 'reply-1';
+            return commentGet(replyId, '@bot question');
+          },
+          async list() {
+            return { data: { items: [] } };
+          },
+          async create() {
+            return {};
           },
         },
       },
     },
+  };
+  const channel: FakeCommentChannel = {
+    requests,
+    rawClient,
+    comments: makeFakeCommentSurface(rawClient),
   };
   const sessions = new SessionStore(join(tmp.profile, 'sessions.json'));
   const sessionCatalog = new SessionCatalog(join(tmp.profile, 'session-catalog.json'));

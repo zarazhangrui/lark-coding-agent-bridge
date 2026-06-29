@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { mkdir } from 'node:fs/promises';
 import { dirname } from 'node:path';
-import type { CommentEvent, LarkChannel } from '@larksuiteoapi/node-sdk';
+import type { CommentEvent, LarkChannel } from '@larksuite/channel';
 import { claudeCapability, codexCapability } from '../agent/capability';
 import type { AgentAdapter, AgentEvent } from '../agent/types';
 import { getAgentStopGraceMs } from '../config/schema';
@@ -17,7 +17,6 @@ import type { RunExecutor } from '../runtime/run-executor';
 import type { SessionCatalog } from '../session/catalog';
 import type { SessionStore } from '../session/store';
 import type { WorkspaceStore } from '../workspace/store';
-import { addCommentReaction, removeCommentReaction } from './reaction';
 import {
   commentDocumentScopeId,
   commentScopeId,
@@ -55,18 +54,6 @@ export interface ReplyContentElement {
 export interface CommentReply {
   reply_id?: string;
   content?: { elements?: ReplyContentElement[] };
-}
-interface CommentGetResponse {
-  data?: { reply_list?: { replies?: CommentReply[] }; quote?: string; is_whole?: boolean };
-}
-interface CommentListItem {
-  comment_id?: string;
-  reply_list?: { replies?: CommentReply[] };
-  is_whole?: boolean;
-  quote?: string;
-}
-interface CommentListResponse {
-  data?: { items?: CommentListItem[]; has_more?: boolean; page_token?: string };
 }
 
 export interface CommentContext {
@@ -190,7 +177,7 @@ export async function handleCommentMention(deps: CommentDeps): Promise<void> {
   // with a "Typing" reaction up-front so they know we got it; clear it in
   // the finally below regardless of how the run ends.
   const reactionAdded = ctx.targetReplyId
-    ? await addCommentReaction(channel, target.fileToken, target.fileType, ctx.targetReplyId)
+    ? await channel.comments.addReaction(target, ctx.targetReplyId)
     : false;
 
   try {
@@ -373,7 +360,9 @@ export async function handleCommentMention(deps: CommentDeps): Promise<void> {
           reason: 'policy-expired',
           commentScopeId: runScopeId,
         });
-        await postCommentReply(channel, target, evt, '本次评论任务已超时，请重新 @ 我。', { isWhole: ctx.isWhole }).catch((err) => {
+        await postCommentReply(channel, target, evt, '本次评论任务已超时，请重新 @ 我。', {
+          isWhole: ctx.isWhole,
+        }).catch((err) => {
           log.fail('comment', err, { step: 'postTimeoutReply' });
         });
         return;
@@ -404,12 +393,7 @@ export async function handleCommentMention(deps: CommentDeps): Promise<void> {
     }
   } finally {
     if (reactionAdded && ctx.targetReplyId) {
-      await removeCommentReaction(
-        channel,
-        target.fileToken,
-        target.fileType,
-        ctx.targetReplyId,
-      );
+      await channel.comments.removeReaction(target, ctx.targetReplyId);
     }
   }
 }
@@ -421,33 +405,17 @@ async function fetchCommentContext(
   target: ResolvedTarget,
   evt: CommentEvent,
 ): Promise<CommentContext> {
-  // Try .get first; for some comment types (block-anchored, etc.) it returns
-  // 1069307 even when we have read permission. Fall back to .list.
-  let replies: CommentReply[] = [];
-  let quote: string | undefined;
-  let isWhole = false;
-  try {
-    const r = (await channel.rawClient.drive.v1.fileComment.get({
-      params: { file_type: target.fileType },
-      path: { file_token: target.fileToken, comment_id: evt.commentId },
-    })) as CommentGetResponse;
-    replies = r?.data?.reply_list?.replies ?? [];
-    quote = r?.data?.quote || undefined;
-    isWhole = Boolean(r?.data?.is_whole);
-  } catch (err) {
-    const code = (err as { response?: { data?: { code?: number } } })?.response?.data?.code;
-    log.info('comment', 'get-fallback-list', { code });
-    const found = await findCommentViaList(channel, target, evt.commentId);
-    replies = found?.reply_list?.replies ?? [];
-    quote = found?.quote || undefined;
-    isWhole = Boolean(found?.is_whole);
-  }
-
+  // The SDK's CommentSurface internalizes the `.get` → paginated `.list`
+  // fallback (some comment types return 1069307 on `.get` despite read
+  // access). A genuine no-access (1069307 on both) propagates here so the
+  // caller's catch can log it as no-access.
+  const fetched = await channel.comments.fetch(target, evt.commentId);
+  const replies = fetched?.replies ?? [];
   const parsed = extractCommentQuestionFromReplies({ replyId: evt.replyId, replies });
   return {
     question: parsed?.question ?? '',
-    quote,
-    isWhole,
+    quote: fetched?.quote,
+    isWhole: Boolean(fetched?.isWhole),
     targetReplyId: parsed?.targetReplyId,
   };
 }
@@ -472,30 +440,6 @@ export function extractCommentQuestionFromReplies(
     .join('')
     .trim();
   return { question, targetReplyId: targetReply.reply_id };
-}
-
-async function findCommentViaList(
-  channel: LarkChannel,
-  target: ResolvedTarget,
-  commentId: string,
-): Promise<CommentListItem | null> {
-  let pageToken: string | undefined;
-  for (let page = 0; page < 10; page++) {
-    const r = (await channel.rawClient.drive.v1.fileComment.list({
-      params: {
-        file_type: target.fileType,
-        page_size: 100,
-        ...(pageToken ? { page_token: pageToken } : {}),
-      },
-      path: { file_token: target.fileToken },
-    })) as CommentListResponse;
-    const items = r?.data?.items ?? [];
-    const hit = items.find((it) => it.comment_id === commentId);
-    if (hit) return hit;
-    if (!r?.data?.has_more || !r.data.page_token) break;
-    pageToken = r.data.page_token;
-  }
-  return null;
 }
 
 export function buildCommentPrompt(
@@ -805,53 +749,11 @@ async function postCommentReply(
   text: string,
   opts: { isWhole?: boolean } = {},
 ): Promise<void> {
-  if (opts.isWhole) {
-    await createTopLevelCommentReply(channel, target, text);
-    log.info('comment', 'replied', { mode: 'new-top-level', reason: 'whole-comment' });
-    return;
-  }
-
-  // First try replying in-thread. SDK doesn't expose
-  // drive.v1.fileCommentReply.create, so we go through the generic
-  // Client.request which still handles auth.
-  const url = `/open-apis/drive/v1/files/${encodeURIComponent(target.fileToken)}/comments/${encodeURIComponent(
-    evt.commentId,
-  )}/replies?file_type=${encodeURIComponent(target.fileType)}`;
-  try {
-    await channel.rawClient.request({
-      method: 'POST',
-      url,
-      data: { content: { elements: [{ type: 'text_run', text_run: { text } }] } },
-    });
-    log.info('comment', 'replied', { mode: 'in-thread' });
-    return;
-  } catch (err) {
-    const code = (err as { response?: { data?: { code?: number } } })?.response?.data?.code;
-    // 1069302: whole-document comments don't accept replies — they have no
-    // thread, only a flat list. Fall back to posting a fresh top-level
-    // comment that quotes the user's question.
-    if (code !== 1069302) throw err;
-    log.info('comment', 'reply-fallback-create', { code });
-  }
-
-  await createTopLevelCommentReply(channel, target, text);
-  log.info('comment', 'replied', { mode: 'new-top-level' });
-}
-
-async function createTopLevelCommentReply(
-  channel: LarkChannel,
-  target: ResolvedTarget,
-  text: string,
-): Promise<void> {
-  await channel.rawClient.drive.v1.fileComment.create({
-    params: { file_type: target.fileType as 'doc' | 'docx' },
-    path: { file_token: target.fileToken },
-    data: {
-      reply_list: {
-        replies: [{ content: { elements: [{ type: 'text_run', text_run: { text } }] } }],
-      },
-    },
-  });
+  // CommentSurface tries in-thread first and, on the 1069302 that whole-doc
+  // comments return (no thread, only a flat list), falls back to posting a
+  // fresh top-level comment. When we already know it's whole-document, skip
+  // the doomed probe with `topLevel`.
+  await channel.comments.reply(target, evt.commentId, text, { topLevel: opts.isWhole });
 }
 
 function preview(text: string): string {

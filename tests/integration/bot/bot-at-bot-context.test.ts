@@ -1,4 +1,4 @@
-import type { NormalizedMessage } from '@larksuiteoapi/node-sdk';
+import type { NormalizedMessage } from '@larksuite/channel';
 import { realpath } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -16,8 +16,8 @@ const sdkMock = vi.hoisted(() => ({
   }),
 }));
 
-vi.mock('@larksuiteoapi/node-sdk', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@larksuiteoapi/node-sdk')>();
+vi.mock('@larksuite/channel', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@larksuite/channel')>();
   return {
     ...actual,
     createLarkChannel: sdkMock.createLarkChannel,

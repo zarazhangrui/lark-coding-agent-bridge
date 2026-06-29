@@ -1,4 +1,4 @@
-import type { LarkChannel } from '@larksuiteoapi/node-sdk';
+import type { LarkChannel } from '@larksuite/channel';
 import { log } from '../core/logger';
 
 export interface KnownChat {
@@ -7,44 +7,18 @@ export interface KnownChat {
 }
 
 export async function fetchKnownChats(channel: LarkChannel): Promise<KnownChat[]> {
-  const chats: KnownChat[] = [];
-  const maxPages = 5;
-  let pageToken: string | undefined;
-  let pages = 0;
   try {
-    do {
-      const params = new URLSearchParams({ page_size: '100' });
-      if (pageToken) params.set('page_token', pageToken);
-      const resp = await channel.rawClient.request({
-        method: 'GET',
-        url: `/open-apis/im/v1/chats?${params.toString()}`,
-      });
-      const data = (
-        resp as {
-          data?: {
-            items?: Array<{ chat_id?: string; name?: string }>;
-            has_more?: boolean;
-            page_token?: string;
-          };
-        }
-      )?.data;
-      for (const item of data?.items ?? []) {
-        if (item.chat_id) chats.push({ id: item.chat_id, name: item.name ?? '(无名)' });
-      }
-      pageToken = data?.has_more ? data.page_token : undefined;
-      pages += 1;
-    } while (pageToken && pages < maxPages);
-    log.info('lark-info', 'chats-fetched', {
-      count: chats.length,
-      pages,
-      truncated: Boolean(pageToken),
-    });
+    const summaries = await channel.listChats({ pageSize: 100, maxPages: 5 });
+    const chats: KnownChat[] = summaries.map((c) => ({
+      id: c.id,
+      name: c.name || '(无名)',
+    }));
+    log.info('lark-info', 'chats-fetched', { count: chats.length });
     return chats;
   } catch (err) {
     log.warn('lark-info', 'chats-fetch-failed', {
       err: err instanceof Error ? err.message : String(err),
-      partialCount: chats.length,
     });
-    return chats;
+    return [];
   }
 }

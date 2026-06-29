@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, isAbsolute } from 'node:path';
-import type { LarkChannel, NormalizedMessage } from '@larksuiteoapi/node-sdk';
+import type { LarkChannel, NormalizedMessage } from '@larksuite/channel';
 import { claudeCapability, codexCapability } from '../agent/capability';
 import type { AgentAdapter } from '../agent/types';
 import type { ActiveRuns } from '../bot/active-runs';
@@ -12,7 +12,16 @@ import {
   accountFormCard,
   accountSuccessCard,
 } from '../card/account-cards';
-import { configCancelledCard, configFailedCard, configFormCard, configSavedCard } from '../card/config-card';
+import {
+  configCancelledCard,
+  configFailedCard,
+  configFormCard,
+  configSavedCard,
+  groupMsgScopeGrantCard,
+  groupMsgScopeGrantedCard,
+} from '../card/config-card';
+import { GROUP_MSG_SCOPE, hasGroupMsgScope } from '../bot/app-scope';
+import { requestScopeGrantLink } from '../bot/wizard';
 import { forgetManagedCard, sendManagedCard, updateManagedCard } from '../card/managed';
 import { helpCard, resumeCard, statusCard, workspacesCard } from '../card/templates';
 import type {
@@ -1239,17 +1248,10 @@ async function handleDoctor(args: string, ctx: CommandContext): Promise<void> {
       // Send a one-shot interactive card by open_id. Lark routes it to the
       // user's p2p chat with the bot (auto-creates it if needed); other
       // group members never see this payload.
-      await ctx.channel.rawClient.im.v1.message.create({
-        params: { receive_id_type: 'open_id' },
-        data: {
-          receive_id: ctx.msg.senderId,
-          msg_type: 'interactive',
-          content: JSON.stringify(
-            renderCard(
-              withDoctorReport(state, doctorReport(formatDoctorEchoStatus(echoText, state))),
-            ),
-          ),
-        },
+      await ctx.channel.send(ctx.msg.senderId, {
+        card: renderCard(
+          withDoctorReport(state, doctorReport(formatDoctorEchoStatus(echoText, state))),
+        ),
       });
     }
   } catch (err) {
@@ -1475,9 +1477,7 @@ async function submitAccount(ctx: CommandContext): Promise<void> {
 
 async function recallMessage(ctx: CommandContext, messageId: string): Promise<void> {
   try {
-    await ctx.channel.rawClient.im.v1.message.delete({
-      path: { message_id: messageId },
-    });
+    await ctx.channel.recallMessage(messageId);
   } catch (err) {
     console.warn('[recall failed]', err);
   }
@@ -1944,7 +1944,66 @@ async function submitConfig(ctx: CommandContext): Promise<void> {
         knownChats: ctx.controls.knownChats ?? [],
       }),
     );
+
+    // "群里不需要 @ bot" only works if the app can actually receive non-@
+    // group messages (`im:message.group_msg`). When the user opts in, verify
+    // the scope and, if missing, push a one-click re-authorization link.
+    if (!requireMentionInGroup) {
+      await promptGroupMsgScopeIfMissing(ctx);
+    }
   })();
+}
+
+/**
+ * When the user enables "群里不需要 @ bot", confirm the app holds the
+ * `im:message.group_msg` scope. If it's missing, generate an incremental
+ * authorization link and push a guidance card; once the user finishes
+ * authorizing, swap the card to a success state in place. Best-effort — any
+ * failure here is logged and swallowed (the saved-config card already showed).
+ */
+async function promptGroupMsgScopeIfMissing(ctx: CommandContext): Promise<void> {
+  const appId = ctx.controls.cfg.accounts.app.id;
+  // `false` = confirmed missing; `null` = lookup failed → don't nag.
+  const has = await hasGroupMsgScope(ctx.channel, appId);
+  if (has !== false) return;
+  log.info('command', 'group-msg-scope-missing', { appId });
+
+  let link;
+  try {
+    link = await requestScopeGrantLink({ appId, tenantScopes: [GROUP_MSG_SCOPE] });
+  } catch (err) {
+    log.warn('command', 'scope-grant-link-failed', { err: String(err) });
+    return;
+  }
+
+  const expireMins = Math.max(1, Math.round(link.expireIn / 60));
+  let sent;
+  try {
+    sent = await sendManagedCard(
+      ctx.channel,
+      ctx.msg.chatId,
+      groupMsgScopeGrantCard(link.url, expireMins),
+    );
+  } catch (err) {
+    log.warn('command', 'scope-grant-card-send-failed', { err: String(err) });
+    return;
+  }
+
+  // Detached: flip the card to "授权成功" once the user authorizes (or just
+  // clean up the managed-card mapping if the link expires / is aborted).
+  void link.completion.then(
+    async () => {
+      log.info('command', 'group-msg-scope-granted', { appId });
+      await updateManagedCard(ctx.channel, sent.messageId, groupMsgScopeGrantedCard()).catch(
+        () => {},
+      );
+      forgetManagedCard(sent.messageId);
+    },
+    (err) => {
+      log.info('command', 'scope-grant-not-completed', { err: String(err) });
+      forgetManagedCard(sent.messageId);
+    },
+  );
 }
 
 function configFailureMessage(step: string, rollbackFailed: boolean, larkCliPolicyApplied: boolean): string {

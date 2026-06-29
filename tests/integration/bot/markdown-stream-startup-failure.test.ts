@@ -1,4 +1,4 @@
-import type { NormalizedMessage } from '@larksuiteoapi/node-sdk';
+import type { NormalizedMessage } from '@larksuite/channel';
 import { realpath } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -17,8 +17,8 @@ const sdkMock = vi.hoisted(() => ({
   }),
 }));
 
-vi.mock('@larksuiteoapi/node-sdk', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@larksuiteoapi/node-sdk')>();
+vi.mock('@larksuite/channel', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@larksuite/channel')>();
   return {
     ...actual,
     createLarkChannel: sdkMock.createLarkChannel,
@@ -63,6 +63,8 @@ interface FakeLarkChannel {
   getConnectionStatus(): { state: 'connected'; reconnectAttempts: number };
   send(chatId: string, content: unknown, options?: unknown): Promise<void>;
   stream(chatId: string, input: unknown, options?: unknown): Promise<void>;
+  addReaction(messageId: string, emojiType: string): Promise<string>;
+  removeReaction(messageId: string, reactionId: string): Promise<void>;
 }
 
 type StreamFn = FakeLarkChannel['stream'];
@@ -250,7 +252,7 @@ function createFakeLarkChannel(options: {
 } = {}): FakeLarkChannel {
   const handlers: MessageHandlerMap = {};
   const sent: FakeLarkChannel['sent'] = [];
-  return {
+  const channel: FakeLarkChannel = {
     handlers,
     sent,
     botIdentity: { openId: 'ou_bot', name: 'Bridge' },
@@ -294,7 +296,20 @@ function createFakeLarkChannel(options: {
     stream: options.stream ?? (async () => {
       await new Promise<void>(() => {});
     }),
+    async addReaction(messageId, emojiType) {
+      const r = await channel.rawClient.im.v1.messageReaction.create({
+        path: { message_id: messageId },
+        data: { reaction_type: { emoji_type: emojiType } },
+      });
+      return (r as { data?: { reaction_id?: string } })?.data?.reaction_id ?? '';
+    },
+    async removeReaction(messageId, reactionId) {
+      await channel.rawClient.im.v1.messageReaction.delete({
+        path: { message_id: messageId, reaction_id: reactionId },
+      });
+    },
   };
+  return channel;
 }
 
 function deferred<T>(): {

@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { getMessageReplyMode, getRequireMentionInGroup } from '../../../src/config/schema.js';
 import { PendingQueue } from '../../../src/bot/pending-queue.js';
-import type { NormalizedMessage } from '@larksuiteoapi/node-sdk';
+import type { NormalizedMessage } from '@larksuite/channel';
 
 describe('Claude IM regression boundaries', () => {
   afterEach(() => {

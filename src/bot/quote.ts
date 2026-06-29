@@ -2,8 +2,8 @@ import type {
   ApiMessageItem,
   LarkChannel,
   RawMessageEvent,
-} from '@larksuiteoapi/node-sdk';
-import { normalize } from '@larksuiteoapi/node-sdk';
+} from '@larksuite/channel';
+import { normalize } from '@larksuite/channel';
 import { log } from '../core/logger';
 import { expandInteractiveCard } from './interactive-card';
 
@@ -65,13 +65,11 @@ export async function fetchQuotedContext(
 ): Promise<QuotedContext | undefined> {
   let items: ApiMessageItem[];
   try {
-    const r = (await channel.rawClient.im.v1.message.get({
-      path: { message_id: messageId },
-      // Ask for the original card JSON (incl. v2 user_dsl) instead of the
-      // default v1-canonical fallback that strips it. Requires SDK ≥ 1.65.0.
-      params: { card_msg_content_type: 'user_card_content' },
-    })) as { data?: { items?: ApiMessageItem[] } };
-    items = r?.data?.items ?? [];
+    // Ask for the original card JSON (incl. v2 user_dsl) instead of the
+    // default v1-canonical fallback that strips it.
+    items = await channel.fetchRawMessage(messageId, {
+      cardContentType: 'user_card_content',
+    });
   } catch (err) {
     log.warn('quote', 'fetch-failed', {
       messageId,
@@ -88,11 +86,10 @@ export async function fetchQuotedContext(
   const fetchSubMessages = async (mid: string): Promise<ApiMessageItem[]> => {
     if (mid === parent.message_id) return items.map(preExpandInteractive);
     try {
-      const r = (await channel.rawClient.im.v1.message.get({
-        path: { message_id: mid },
-        params: { card_msg_content_type: 'user_card_content' },
-      })) as { data?: { items?: ApiMessageItem[] } };
-      return (r?.data?.items ?? []).map(preExpandInteractive);
+      const subItems = await channel.fetchRawMessage(mid, {
+        cardContentType: 'user_card_content',
+      });
+      return subItems.map(preExpandInteractive);
     } catch {
       return [];
     }

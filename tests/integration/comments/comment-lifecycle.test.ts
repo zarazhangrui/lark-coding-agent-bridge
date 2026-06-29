@@ -1,6 +1,6 @@
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { CommentEvent, LarkChannel } from '@larksuiteoapi/node-sdk';
+import type { CommentEvent, LarkChannel } from '@larksuite/channel';
 import type { AgentAdapter, AgentEvent, AgentRun, AgentRunOptions } from '../../../src/agent/types.js';
 import { ActiveRuns } from '../../../src/bot/active-runs.js';
 import { handleCommentMention } from '../../../src/bot/comments.js';
@@ -10,6 +10,7 @@ import { createDefaultProfileConfig, type ProfileConfig } from '../../../src/con
 import { RunExecutor } from '../../../src/runtime/run-executor.js';
 import { SessionStore } from '../../../src/session/store.js';
 import { WorkspaceStore } from '../../../src/workspace/store.js';
+import { makeFakeCommentSurface } from '../../helpers/fake-comment-surface.js';
 import { createTmpProfile, type TmpProfile } from '../../helpers/tmp-profile.js';
 
 interface RequestRecord {
@@ -21,6 +22,7 @@ interface FakeCommentChannel {
   botIdentity: { openId: string; name: string };
   requests: RequestRecord[];
   inThreadReplies: string[];
+  comments: ReturnType<typeof makeFakeCommentSurface>;
   rawClient: {
     request(input: RequestRecord): Promise<unknown>;
     wiki: { v2: { space: { getNode(input: unknown): Promise<unknown> } } };
@@ -182,15 +184,13 @@ async function createHarness(options: { autoCompleteAgent?: boolean } = {}): Pro
   deps(evt: CommentEvent): Parameters<typeof handleCommentMention>[0];
 }> {
   const tmp = await createTmpProfile('comment-lifecycle-');
-  const channel: FakeCommentChannel = {
-    botIdentity: { openId: 'ou-bot', name: 'Bridge Bot' },
-    requests: [],
-    inThreadReplies: [],
-    rawClient: {
+  const requests: RequestRecord[] = [];
+  const inThreadReplies: string[] = [];
+  const rawClient: FakeCommentChannel['rawClient'] = {
       async request(input) {
-        channel.requests.push(input);
+        requests.push(input);
         if (input.url.includes('/replies?')) {
-          channel.inThreadReplies.push(extractText(input.data));
+          inThreadReplies.push(extractText(input.data));
         }
         return {};
       },
@@ -212,7 +212,13 @@ async function createHarness(options: { autoCompleteAgent?: boolean } = {}): Pro
           },
         },
       },
-    },
+  };
+  const channel: FakeCommentChannel = {
+    botIdentity: { openId: 'ou-bot', name: 'Bridge Bot' },
+    requests,
+    inThreadReplies,
+    rawClient,
+    comments: makeFakeCommentSurface(rawClient),
   };
   const sessions = new SessionStore(join(tmp.profile, 'sessions.json'));
   const workspaces = new WorkspaceStore(join(tmp.profile, 'workspaces.json'));

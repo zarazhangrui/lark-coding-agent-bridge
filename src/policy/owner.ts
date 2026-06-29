@@ -3,35 +3,16 @@ import { log } from '../core/logger';
 
 export const OWNER_REFRESH_INTERVAL_MS = 30 * 60 * 1000;
 
-export interface OwnerRawClient {
-  application?: {
-    v6?: {
-      application?: {
-        get(payload: {
-          params: {
-            lang: 'zh_cn' | 'en_us' | 'ja_jp';
-            user_id_type: 'open_id';
-          };
-          path: {
-            app_id: string;
-          };
-        }): Promise<{
-          data?: {
-            app?: {
-              owner?: {
-                owner_id?: string;
-              };
-            };
-          };
-        }>;
-      };
-    };
-  };
+export interface AppInfoSource {
+  getAppInfo(opts?: {
+    lang?: 'zh_cn' | 'en_us' | 'ja_jp';
+    userIdType?: 'open_id' | 'user_id' | 'union_id';
+  }): Promise<{ ownerId?: string }>;
 }
 
 export interface OwnerRefreshControllerOptions {
   controls: RuntimeControls;
-  rawClient: OwnerRawClient;
+  source: AppInfoSource;
   appId: string;
   intervalMs?: number;
 }
@@ -43,11 +24,11 @@ export interface OwnerRefreshController {
 
 export async function refreshOwnerControls(
   controls: RuntimeControls,
-  rawClient: OwnerRawClient,
+  source: AppInfoSource,
   appId: string,
 ): Promise<void> {
   try {
-    const ownerId = await fetchOwnerId(rawClient, appId);
+    const ownerId = await fetchOwnerId(source);
     controls.botOwnerId = ownerId;
     controls.ownerRefreshState = 'ok';
     controls.ownerRefreshedAt = Date.now();
@@ -71,9 +52,9 @@ export function createOwnerRefreshController(
 
   return {
     async start(): Promise<void> {
-      await refreshOwnerControls(opts.controls, opts.rawClient, opts.appId);
+      await refreshOwnerControls(opts.controls, opts.source, opts.appId);
       timer = setInterval(() => {
-        void refreshOwnerControls(opts.controls, opts.rawClient, opts.appId);
+        void refreshOwnerControls(opts.controls, opts.source, opts.appId);
       }, intervalMs);
     },
     stop(): void {
@@ -83,20 +64,11 @@ export function createOwnerRefreshController(
   };
 }
 
-async function fetchOwnerId(rawClient: OwnerRawClient, appId: string): Promise<string> {
-  const get = rawClient.application?.v6?.application?.get;
-  if (!get) throw new Error('application owner API unavailable');
-
-  const result = await get({
-    params: {
-      lang: 'zh_cn',
-      user_id_type: 'open_id',
-    },
-    path: {
-      app_id: appId,
-    },
+async function fetchOwnerId(source: AppInfoSource): Promise<string> {
+  const { ownerId } = await source.getAppInfo({
+    lang: 'zh_cn',
+    userIdType: 'open_id',
   });
-  const ownerId = result.data?.app?.owner?.owner_id;
   if (!ownerId) throw new Error('application owner missing from API response');
   return ownerId;
 }

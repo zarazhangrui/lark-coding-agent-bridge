@@ -1,4 +1,4 @@
-import type { LarkChannel, NormalizedMessage } from '@larksuiteoapi/node-sdk';
+import type { LarkChannel, NormalizedMessage } from '@larksuite/channel';
 import type { ChatModeCache } from './chat-mode-cache';
 
 /**

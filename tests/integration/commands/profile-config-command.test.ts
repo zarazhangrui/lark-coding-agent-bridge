@@ -1,7 +1,7 @@
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import type { NormalizedMessage } from '@larksuiteoapi/node-sdk';
+import type { NormalizedMessage } from '@larksuite/channel';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ActiveRuns } from '../../../src/bot/active-runs';
 import { tryHandleCommand, type CommandContext, type Controls } from '../../../src/commands/index';
