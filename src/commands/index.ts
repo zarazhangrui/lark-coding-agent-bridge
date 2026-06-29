@@ -46,9 +46,13 @@ import {
 } from '../config/profile-store';
 import {
   canRunAdminCommand,
+  canRunBotAdminCommand,
   canUseDm,
   canUseGroup,
+  isBotAdmin,
+  type AccessDecision,
   type OwnerRefreshState,
+  type RuntimeControls,
 } from '../policy/access';
 import { setSecret } from '../config/keystore';
 import { buildEncryptedAccountConfig, saveConfig } from '../config/store';
@@ -139,6 +143,9 @@ export interface CommandContext {
    * text command. Determines whether to update the existing card vs send a
    * new one. */
   fromCardAction?: boolean;
+  /** True when a card command callback carried a valid bridge_token. Unsigned
+   * card commands still need the normal admin/botAdmin gate. */
+  cardActionAuthorized?: boolean;
 }
 
 type Handler = (args: string, ctx: CommandContext) => Promise<void>;
@@ -163,6 +170,7 @@ const handlers: Record<string, Handler> = {
   '/reset': handleNew,
   '/cd': handleCd,
   '/ws': handleWs,
+  '/project': handleProject,
   '/resume': handleResume,
   '/status': handleStatus,
   '/help': handleHelp,
@@ -177,28 +185,81 @@ const handlers: Record<string, Handler> = {
   '/doc': handleDoc,
   '/invite': handleInvite,
   '/remove': handleRemove,
+  '/botAdmin': handleBotAdmin,
 };
 
 /**
- * Commands that can mutate credentials, lifecycle, filesystem reach, or
- * surface sensitive runtime state. Gated by unified access policy; runtime
- * owner is always allowed, while empty admin list means no listed admins.
+ * Commands requiring **human** admin (owner or admins[]).  botAdmins are
+ * NOT allowed here — these commands manage credentials, roles, or
+ * sensitive lifecycle state.
  */
-const ADMIN_COMMANDS = new Set([
+const ADMIN_ONLY_COMMANDS = new Set([
   '/account',
   '/config',
-  '/ps',
   '/exit',
   '/reconnect',
   '/doctor',
-  '/cd',
-  '/ws',
-  '/invite',
-  '/remove',
+  '/botAdmin',
 ]);
 
-function isAdminCommand(cmd: string): boolean {
-  return ADMIN_COMMANDS.has(cmd.startsWith('/') ? cmd : `/${cmd}`);
+/**
+ * Self-service commands available to any caller that has already passed the
+ * chat-level allow policy. These do not change shared access, credentials, or
+ * process-wide lifecycle state.
+ */
+const PUBLIC_COMMANDS = new Set([
+  '/status',
+  '/help',
+  '/new',
+  '/reset',
+  '/resume',
+  '/stop',
+  '/timeout',
+  '/doc',
+]);
+
+/**
+ * Commands allowed for botAdmins in addition to human admins/owner.
+ * These are project-operations commands: group join/leave, cwd,
+ * project setup, process inspection, and role-limited group membership
+ * management.  `/invite` and `/remove` are included here but further gated
+ * inside their handlers: botAdmins may only use the `group` sub-kind, not
+ * `user` or `admin`.
+ */
+const BOT_ADMIN_COMMANDS = new Set([
+  '/cd',
+  '/ws',
+  '/project',
+  '/invite',
+  '/remove',
+  '/ps',
+]);
+
+function isAdminOnlyCommand(cmd: string): boolean {
+  return ADMIN_ONLY_COMMANDS.has(cmd.startsWith('/') ? cmd : `/${cmd}`);
+}
+
+function isBotAdminCommand(cmd: string): boolean {
+  return BOT_ADMIN_COMMANDS.has(cmd.startsWith('/') ? cmd : `/${cmd}`);
+}
+
+function resolveCommandGate(
+  cmd: string,
+  profile: ProfileConfig,
+  controls: RuntimeControls,
+  senderId: string,
+): AccessDecision {
+  const c = cmd.startsWith('/') ? cmd : `/${cmd}`;
+  if (PUBLIC_COMMANDS.has(c)) {
+    return { ok: true, reason: 'allowed-public' };
+  }
+  if (ADMIN_ONLY_COMMANDS.has(c)) {
+    return canRunAdminCommand(profile, controls, senderId);
+  }
+  if (BOT_ADMIN_COMMANDS.has(c)) {
+    return canRunBotAdminCommand(profile, controls, senderId);
+  }
+  return { ok: true, reason: 'allowed-admin' };
 }
 
 export async function tryHandleCommand(ctx: CommandContext): Promise<boolean> {
@@ -209,16 +270,23 @@ export async function tryHandleCommand(ctx: CommandContext): Promise<boolean> {
   const args = parts.slice(1).join(' ');
   const h = handlers[cmd];
   if (!h) return false;
-  if (
-    isAdminCommand(cmd) &&
-    !canRunAdminCommand(ctx.controls.profileConfig, ctx.controls, ctx.msg.senderId).ok
-  ) {
-    log.info('command', 'admin-deny', {
+
+  if (!ctx.fromCardAction || !ctx.cardActionAuthorized) {
+    const gate = resolveCommandGate(
       cmd,
-      sender: ctx.msg.senderId.slice(-6),
-    });
-    await reply(ctx, '❌ 此命令仅管理员可用。');
-    return true;
+      ctx.controls.profileConfig,
+      ctx.controls,
+      ctx.msg.senderId,
+    );
+    if (!gate.ok) {
+      log.info('command', 'admin-deny', {
+        cmd,
+        sender: ctx.msg.senderId.slice(-6),
+        reason: gate.reason,
+      });
+      await reply(ctx, '❌ 此命令仅管理员可用。');
+      return true;
+    }
   }
   try {
     await h(args, ctx);
@@ -237,19 +305,23 @@ export async function runCommandHandler(
 ): Promise<boolean> {
   const h = handlers[`/${name}`];
   if (!h) return false;
-  if (
-    isAdminCommand(name) &&
-    !canRunAdminCommand(ctx.controls.profileConfig, ctx.controls, ctx.msg.senderId).ok
-  ) {
-    log.info('command', 'admin-deny', {
-      cmd: name,
-      sender: ctx.msg.senderId.slice(-6),
-      via: 'card',
-    });
-    // Card actions can't reply naturally (the `msg` is synthesized); the
-    // click is silently denied. The button only renders for users who got
-    // the original admin card in the first place, so this is an edge case.
-    return true;
+
+  if (!ctx.fromCardAction || !ctx.cardActionAuthorized) {
+    const gate = resolveCommandGate(
+      name,
+      ctx.controls.profileConfig,
+      ctx.controls,
+      ctx.msg.senderId,
+    );
+    if (!gate.ok) {
+      log.info('command', 'admin-deny', {
+        cmd: name,
+        sender: ctx.msg.senderId.slice(-6),
+        via: 'card',
+        reason: gate.reason,
+      });
+      return true;
+    }
   }
   try {
     await h(args, ctx);
@@ -466,6 +538,78 @@ async function handleWsRemove(name: string, ctx: CommandContext): Promise<void> 
     return;
   }
   await reply(ctx, `✓ 已删除工作目录别名：\`${name}\``);
+}
+
+// ────────────── /project — project workspace lifecycle ──────────────
+
+const projectStartInFlight = new Set<string>();
+
+function projectStartIdempotencyKey(scope: string, path: string): string {
+  return `${scope}::${path}`;
+}
+
+async function handleProject(args: string, ctx: CommandContext): Promise<void> {
+  const parts = args.trim().split(/\s+/);
+  const sub = parts[0] ?? '';
+  const rest = parts.slice(1).join(' ').trim();
+  switch (sub) {
+    case 'start':
+      return handleProjectStart(rest, ctx);
+    default:
+      await reply(ctx, '用法：`/project start <绝对路径>` — 在当前群启动项目工作区');
+  }
+}
+
+async function handleProjectStart(args: string, ctx: CommandContext): Promise<void> {
+  // ── Phase 1: validate input ──
+  const input = args.trim();
+  if (!input) {
+    await reply(ctx, '用法：`/project start <绝对路径>` 或 `/project start ~/xxx`');
+    return;
+  }
+  if (!isAbsoluteOrTilde(input)) {
+    await reply(ctx, '请使用绝对路径，或 `~/xxx` 表示 home 下的子路径。');
+    return;
+  }
+  const absolute = expandTilde(input);
+
+  // ── Idempotency guard ──
+  const key = projectStartIdempotencyKey(ctx.scope, absolute);
+  if (projectStartInFlight.has(key)) {
+    await reply(ctx, '⏳ 该路径的项目启动已在执行中，请等待完成。');
+    return;
+  }
+  projectStartInFlight.add(key);
+
+  try {
+    // ── Phase 2: validate workspace exists before /cd ──
+    const workspace = await resolveWorkingDirectory(absolute);
+    if (!workspace.ok) {
+      await reply(ctx, `❌ **Phase 1/3 路径校验失败**\n${workspace.userVisible}`);
+      return;
+    }
+
+    // ── Phase 3: apply cwd + clear session ──
+    ctx.activeRuns.interrupt(ctx.scope);
+    ctx.workspaces.setCwd(ctx.scope, workspace.cwdRealpath);
+    ctx.sessions.clear(ctx.scope);
+
+    // Structured receipt
+    const receipt = [
+      '🚀 **项目工作区启动完成**',
+      '',
+      '| 步骤 | 状态 |',
+      '|------|------|',
+      `| 路径校验 | ✅ \`${workspace.cwdRealpath}\` |`,
+      '| 工作目录切换 | ✅ 已生效 |',
+      '| Session 重置 | ✅ 已清除 |',
+      '',
+      '_下条消息开始使用新工作区。_',
+    ].join('\n');
+    await reply(ctx, receipt);
+  } finally {
+    projectStartInFlight.delete(key);
+  }
 }
 
 async function handleDoc(args: string, ctx: CommandContext): Promise<void> {
@@ -1539,6 +1683,12 @@ async function handleInvite(args: string, ctx: CommandContext): Promise<void> {
     return;
   }
 
+  // botAdmin may only use /invite group, not user or admin
+  if (kind !== 'group' && isBotAdmin(ctx.controls.profileConfig, ctx.msg.senderId)) {
+    await reply(ctx, '❌ Bot 管理员只能使用 `/invite group`，不能管理用户或人类管理员。');
+    return;
+  }
+
   if (kind === 'group') {
     if (ctx.chatMode === 'p2p') {
       await reply(ctx, '❌ `/invite group` 只能在群里发，在私聊里没有 chat_id 可以加。');
@@ -1617,6 +1767,12 @@ async function handleRemove(args: string, ctx: CommandContext): Promise<void> {
     return;
   }
 
+  // botAdmin may only use /remove group, not user or admin
+  if (kind !== 'group' && isBotAdmin(ctx.controls.profileConfig, ctx.msg.senderId)) {
+    await reply(ctx, '❌ Bot 管理员只能使用 `/remove group`，不能管理用户或人类管理员。');
+    return;
+  }
+
   if (kind === 'group') {
     if (ctx.chatMode === 'p2p') {
       await reply(ctx, '`/remove group` 请在要移除的群里发，私聊里没有可移除的群。');
@@ -1639,6 +1795,21 @@ async function handleRemove(args: string, ctx: CommandContext): Promise<void> {
     }
     await reply(ctx, '✅ 已把当前群移出响应群名单。');
     return;
+  }
+
+  // Anti-lockout: prevent removing the last human admin
+  if (kind === 'admin') {
+    const targets = mentionTargets(ctx);
+    if (targets.length === 0) {
+      await reply(ctx, `请 @ 上要移除的人，例如：\`/remove admin @某人\`。`);
+      return;
+    }
+    const remaining = new Set(ctx.controls.profileConfig.access.admins);
+    for (const t of targets) remaining.delete(t.openId);
+    if (remaining.size === 0) {
+      await reply(ctx, '❌ 不能移除最后一位管理员。请先添加其他管理员再操作，否则将无法管理 bot。');
+      return;
+    }
   }
 
   const targets = mentionTargets(ctx);
@@ -1674,9 +1845,125 @@ async function handleRemove(args: string, ctx: CommandContext): Promise<void> {
   await reply(ctx, parts.join('\n'));
 }
 
+// ────────────── /botAdmin — manage bot admins (human-admin gated) ──────────────
+
+async function handleBotAdmin(args: string, ctx: CommandContext): Promise<void> {
+  const parts = args.trim().split(/\s+/).filter(Boolean);
+  const sub = parts[0] ?? '';
+  switch (sub) {
+    case 'add':
+      return handleBotAdminAdd(ctx);
+    case 'remove':
+    case 'rm':
+      return handleBotAdminRemove(ctx);
+    case 'list':
+    case 'ls':
+      return handleBotAdminList(ctx);
+    default:
+      await reply(
+        ctx,
+        '用法：\n' +
+          '• `/botAdmin add @Bot名` — 添加 Bot 管理员\n' +
+          '• `/botAdmin remove @Bot名` — 移除 Bot 管理员\n' +
+          '• `/botAdmin list` — 查看 Bot 管理员列表',
+      );
+  }
+}
+
+async function handleBotAdminAdd(ctx: CommandContext): Promise<void> {
+  const targets = botMentionTargets(ctx);
+  if (targets.length === 0) {
+    await reply(ctx, '❌ 没检测到 @ 的 Bot。请 @ 要添加的 Bot（注意不是 @ 用户）。');
+    return;
+  }
+  const added: string[] = [];
+  const already: string[] = [];
+  await saveAccessConfig(ctx, (current) => {
+    const list = new Set(current.botAdmins);
+    added.length = 0;
+    already.length = 0;
+    for (const target of targets) {
+      if (list.has(target.openId)) {
+        already.push(target.name ?? target.openId);
+      } else {
+        list.add(target.openId);
+        added.push(target.name ?? target.openId);
+      }
+    }
+    return {
+      ...current,
+      botAdmins: [...list],
+    };
+  });
+  log.info('command', 'botAdmin-added', {
+    added: added.map((n) => n.slice(-6)),
+    subject: ctx.msg.senderId.slice(-6),
+  });
+  const result: string[] = [];
+  if (added.length > 0) result.push(`✅ 已把 ${added.join('、')} 加入 Bot 管理员。`);
+  if (already.length > 0) result.push(`_${already.join('、')} 已经在 Bot 管理员里，跳过。_`);
+  await reply(ctx, result.join('\n'));
+}
+
+async function handleBotAdminRemove(ctx: CommandContext): Promise<void> {
+  const targets = botMentionTargets(ctx);
+  if (targets.length === 0) {
+    await reply(ctx, '❌ 没检测到 @ 的 Bot。请 @ 要移除的 Bot。');
+    return;
+  }
+  const removed: string[] = [];
+  const notThere: string[] = [];
+  await saveAccessConfig(ctx, (current) => {
+    const list = new Set(current.botAdmins);
+    removed.length = 0;
+    notThere.length = 0;
+    for (const target of targets) {
+      if (list.has(target.openId)) {
+        list.delete(target.openId);
+        removed.push(target.name ?? target.openId);
+      } else {
+        notThere.push(target.name ?? target.openId);
+      }
+    }
+    return {
+      ...current,
+      botAdmins: [...list],
+    };
+  });
+  log.info('command', 'botAdmin-removed', {
+    removed: removed.map((n) => n.slice(-6)),
+    subject: ctx.msg.senderId.slice(-6),
+  });
+  const result: string[] = [];
+  if (removed.length > 0) result.push(`✅ 已把 ${removed.join('、')} 移出 Bot 管理员。`);
+  if (notThere.length > 0) result.push(`${notThere.join('、')} 本来就不在 Bot 管理员里，无需移除。`);
+  await reply(ctx, result.join('\n'));
+}
+
+async function handleBotAdminList(ctx: CommandContext): Promise<void> {
+  const { botAdmins } = ctx.controls.profileConfig.access;
+  if (botAdmins.length === 0) {
+    await reply(ctx, '当前无 Bot 管理员。');
+    return;
+  }
+  const lines = botAdmins.map(
+    (id, i) => `${i + 1}. <at id="${id}"></at>（...${id.slice(-6)}）`,
+  );
+  await reply(ctx, `**Bot 管理员**（共 ${botAdmins.length} 个）：\n${lines.join('\n')}`);
+}
+
 function mentionTargets(ctx: CommandContext): Array<{ openId: string; name?: string }> {
   return (ctx.msg.mentions ?? [])
     .filter((mention) => !mention.isBot && typeof mention.openId === 'string' && mention.openId)
+    .map((mention) => ({
+      openId: mention.openId as string,
+      ...(mention.name ? { name: mention.name } : {}),
+    }));
+}
+
+function botMentionTargets(ctx: CommandContext): Array<{ openId: string; name?: string }> {
+  return (ctx.msg.mentions ?? [])
+    .filter((mention) => mention.isBot && typeof mention.openId === 'string' && mention.openId)
     .map((mention) => ({
       openId: mention.openId as string,
       ...(mention.name ? { name: mention.name } : {}),
@@ -1702,6 +1989,7 @@ async function saveAccessConfig(
             allowedUsers: access.allowedUsers,
             allowedChats: access.allowedChats,
             admins: access.admins,
+            botAdmins: access.botAdmins,
           },
           requireMentionInGroup: access.requireMentionInGroup,
         };
@@ -1723,6 +2011,7 @@ async function saveAccessConfig(
         allowedUsers: access.allowedUsers.length,
         allowedChats: access.allowedChats.length,
         admins: access.admins.length,
+        botAdmins: access.botAdmins.length,
       });
       return access;
     });
@@ -1771,6 +2060,7 @@ async function showConfigForm(ctx: CommandContext): Promise<void> {
     allowedUsers: access.allowedUsers,
     allowedChats: access.allowedChats,
     admins: access.admins,
+    botAdmins: access.botAdmins,
     knownChats: ctx.controls.knownChats ?? [],
   });
   if (ctx.fromCardAction) await recallMessage(ctx, ctx.msg.messageId);
@@ -1939,6 +2229,7 @@ async function submitConfig(ctx: CommandContext): Promise<void> {
       allowedUsersCount: access.allowedUsers.length,
       allowedChatsCount: access.allowedChats.length,
       adminsCount: access.admins.length,
+      botAdminsCount: access.botAdmins.length,
     });
     await waitForSettle();
     await showResultCardInPlace(
@@ -1955,6 +2246,7 @@ async function submitConfig(ctx: CommandContext): Promise<void> {
         allowedUsers: access.allowedUsers,
         allowedChats: access.allowedChats,
         admins: access.admins,
+        botAdmins: access.botAdmins,
         knownChats: ctx.controls.knownChats ?? [],
       }),
     );

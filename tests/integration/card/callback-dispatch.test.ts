@@ -1,5 +1,5 @@
 import type { CardActionEvent } from '@larksuite/channel';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ActiveRuns } from '../../../src/bot/active-runs.js';
 import type { ChatModeCache } from '../../../src/bot/chat-mode-cache.js';
 import { PendingQueue } from '../../../src/bot/pending-queue.js';
@@ -79,6 +79,27 @@ describe('signed card callback dispatch', () => {
     expect(h.pending.cancel('oc_group')).toHaveLength(0);
   });
 
+  it('does not let unsigned admin command card callbacks bypass the command gate', async () => {
+    const h = await createHarness();
+
+    await h.dispatch({
+      cmd: 'reconnect',
+    });
+
+    expect(h.controls.restart).not.toHaveBeenCalled();
+  });
+
+  it('allows unsigned public command card callbacks for self-service buttons', async () => {
+    const h = await createHarness();
+
+    await h.dispatch({
+      cmd: 'status',
+    });
+
+    expect(h.channel.sent).toHaveLength(1);
+    expect(JSON.stringify(h.channel.sent[0]?.content)).not.toContain('仅管理员可用');
+  });
+
   it('scopes topic-group callbacks by the carrier message thread_id', async () => {
     const h = await createHarness({ chatMode: 'topic' });
     // The dispatcher must read items[0].thread_id from the raw message get to
@@ -153,7 +174,7 @@ async function createHarness(
     botOwnerId: 'ou_owner',
     ownerRefreshState: 'ok',
     async refreshOwner() {},
-    async restart() {},
+    restart: vi.fn(async () => {}),
     async exit() {},
     configPath: `${tmp.profile}/config.json`,
     cfg: createDefaultProfileConfig({

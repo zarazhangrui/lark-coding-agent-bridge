@@ -311,6 +311,211 @@ describe('Bridge command contracts', () => {
     const root = await loadRootConfig(h.controls.configPath);
     expect(root?.profiles.claude?.access.allowedChats).toEqual(['oc-group-1', 'oc-group-2']);
   });
+
+  // ── /botAdmin command tests ──
+
+  it('adds and removes bot admins through /botAdmin add/remove', async () => {
+    const h = await createHarness();
+
+    // Add bot admin
+    await expect(
+      h.run('/botAdmin add @Bot', { mentions: [botMention('ou-bot', 'Bot')] }),
+    ).resolves.toBe(true);
+    expect(lastMarkdown(h.channel)).toContain('已把 Bot 加入 Bot 管理员');
+
+    let root = await loadRootConfig(h.controls.configPath);
+    expect(root?.profiles.claude?.access.botAdmins).toContain('ou-bot');
+
+    // Add same bot again (idempotent)
+    await expect(
+      h.run('/botAdmin add @Bot', { mentions: [botMention('ou-bot', 'Bot')] }),
+    ).resolves.toBe(true);
+    expect(lastMarkdown(h.channel)).toContain('已经在 Bot 管理员里');
+
+    // List
+    await expect(h.run('/botAdmin list')).resolves.toBe(true);
+    expect(lastMarkdown(h.channel)).toContain('ou-bot');
+
+    // Remove
+    await expect(
+      h.run('/botAdmin remove @Bot', { mentions: [botMention('ou-bot', 'Bot')] }),
+    ).resolves.toBe(true);
+    expect(lastMarkdown(h.channel)).toContain('移出 Bot 管理员');
+
+    root = await loadRootConfig(h.controls.configPath);
+    expect(root?.profiles.claude?.access.botAdmins).not.toContain('ou-bot');
+  });
+
+  it('shows empty list for /botAdmin list when no bot admins', async () => {
+    const h = await createHarness();
+    await expect(h.run('/botAdmin list')).resolves.toBe(true);
+    expect(lastMarkdown(h.channel)).toContain('无 Bot 管理员');
+  });
+
+  it('requires @-mention for /botAdmin add and /botAdmin remove', async () => {
+    const h = await createHarness();
+    // No mentions at all
+    await expect(h.run('/botAdmin add')).resolves.toBe(true);
+    expect(lastMarkdown(h.channel)).toContain('没检测到 @ 的 Bot');
+    // Human mention (not bot)
+    await expect(
+      h.run('/botAdmin add @User', { mentions: [mention('ou-user', 'User')] }),
+    ).resolves.toBe(true);
+    expect(lastMarkdown(h.channel)).toContain('没检测到 @ 的 Bot');
+  });
+
+  // ── botAdmin permission split tests ──
+
+  it('allows botAdmin to run operational commands', async () => {
+    const h = await createHarness();
+    // Make the sender a botAdmin
+    const access = h.controls.profileConfig.access;
+    access.botAdmins = ['ou-bot'];
+    await saveRootConfig(
+      createRootConfig('claude', h.controls.profileConfig),
+      h.controls.configPath,
+    );
+
+    const botRun = (content: string, overrides?: RunOverrides) =>
+      h.run(content, { senderId: 'ou-bot', ...overrides });
+
+    // Allowed: operational commands
+    await expect(botRun('/cd /tmp')).resolves.toBe(true);
+    expect(lastMarkdown(h.channel)).not.toContain('仅管理员可用');
+
+    await expect(botRun('/invite group', { chatId: 'oc-g', scope: 'oc-g', chatMode: 'group' })).resolves.toBe(true);
+    expect(lastMarkdown(h.channel)).toContain('已把当前群');
+
+    await expect(botRun('/status')).resolves.toBe(true);
+    await expect(botRun('/help')).resolves.toBe(true);
+  });
+
+  it('rejects botAdmin from role-elevation commands', async () => {
+    const h = await createHarness();
+    const access = h.controls.profileConfig.access;
+    access.botAdmins = ['ou-bot'];
+    await saveRootConfig(
+      createRootConfig('claude', h.controls.profileConfig),
+      h.controls.configPath,
+    );
+
+    const botRun = (content: string, overrides?: RunOverrides) =>
+      h.run(content, { senderId: 'ou-bot', ...overrides });
+
+    // Denied: /invite admin (role elevation — handler-level gate)
+    await expect(
+      botRun('/invite admin @User', { mentions: [mention('ou-user', 'User')] }),
+    ).resolves.toBe(true);
+    expect(lastMarkdown(h.channel)).toContain('Bot 管理员只能使用');
+
+    // Denied: /botAdmin add (managing botAdmins)
+    await expect(
+      botRun('/botAdmin add @Bot2', { mentions: [botMention('ou-bot2', 'Bot2')] }),
+    ).resolves.toBe(true);
+    expect(lastMarkdown(h.channel)).toContain('仅管理员可用');
+
+    // Denied: /config (sensitive)
+    await expect(botRun('/config')).resolves.toBe(true);
+    expect(lastMarkdown(h.channel)).toContain('仅管理员可用');
+
+    // Denied: /account (credential)
+    await expect(botRun('/account')).resolves.toBe(true);
+    expect(lastMarkdown(h.channel)).toContain('仅管理员可用');
+  });
+
+  it('allows regular allowed users to run public self-service commands', async () => {
+    const h = await createHarness();
+    const userRun = (content: string, overrides?: RunOverrides) =>
+      h.run(content, { senderId: 'ou-user', ...overrides });
+
+    await expect(userRun('/help')).resolves.toBe(true);
+    expect(JSON.stringify(lastContent(h.channel))).not.toContain('仅管理员可用');
+
+    await expect(userRun('/status')).resolves.toBe(true);
+    expect(JSON.stringify(lastContent(h.channel))).not.toContain('仅管理员可用');
+
+    await expect(userRun('/new')).resolves.toBe(true);
+    expect(lastMarkdown(h.channel)).toContain('已开始新会话');
+
+    h.activeRuns.register('chat-1', h.agent.run({ runId: 'run-1', prompt: 'running' }));
+    await expect(userRun('/stop')).resolves.toBe(true);
+    expect(JSON.stringify(lastContent(h.channel))).not.toContain('仅管理员可用');
+
+    await expect(userRun('/config')).resolves.toBe(true);
+    expect(lastMarkdown(h.channel)).toContain('仅管理员可用');
+  });
+
+  // ── Anti-lockout tests ──
+
+  it('prevents removing the last human admin', async () => {
+    const h = await createHarness();
+    // Only one admin exists: 'ou-admin' (set by appConfig)
+    await expect(
+      h.run('/remove admin @Admin', { mentions: [mention('ou-admin', 'Admin')] }),
+    ).resolves.toBe(true);
+    expect(lastMarkdown(h.channel)).toContain('不能移除最后一位管理员');
+
+    // Verify admin was NOT removed
+    const root = await loadRootConfig(h.controls.configPath);
+    expect(root?.profiles.claude?.access.admins).toContain('ou-admin');
+  });
+
+  it('allows removing an admin when another admin remains', async () => {
+    const h = await createHarness();
+    // Add a second admin first
+    await expect(
+      h.run('/invite admin @Bob', { mentions: [mention('ou-bob', 'Bob')] }),
+    ).resolves.toBe(true);
+
+    // Now remove the original admin
+    await expect(
+      h.run('/remove admin @Admin', { mentions: [mention('ou-admin', 'Admin')] }),
+    ).resolves.toBe(true);
+    expect(lastMarkdown(h.channel)).toContain('移出管理员');
+
+    const root = await loadRootConfig(h.controls.configPath);
+    expect(root?.profiles.claude?.access.admins).not.toContain('ou-admin');
+    expect(root?.profiles.claude?.access.admins).toContain('ou-bob');
+  });
+
+  // ── Text-forgery rejection test ──
+
+  it('does not accept text @ as structured mention for access gating', async () => {
+    const h = await createHarness();
+    // Send /invite user with text "@user" but NO structured mention
+    // The handler should reject because mentionTargets() uses msg.mentions only
+    await expect(
+      h.run('/invite user @Someone'),
+    ).resolves.toBe(true);
+    expect(lastMarkdown(h.channel)).toContain('没检测到 @ 的用户');
+  });
+
+  // ── /project start tests ──
+
+  it('starts a project workspace with structured receipt', async () => {
+    const h = await createHarness();
+    const target = join(h.tmp.root, 'my-project');
+    await mkdir(target, { recursive: true });
+
+    await expect(h.run(`/project start ${target}`)).resolves.toBe(true);
+    const text = lastMarkdown(h.channel);
+    expect(text).toContain('项目工作区启动完成');
+    expect(text).toContain('路径校验');
+    expect(text).toContain('工作目录切换');
+    expect(text).toContain('Session 重置');
+  });
+
+  it('rejects /project start with invalid path', async () => {
+    const h = await createHarness();
+    await expect(h.run('/project start /nonexistent/path')).resolves.toBe(true);
+    expect(lastMarkdown(h.channel)).toContain('路径校验失败');
+  });
+
+  it('rejects /project start with relative path', async () => {
+    const h = await createHarness();
+    await expect(h.run('/project start relative/path')).resolves.toBe(true);
+    expect(lastMarkdown(h.channel)).toContain('绝对路径');
+  });
 });
 
 async function createHarness(): Promise<Harness> {
@@ -406,6 +611,14 @@ function mention(openId: string, name: string): NonNullable<NormalizedMessage['m
     openId,
     name,
     isBot: false,
+  } as NonNullable<NormalizedMessage['mentions']>[number];
+}
+
+function botMention(openId: string, name: string): NonNullable<NormalizedMessage['mentions']>[number] {
+  return {
+    openId,
+    name,
+    isBot: true,
   } as NonNullable<NormalizedMessage['mentions']>[number];
 }
 
