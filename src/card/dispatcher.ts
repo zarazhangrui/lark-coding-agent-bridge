@@ -99,7 +99,6 @@ export async function handleCardAction(deps: CardDispatchDeps): Promise<void> {
       sessionCatalogIdentity: await commandSessionCatalogIdentity({
         msg,
         scope,
-        mode,
         workspaces: deps.workspaces,
         controls: deps.controls,
         access: accessDecision,

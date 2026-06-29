@@ -58,6 +58,7 @@ import { commandSessionCatalogIdentity } from './session-catalog-identity';
 import { startKeepalive } from './keepalive';
 import { PendingQueue } from './pending-queue';
 import { ProcessPool } from './process-pool';
+import { isThreadedScope, scopeForMessage } from './scope';
 import { fetchQuotedContext, type QuotedContext } from './quote';
 import { addWorkingReaction, removeReaction } from './reaction';
 import { fetchKnownChats } from './lark-info';
@@ -253,7 +254,6 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
     void withTrace({ chatId: firstMsg.chatId }, async () => {
       log.info('flush', 'start', { scope, batchSize: batch.length });
       try {
-        const mode = await chatModeCache.resolve(channel, firstMsg.chatId);
         await runAgentBatch({
           channel,
           executor,
@@ -266,7 +266,6 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
           callbackAuth,
           activePolicyFingerprints,
           scope,
-          mode,
         });
       } catch (err) {
         log.fail('flush', err);
@@ -513,9 +512,9 @@ async function intakeMessage(deps: IntakeDeps): Promise<void> {
   // Resolve scope (and underlying chat mode) once at intake — every
   // downstream consumer keys off these.
   const chatMode = await chatModeCache.resolve(channel, msg.chatId);
-  const scope = chatMode === 'topic' && msg.threadId
-    ? `${msg.chatId}:${msg.threadId}`
-    : msg.chatId;
+  // Scope keys off thread membership (Feishu `thread_id`), not chat mode, so a
+  // "convert to topic" thread inside a plain group also gets its own session.
+  const scope = await scopeForMessage(channel, msg, chatModeCache);
   log.info('intake', 'enter', {
     scope,
     chatType: msg.chatType,
@@ -571,7 +570,6 @@ async function intakeMessage(deps: IntakeDeps): Promise<void> {
     sessionCatalogIdentity: await commandSessionCatalogIdentity({
       msg,
       scope,
-      mode: chatMode,
       workspaces,
       controls,
       access: accessDecision,
@@ -602,7 +600,6 @@ interface RunBatchDeps {
   callbackAuth?: CallbackAuth;
   activePolicyFingerprints: Map<string, string>;
   scope: string;
-  mode: ChatMode;
 }
 
 async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
@@ -618,7 +615,6 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
     callbackAuth,
     activePolicyFingerprints,
     scope,
-    mode,
   } = deps;
   if (batch.length === 0) return;
   const firstMsg = batch[0];
@@ -653,7 +649,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
   const quoteTargets = [
     ...new Set(
       batch
-        .map((m) => replyQuoteTargetForMessage(m, mode))
+        .map((m) => replyQuoteTargetForMessage(m))
         .filter((id): id is string => Boolean(id) && !batchIds.has(id!)),
     ),
   ];
@@ -673,12 +669,13 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
   const prompt = buildPrompt(batch, attachments, quotes, channel.botIdentity);
   log.info('prompt', 'built', { promptChars: prompt.length, quotes: quotes.length });
 
-  // For topic groups: thread the reply so it lands in the same topic as the
+  // For any threaded message (topic-group topic, or a plain-group "convert to
+  // topic" thread): thread the reply so it lands in the same topic as the
   // user's message. Otherwise the SDK posts at top level and the user's
   // topic discussion breaks visually.
   const sendOpts = {
     replyTo: lastMsg.messageId,
-    ...(mode === 'topic' && threadId ? { replyInThread: true } : {}),
+    ...(threadId ? { replyInThread: true } : {}),
   };
 
   const accessDecision =
@@ -1234,16 +1231,14 @@ function mergeMentions(batch: NormalizedMessage[]): BridgePromptMention[] {
   return out;
 }
 
-function replyQuoteTargetForMessage(
-  msg: NormalizedMessage,
-  mode: ChatMode,
-): string | undefined {
+function replyQuoteTargetForMessage(msg: NormalizedMessage): string | undefined {
   const replyTo = msg.replyToMessageId;
   if (!replyTo) return undefined;
 
-  // Feishu topic messages use root_id/parent_id as the topic root anchor even
-  // for ordinary in-topic messages. Treat that as structure, not a quote.
-  if (mode === 'topic' && msg.threadId && msg.rootId && replyTo === msg.rootId) {
+  // Any threaded message (topic-group topic, or a plain-group "convert to
+  // topic" thread) uses root_id/parent_id as the topic root anchor even for
+  // ordinary in-topic messages. Treat that as structure, not a quote.
+  if (msg.threadId && msg.rootId && replyTo === msg.rootId) {
     return undefined;
   }
   return replyTo;
