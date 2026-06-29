@@ -6,6 +6,7 @@ import { PendingQueue } from '../../../src/bot/pending-queue.js';
 import { CallbackAuth } from '../../../src/card/callback-auth.js';
 import { CallbackNonceStore } from '../../../src/card/callback-store.js';
 import { handleCardAction } from '../../../src/card/dispatcher.js';
+import { sendManagedCard } from '../../../src/card/managed.js';
 import type { Controls } from '../../../src/commands/index.js';
 import { createDefaultProfileConfig } from '../../../src/config/profile-schema.js';
 import { SessionStore } from '../../../src/session/store.js';
@@ -63,6 +64,65 @@ describe('signed card callback dispatch', () => {
     expect(queued).toHaveLength(1);
     expect(queued[0]?.content).toBe('[card-click] {"choice":"a","form_value":{"note":"from form"}}');
     expect(queued[0]?.chatType).toBe('group');
+  });
+
+  it('updates a managed card when a signed bridge callback requests an acknowledgement', async () => {
+    const h = await createHarness();
+    h.activeRuns.register('oc_group', h.agent.run({ runId: 'run-active', prompt: 'running' }));
+    const { messageId } = await sendManagedCard(
+      h.channel as unknown as Parameters<typeof sendManagedCard>[0],
+      'oc_group',
+      {
+        schema: '2.0',
+        body: { elements: [{ tag: 'markdown', content: 'Choose an option.' }] },
+      },
+    );
+
+    await h.dispatch(
+      {
+        __bridge_cb: true,
+        bridge_token: h.token('agent_callback', { nonce: 'nonce-ack' }),
+        bridge_ack: {
+          title: 'Action received',
+          message: 'The button click was sent to the local agent.',
+        },
+        choice: 'a',
+      },
+      undefined,
+      { messageId },
+    );
+
+    const queued = h.pending.cancel('oc_group');
+    expect(queued).toHaveLength(1);
+    expect(queued[0]?.content).toBe('[card-click] {"choice":"a"}');
+
+    const update = h.channel.rawClient.requests.find(
+      (request) => request.method === 'cardkit.v1.card.update',
+    );
+    expect(update).toBeDefined();
+    expect(JSON.stringify(update?.params)).toContain('Action received');
+    expect(JSON.stringify(update?.params)).toContain('The button click was sent to the local agent.');
+    expect(JSON.stringify(update?.params)).not.toContain('"tag":"button"');
+    expect(JSON.stringify(update?.params)).not.toContain('"behaviors"');
+  });
+
+  it('still forwards an acknowledgement callback when the card is not managed', async () => {
+    const h = await createHarness();
+    h.activeRuns.register('oc_group', h.agent.run({ runId: 'run-active', prompt: 'running' }));
+
+    await h.dispatch({
+      __bridge_cb: true,
+      bridge_token: h.token('agent_callback', { nonce: 'nonce-unmanaged' }),
+      bridge_ack: true,
+      choice: 'b',
+    });
+
+    const queued = h.pending.cancel('oc_group');
+    expect(queued).toHaveLength(1);
+    expect(queued[0]?.content).toBe('[card-click] {"choice":"b"}');
+    expect(
+      h.channel.rawClient.requests.some((request) => request.method === 'cardkit.v1.card.update'),
+    ).toBe(false);
   });
 
   it('drops legacy Claude callback markers before command dispatch', async () => {
@@ -125,7 +185,11 @@ type Harness = {
   controls: Controls;
   pending: PendingQueue;
   auth: CallbackAuth;
-  dispatch(value: Record<string, unknown>, formValue?: Record<string, unknown>): Promise<void>;
+  dispatch(
+    value: Record<string, unknown>,
+    formValue?: Record<string, unknown>,
+    event?: { messageId?: string },
+  ): Promise<void>;
   token(
     action: string,
     overrides?: { operatorOpenId?: string; nonce?: string; scope?: string },
@@ -201,10 +265,10 @@ async function createHarness(
         ttlMs: 60_000,
       });
     },
-    dispatch: (value, formValue) =>
+    dispatch: (value, formValue, event) =>
       handleCardAction({
         channel: channel as unknown as Parameters<typeof handleCardAction>[0]['channel'],
-        evt: cardEvent(value, formValue),
+        evt: cardEvent(value, formValue, event),
         sessions,
         workspaces,
         activeRuns,
@@ -221,11 +285,12 @@ async function createHarness(
 function cardEvent(
   value: Record<string, unknown>,
   formValue?: Record<string, unknown>,
+  event: { messageId?: string } = {},
 ): CardActionEvent {
   return {
     action: { value },
     chatId: 'oc_group',
-    messageId: 'om_card',
+    messageId: event.messageId ?? 'om_card',
     operator: {
       openId: 'ou_operator',
       name: 'Operator',
