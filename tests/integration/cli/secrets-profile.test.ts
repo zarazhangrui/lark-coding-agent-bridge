@@ -1,7 +1,8 @@
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { isolateBridgeEnv, restoreBridgeEnv } from '../../helpers/bridge-env';
 import { resolveAppPaths } from '../../../src/config/app-paths';
 import {
   clearKeystoreDerivedKeyCache,
@@ -33,6 +34,14 @@ afterEach(async () => {
   vi.restoreAllMocks();
   clearKeystoreDerivedKeyCache();
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
+});
+
+beforeEach(() => {
+  isolateBridgeEnv();
+});
+
+afterEach(() => {
+  restoreBridgeEnv();
 });
 
 describe('profile-aware secrets commands', () => {

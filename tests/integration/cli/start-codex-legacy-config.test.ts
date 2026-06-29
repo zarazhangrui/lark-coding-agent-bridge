@@ -1,7 +1,8 @@
 import { chmod, mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { isolateBridgeEnv, restoreBridgeEnv } from '../../helpers/bridge-env';
 import { createDefaultProfileConfig } from '../../../src/config/profile-schema';
 import { createRootConfig, saveRootConfig } from '../../../src/config/profile-store';
 import { RuntimeLockConflictError, type RuntimeLockMeta } from '../../../src/runtime/locks';
@@ -26,6 +27,14 @@ const cleanups: Array<() => Promise<void>> = [];
 afterEach(async () => {
   vi.clearAllMocks();
   await Promise.all(cleanups.splice(0).map((cleanup) => cleanup()));
+});
+
+beforeEach(() => {
+  isolateBridgeEnv();
+});
+
+afterEach(() => {
+  restoreBridgeEnv();
 });
 
 describe('Codex startup compatibility with legacy binary metadata', () => {
