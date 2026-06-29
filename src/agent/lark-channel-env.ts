@@ -8,7 +8,18 @@ export interface LarkChannelEnvContext {
   larkCliSourceConfigFile?: string;
 }
 
-export function buildLarkChannelEnv(context?: LarkChannelEnvContext): NodeJS.ProcessEnv {
+export interface LarkChannelCallbackEnvContext {
+  runId: string;
+  scope: string;
+  chatId: string;
+  operatorOpenId: string;
+  policyFingerprint: string;
+}
+
+export function buildLarkChannelEnv(
+  context?: LarkChannelEnvContext,
+  callback?: LarkChannelCallbackEnvContext,
+): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {
     LARK_CHANNEL: '1',
   };
@@ -26,6 +37,14 @@ export function buildLarkChannelEnv(context?: LarkChannelEnvContext): NodeJS.Pro
 
   const larkCliConfigDir = nonEmpty(context?.larkCliConfigDir);
   if (larkCliConfigDir) env.LARKSUITE_CLI_CONFIG_DIR = larkCliConfigDir;
+
+  if (callback) {
+    env.LARK_CHANNEL_RUN_ID = callback.runId;
+    env.LARK_CHANNEL_SCOPE = callback.scope;
+    env.LARK_CHANNEL_CHAT_ID = callback.chatId;
+    env.LARK_CHANNEL_OPERATOR_OPEN_ID = callback.operatorOpenId;
+    env.LARK_CHANNEL_POLICY_FINGERPRINT = callback.policyFingerprint;
+  }
 
   return env;
 }

@@ -24,6 +24,7 @@ import {
   runServiceUnregister,
 } from './commands/service';
 import { runStart } from './commands/start';
+import { runCallbackCreate } from './commands/callback';
 
 const program = new Command();
 
@@ -202,6 +203,20 @@ program
   .option('--profile <name>', 'profile name (defaults to active profile)')
   .action(async (opts: { profile?: string }) => {
     await runServiceUnregister({ profile: opts.profile });
+  });
+
+const callback = program
+  .command('callback')
+  .description('Create bridge callback ids for interactive cards inside agent runs');
+
+callback
+  .command('create')
+  .description('Create a one-time callback_id for a CardKit button value')
+  .option('--action <name>', 'callback action name (default agent_callback)')
+  .option('--ttl-seconds <seconds>', 'callback lifetime, default 86400')
+  .option('--profile <name>', 'profile name (defaults to LARK_CHANNEL_PROFILE)')
+  .action(async (opts: { action?: string; ttlSeconds?: string; profile?: string }) => {
+    await runCallbackCreate(opts);
   });
 
 const secrets = program

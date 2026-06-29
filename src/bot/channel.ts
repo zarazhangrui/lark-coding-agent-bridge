@@ -16,6 +16,7 @@ import type { AgentAdapter, AgentEvent } from '../agent/types';
 import { handleCardAction } from '../card/dispatcher';
 import { CallbackAuth } from '../card/callback-auth';
 import { CallbackNonceStore } from '../card/callback-store';
+import { CallbackRegistryStore } from '../card/callback-registry';
 import { renderCard } from '../card/run-renderer';
 import {
   finalizeIfRunning,
@@ -195,7 +196,10 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
   const callbackNonceStore = deps.appPaths?.mediaDir
     ? new CallbackNonceStore(join(dirname(deps.appPaths.mediaDir), 'callback-nonces.json'))
     : undefined;
-  await callbackNonceStore?.load();
+  const callbackRegistry = deps.appPaths?.mediaDir
+    ? new CallbackRegistryStore(join(dirname(deps.appPaths.mediaDir), 'callback-registry.json'))
+    : undefined;
+  await Promise.all([callbackNonceStore?.load(), callbackRegistry?.load()]);
   const callbackAuth = callbackNonceStore
     ? new CallbackAuth({
         keys: [{ version: 1, secret: appSecret }],
@@ -361,6 +365,7 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
           pending,
           chatModeCache,
           callbackAuth,
+          callbackRegistry,
           callbackPolicyFingerprintForScope: (scope) => activePolicyFingerprints.get(scope),
         });
       }).catch((err) => log.fail('cardAction', err));
@@ -470,6 +475,7 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
         sessions.flush(),
         sessionCatalog?.flush(),
         callbackNonceStore?.flush(),
+        callbackRegistry?.flush(),
         workspaces.flush(),
       ]);
       if (stopAllResult.status === 'rejected') {

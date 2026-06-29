@@ -23,6 +23,12 @@ export interface SubmitRunInput {
   model?: string;
   images?: readonly string[];
   stopGraceMs?: number;
+  callbackContext?: {
+    scope: string;
+    chatId: string;
+    operatorOpenId: string;
+    policyFingerprint: string;
+  };
   nowait?: boolean;
   observability?: {
     profile: string;
@@ -104,6 +110,7 @@ export class RunExecutor {
       sandbox: input.policy.sandbox,
       permissionMode: input.policy.permissionMode,
       stopGraceMs: input.stopGraceMs,
+      callbackContext: input.callbackContext,
     };
     let run: AgentRun;
     try {

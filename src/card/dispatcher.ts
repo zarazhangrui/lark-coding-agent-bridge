@@ -5,6 +5,7 @@ import type { ChatModeCache } from '../bot/chat-mode-cache';
 import type { PendingQueue } from '../bot/pending-queue';
 import type { ProcessPool } from '../bot/process-pool';
 import type { CallbackAuth } from './callback-auth';
+import type { CallbackRegistryStore } from './callback-registry';
 import { runCommandHandler, type CommandContext, type Controls } from '../commands';
 import { log } from '../core/logger';
 import { canUseDm, canUseGroup } from '../policy/access';
@@ -37,6 +38,7 @@ export interface CardDispatchDeps {
   pending: PendingQueue;
   chatModeCache: ChatModeCache;
   callbackAuth?: CallbackAuth;
+  callbackRegistry?: CallbackRegistryStore;
   callbackPolicyFingerprint?: string;
   callbackPolicyFingerprintForScope?: (scope: string) => string | undefined;
 }
@@ -127,12 +129,13 @@ export async function handleCardAction(deps: CardDispatchDeps): Promise<void> {
     return;
   }
 
-  // Agent-driven callback: the button was rendered by an agent via lark-cli,
-  // with `__bridge_cb` set on the value. Forward the click back into the
-  // scope's pending queue so the agent resumes its session and sees the click
-  // as a follow-up message, with full context of what it sent.
+  // Agent-driven callback. Prefer registry-backed callback_id; keep bridge_token for existing cards.
   if (BRIDGE_CALLBACK_MARKER in payload) {
-    if (!verifyBridgeToken(deps, payload, scope, 'agent_callback')) return;
+    const callbackId = typeof payload.callback_id === 'string' ? payload.callback_id : '';
+    const verified = callbackId
+      ? await verifyBridgeCallbackId(deps, callbackId, scope, 'agent_callback')
+      : verifyBridgeToken(deps, payload, scope, 'agent_callback');
+    if (!verified) return;
     forwardToAgent(deps, payload, formValue, scope, threadId, mode);
     return;
   }
@@ -192,6 +195,7 @@ function forwardToAgent(
   const {
     [BRIDGE_CALLBACK_MARKER]: _marker,
     bridge_token: _token,
+    callback_id: _callbackId,
     ...agentPayload
   } = payload;
   const merged = formValue ? { ...agentPayload, form_value: formValue } : agentPayload;
@@ -215,6 +219,35 @@ function forwardToAgent(
     createTime: Date.now(),
   };
   deps.pending.push(scope, synthetic);
+}
+
+async function verifyBridgeCallbackId(
+  deps: CardDispatchDeps,
+  callbackId: string,
+  scope: string,
+  action: string,
+): Promise<boolean> {
+  if (!deps.callbackRegistry) {
+    log.info('cardAction', 'skip-callback-registry-missing', { scope, action });
+    log.warn('callback', 'denied', { scope, action, reason: 'missing-registry' });
+    return false;
+  }
+  const result = await deps.callbackRegistry.consume(callbackId, {
+    scope,
+    chatId: deps.evt.chatId,
+    operatorOpenId: deps.evt.operator.openId,
+    action,
+  });
+  if (!result.ok) {
+    log.info('cardAction', 'skip-callback-registry-failed', {
+      scope,
+      action,
+      reason: result.reason,
+    });
+    log.warn('callback', 'denied', { scope, action, reason: result.reason });
+    return false;
+  }
+  return true;
 }
 
 function verifyBridgeToken(

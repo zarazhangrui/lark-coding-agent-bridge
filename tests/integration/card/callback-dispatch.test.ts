@@ -5,6 +5,7 @@ import type { ChatModeCache } from '../../../src/bot/chat-mode-cache.js';
 import { PendingQueue } from '../../../src/bot/pending-queue.js';
 import { CallbackAuth } from '../../../src/card/callback-auth.js';
 import { CallbackNonceStore } from '../../../src/card/callback-store.js';
+import { CallbackRegistryStore } from '../../../src/card/callback-registry.js';
 import { handleCardAction } from '../../../src/card/dispatcher.js';
 import type { Controls } from '../../../src/commands/index.js';
 import { createDefaultProfileConfig } from '../../../src/config/profile-schema.js';
@@ -63,6 +64,31 @@ describe('signed card callback dispatch', () => {
     expect(queued).toHaveLength(1);
     expect(queued[0]?.content).toBe('[card-click] {"choice":"a","form_value":{"note":"from form"}}');
     expect(queued[0]?.chatType).toBe('group');
+  });
+
+  it('forwards registry callback ids once without leaking callback fields', async () => {
+    const h = await createHarness();
+    const callbackId = await h.callbackId();
+
+    await h.dispatch(
+      {
+        __bridge_cb: true,
+        callback_id: callbackId,
+        choice: 'a',
+      },
+      { note: 'from form' },
+    );
+
+    const queued = h.pending.cancel('oc_group');
+    expect(queued).toHaveLength(1);
+    expect(queued[0]?.content).toBe('[card-click] {"choice":"a","form_value":{"note":"from form"}}');
+
+    await h.dispatch({
+      __bridge_cb: true,
+      callback_id: callbackId,
+      choice: 'replay',
+    });
+    expect(h.pending.cancel('oc_group')).toHaveLength(0);
   });
 
   it('drops legacy Claude callback markers before command dispatch', async () => {
@@ -125,6 +151,8 @@ type Harness = {
   controls: Controls;
   pending: PendingQueue;
   auth: CallbackAuth;
+  registry: CallbackRegistryStore;
+  callbackId(): Promise<string>;
   dispatch(value: Record<string, unknown>, formValue?: Record<string, unknown>): Promise<void>;
   token(
     action: string,
@@ -143,6 +171,10 @@ async function createHarness(
   const agent = new FakeAgentAdapter();
   const pending = new PendingQueue(60_000, () => {});
   const store = new CallbackNonceStore(`${tmp.profile}/callback-nonces.json`);
+  const registry = new CallbackRegistryStore(`${tmp.profile}/callback-registry.json`, {
+    now: () => 1000,
+    createId: () => `cb-${Math.random().toString(36).slice(2)}`,
+  });
   const controls = {
     profile: 'claude',
     profileConfig: createDefaultProfileConfig({
@@ -175,7 +207,7 @@ async function createHarness(
   } as unknown as ChatModeCache;
   cleanups.push(async () => {
     pending.cancelAll();
-    await Promise.all([sessions.flush(), workspaces.flush(), store.flush()]);
+    await Promise.all([sessions.flush(), workspaces.flush(), store.flush(), registry.flush()]);
     await tmp.cleanup();
   });
 
@@ -189,6 +221,19 @@ async function createHarness(
     controls,
     pending,
     auth,
+    registry,
+    callbackId: async () => {
+      const registered = await registry.register({
+        runId: 'run-active',
+        scope: 'oc_group',
+        chatId: 'oc_group',
+        operatorOpenId: 'ou_operator',
+        action: 'agent_callback',
+        policyFingerprint: 'fp-1',
+        ttlMs: 60_000,
+      });
+      return registered.id;
+    },
     token: (action, overrides = {}) => {
       nonce = overrides.nonce ?? `nonce-${action}`;
       return auth.sign({
@@ -213,6 +258,7 @@ async function createHarness(
         pending,
         chatModeCache,
         ...(opts.callbackAuth === false ? {} : { callbackAuth: auth }),
+        callbackRegistry: registry,
         callbackPolicyFingerprint: 'fp-1',
       }),
   };

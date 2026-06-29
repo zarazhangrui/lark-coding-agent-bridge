@@ -45,6 +45,12 @@ export interface AgentRunOptions {
    * are adapter-specific.
   */
   stopGraceMs?: number;
+  callbackContext?: {
+    scope: string;
+    chatId: string;
+    operatorOpenId: string;
+    policyFingerprint: string;
+  };
 }
 
 export interface AgentRun {
