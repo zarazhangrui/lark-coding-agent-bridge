@@ -268,3 +268,53 @@ export function windowState(state: RunState, opts: WindowOptions): RunState {
     truncated: textTruncated,
   };
 }
+
+/**
+ * Extract the agent's final reply from a run state: the text blocks after the
+ * last tool call (or all text blocks when there were no tools). Text reply
+ * mode posts this as the single standalone answer — the narration between tool
+ * calls is dropped because the card/markdown stream already showed it and
+ * `/last` recalls the full transcript.
+ *
+ * Pure function; the input state is not modified. When the joined reply
+ * exceeds `maxTextChars` (default 4000, matching `windowState`), the head is
+ * kept and a `/last` hint is appended so the user knows to recall the rest.
+ */
+export function finalReplyText(
+  state: RunState,
+  opts?: { maxTextChars?: number },
+): string | undefined {
+  const maxTextChars = opts?.maxTextChars ?? 4000;
+  const blocks = state.blocks;
+  let lastToolIdx = -1;
+  for (let i = blocks.length - 1; i >= 0; i--) {
+    if (blocks[i]!.kind === 'tool') {
+      lastToolIdx = i;
+      break;
+    }
+  }
+  const texts: string[] = [];
+  for (let i = lastToolIdx + 1; i < blocks.length; i++) {
+    const block = blocks[i]!;
+    if (block.kind === 'text') texts.push(block.content);
+  }
+  if (texts.length === 0) return undefined;
+  const joined = texts.join('\n');
+  if (joined.length <= maxTextChars) return joined;
+  return `${joined.slice(0, maxTextChars)}（/last 查看完整）`;
+}
+
+/**
+ * Build the standalone completion notice posted when a run reaches a terminal
+ * state. When `truncated` is set (the run's text exceeded the card window),
+ * the notice points the user at `/last` to recall the full transcript instead
+ * of the bridge re-dumping it into the chat.
+ */
+export function buildCompletionNotice(opts: {
+  mins: number;
+  toolCount: number;
+  truncated: boolean;
+}): string {
+  const truncPart = opts.truncated ? ' · 输出较长，回复 /last 查看完整' : '';
+  return `✅ 完成 · 耗时 ${opts.mins}m · ${opts.toolCount} 工具${truncPart} · /doctor 查详情`;
+}

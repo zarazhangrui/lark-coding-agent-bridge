@@ -18,7 +18,9 @@ import { CallbackAuth } from '../card/callback-auth';
 import { CallbackNonceStore } from '../card/callback-store';
 import { renderCard } from '../card/run-renderer';
 import {
+  buildCompletionNotice,
   finalizeIfRunning,
+  finalReplyText,
   initialState,
   markIdleTimeout,
   markInterrupted,
@@ -788,15 +790,10 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
       void channel
         .send(
           chatId,
-          { markdown: `✅ 完成 · 耗时 ${mins}m · ${toolCount} 工具 · /doctor 查详情` },
+          { markdown: buildCompletionNotice({ mins, toolCount, truncated }) },
           sendOpts,
         )
         .catch((err) => log.fail('stream', err, { step: 'completion' }));
-      if (truncated && fullText.trim()) {
-        void channel
-          .send(chatId, { markdown: fullText }, sendOpts)
-          .catch((err) => log.fail('stream', err, { step: 'fulltext' }));
-      }
     },
   };
 
@@ -921,8 +918,9 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
       });
     } else {
       // text mode: drain the agent stream without sending anything during
-      // the run, then post the final rendered text once as a plain markdown
-      // (msg_type=post) message — no card, no streaming, no typewriter.
+      // the run, then post only the final reply (text after the last tool)
+      // once as a plain markdown message — no card, no streaming, no
+      // typewriter, no process-narration dump. `/last` recalls the full run.
       const finalState = await processAgentStream(
         handle,
         eventStream,
@@ -932,9 +930,9 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
         async () => {},
         hooks,
       );
-      const body = renderText(filterForPrefs(finalState));
-      if (body.trim()) {
-        await channel.send(chatId, { markdown: body }, sendOpts);
+      const reply = finalReplyText(finalState);
+      if (reply?.trim()) {
+        await channel.send(chatId, { markdown: reply }, sendOpts);
       }
     }
   } catch (err) {

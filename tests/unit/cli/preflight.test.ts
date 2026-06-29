@@ -88,6 +88,38 @@ const bridgeConfig: AppConfig = {
   },
 };
 
+// The bridge process exports LARK_CHANNEL* / LARKSUITE_CLI_CONFIG_DIR into
+// `process.env`. The spawn mock spreads `process.env` into every spawned
+// lark-cli call, so those vars leak into cases that assert a clean native env
+// (e.g. user-default detection runs `config show` without the bridge config).
+// Strip them per-test and restore after so assertions see a deterministic env.
+const BRIDGE_ENV_VARS = [
+  'LARK_CHANNEL',
+  'LARK_CHANNEL_HOME',
+  'LARK_CHANNEL_PROFILE',
+  'LARKSUITE_CLI_CONFIG_DIR',
+] as const;
+
+let savedBridgeEnv: Record<string, string | undefined> | undefined;
+
+function isolateBridgeEnv(): void {
+  savedBridgeEnv = {};
+  for (const key of BRIDGE_ENV_VARS) {
+    savedBridgeEnv[key] = process.env[key];
+    delete process.env[key];
+  }
+}
+
+function restoreBridgeEnv(): void {
+  if (!savedBridgeEnv) return;
+  for (const key of BRIDGE_ENV_VARS) {
+    const value = savedBridgeEnv[key];
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+  }
+  savedBridgeEnv = undefined;
+}
+
 describe('lark-cli preflight', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -118,9 +150,11 @@ describe('lark-cli preflight', () => {
         return child;
       },
     );
+    isolateBridgeEnv();
   });
 
   afterEach(async () => {
+    restoreBridgeEnv();
     vi.restoreAllMocks();
     await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
   });
