@@ -12,8 +12,8 @@ import {
   materializeEnvSecretForService,
   resolveProfileRuntime,
 } from '../../runtime/profile-runtime';
-import { readAndPrune, type ProcessEntry } from '../../runtime/registry';
-import { checkRuntimeLock, type RuntimeLockMeta } from '../../runtime/locks';
+import { isAlive, readAndPrune, type ProcessEntry } from '../../runtime/registry';
+import { checkRuntimeLock, cleanupStaleRuntimeLock, type RuntimeLockMeta } from '../../runtime/locks';
 import { preFlightChecks } from '../preflight';
 import { promptAndStopActiveBridgeMigrationConflict } from './migrate';
 import { stopProcessEntry, type StopProcessEntryResult } from './ps';
@@ -144,6 +144,15 @@ async function assertLockNotHeldByAnotherRuntime(
     console.error(
       `  holder: profile=${lock.meta.profile}${app} agent=${lock.meta.agentKind} pid=${lock.meta.pid} startedAt=${lock.meta.startedAt}`,
     );
+
+    // Dead holder = stale lock left by a crash / hard kill. Nothing to stop;
+    // clean it up and re-check instead of aborting (the non-interactive abort
+    // below would otherwise wedge service start until manual lock surgery).
+    if (!isAlive(lock.meta.pid)) {
+      console.log(`  holder pid ${lock.meta.pid} 已不存在,自动清理陈旧锁后重试…`);
+      await cleanupStaleRuntimeLock(target);
+      continue;
+    }
 
     if (!opts.confirmStopRuntimeLockProcess && (!process.stdin.isTTY || !process.stdout.isTTY)) {
       console.error(

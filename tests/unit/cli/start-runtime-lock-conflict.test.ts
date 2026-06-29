@@ -1,3 +1,4 @@
+import { spawnSync } from 'node:child_process';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { RuntimeLockConflictError, type RuntimeLockMeta } from '../../../src/runtime/locks';
 
@@ -102,7 +103,9 @@ describe('run runtime lock conflict handling', () => {
       target: '/tmp/lark-channel-home/registry/locks/profile/codex.lock',
       profile: 'codex',
       agentKind: 'codex',
-      pid: 83130,
+      // Must be a live pid: dead holders now short-circuit into stale-lock
+      // cleanup without confirmation. The test runner itself is always live.
+      pid: process.pid,
       startedAt: '2026-05-28T12:50:39.072Z',
     };
     mocks.withProfileAndAppLocks
@@ -129,5 +132,37 @@ describe('run runtime lock conflict handling', () => {
     expect(stopped).toEqual([holder]);
     expect(exit).not.toHaveBeenCalled();
     exit.mockRestore();
+  });
+
+  it('cleans up the stale lock and retries without confirmation when the holder is dead', async () => {
+    // A just-exited child gives us a pid that is guaranteed dead.
+    const deadPid = spawnSync(process.execPath, ['-e', 'process.exit(0)']).pid ?? 0;
+    const holder: RuntimeLockMeta = {
+      kind: 'profile',
+      target: '/tmp/lark-channel-home/registry/locks/profile/codex.lock',
+      profile: 'codex',
+      agentKind: 'codex',
+      pid: deadPid,
+      startedAt: '2026-05-28T12:50:39.072Z',
+    };
+    mocks.withProfileAndAppLocks
+      .mockRejectedValueOnce(new RuntimeLockConflictError('profile', holder.target, holder, new Error('locked')))
+      .mockResolvedValueOnce(undefined);
+    const confirm = vi.fn(async () => true);
+    const stop = vi.fn(async () => 'terminated' as const);
+
+    await expect(
+      runStart({
+        profile: 'codex',
+        skipCheckLarkCli: true,
+        confirmStopRuntimeLockProcess: confirm,
+        stopRuntimeLockProcess: stop,
+      }),
+    ).resolves.toBeUndefined();
+
+    // Dead holder: no one to confirm with, nothing to stop — just retry.
+    expect(mocks.withProfileAndAppLocks).toHaveBeenCalledTimes(2);
+    expect(confirm).not.toHaveBeenCalled();
+    expect(stop).not.toHaveBeenCalled();
   });
 });
