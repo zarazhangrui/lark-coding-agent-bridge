@@ -469,7 +469,12 @@ async function maybeResolveProfileRuntime(
 }
 
 function agentDisplay(agentKind: ProcessEntry['agentKind']): { id: string; displayName: string } {
-  return agentKind === 'codex'
-    ? { id: 'codex', displayName: 'Codex CLI' }
-    : { id: 'claude', displayName: 'Claude Code' };
+  switch (agentKind) {
+    case 'codex':
+      return { id: 'codex', displayName: 'Codex CLI' };
+    case 'trae':
+      return { id: 'trae', displayName: 'Trae CLI' };
+    case 'claude':
+      return { id: 'claude', displayName: 'Claude Code' };
+  }
 }

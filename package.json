@@ -75,6 +75,8 @@
     "claude",
     "claude-code",
     "codex",
+    "trae",
+    "traecli",
     "cli",
     "channel",
     "bridge"

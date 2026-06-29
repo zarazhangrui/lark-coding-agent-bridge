@@ -11,6 +11,10 @@ export interface LarkChannelEnvContext {
 export function buildLarkChannelEnv(context?: LarkChannelEnvContext): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {
     LARK_CHANNEL: '1',
+    LARK_CHANNEL_PROFILE: undefined,
+    LARK_CHANNEL_HOME: undefined,
+    LARK_CHANNEL_CONFIG: undefined,
+    LARKSUITE_CLI_CONFIG_DIR: undefined,
   };
   const profile = nonEmpty(context?.profile);
   if (profile) env.LARK_CHANNEL_PROFILE = profile;

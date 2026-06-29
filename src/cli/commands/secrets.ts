@@ -135,10 +135,13 @@ export async function resolveSecretAcrossProfiles(
   profile: string | undefined = process.env.LARK_CHANNEL_PROFILE,
 ): Promise<string | undefined> {
   if (profile) {
-    const appPaths = resolveAppPaths({ rootDir, profile });
-    const ids = await listSecretIds(appPaths);
-    if (!ids.includes(id)) return undefined;
-    return getSecret(id, appPaths);
+    const root = await loadRootConfig(resolveAppPaths({ rootDir }).configFile);
+    if (!root || root.profiles[profile]) {
+      const appPaths = resolveAppPaths({ rootDir, profile });
+      const ids = await listSecretIds(appPaths);
+      if (!ids.includes(id)) return undefined;
+      return getSecret(id, appPaths);
+    }
   }
 
   const profiles = await listSecretProfiles(rootDir);

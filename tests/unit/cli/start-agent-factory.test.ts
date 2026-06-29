@@ -69,6 +69,20 @@ describe('start runtime agent factory', () => {
     expect(profile.codex?.binaryPath).toBe('codex');
   });
 
+  it('creates a Trae runtime agent and seeds the default binary', () => {
+    const profile = createRuntimeProfileConfig({
+      agentKind: 'trae',
+      accounts: appAccount(),
+    });
+    const agent = createRuntimeAgent(profile, {
+      profileDir: '/tmp/lark-channel-bridge/profiles/trae-e2e',
+    });
+
+    expect(profile.trae?.binaryPath).toBe('traecli');
+    expect(agent.id).toBe('trae');
+    expect(agent.displayName).toBe('Trae CLI');
+  });
+
   it('updates the process registry before releasing the old app lock during reconnect', async () => {
     const source = await readFile(join(process.cwd(), 'src/cli/commands/start.ts'), 'utf8');
     const restartStart = source.indexOf('async restart()');

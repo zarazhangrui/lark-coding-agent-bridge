@@ -52,6 +52,8 @@ export interface RunPolicyInput {
   capability: AgentCapability;
   profileConfig: ProfileConfig;
   now: number;
+  agentHome?: string;
+  inheritAgentHome?: boolean;
   codexHome?: string;
   inheritCodexHome?: boolean;
   ttlMs?: number;
@@ -144,8 +146,8 @@ export function evaluateRunPolicy(input: RunPolicyInput): RunPolicyResult {
       accessPolicyDigest: accessDigest,
       resourceScopeDigest: resourceDigest,
       attachmentPolicyShapeDigest: attachmentDigest,
-      codexHome: input.codexHome,
-      inheritCodexHome: input.inheritCodexHome ?? false,
+      codexHome: input.agentHome ?? input.codexHome,
+      inheritCodexHome: input.inheritAgentHome ?? input.inheritCodexHome ?? false,
     }),
   };
 }

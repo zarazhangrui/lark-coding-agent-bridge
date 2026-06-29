@@ -238,9 +238,11 @@ describe('profile runtime resolver', () => {
     const oldPath = process.env.PATH;
     const oldClaude = process.env.LARK_CHANNEL_CLAUDE_BIN;
     const oldCodex = process.env.LARK_CHANNEL_CODEX_BIN;
+    const oldTrae = process.env.LARK_CHANNEL_TRAE_BIN;
     process.env.PATH = bin;
     delete process.env.LARK_CHANNEL_CLAUDE_BIN;
     delete process.env.LARK_CHANNEL_CODEX_BIN;
+    delete process.env.LARK_CHANNEL_TRAE_BIN;
 
     try {
       let error: Error | undefined;
@@ -262,7 +264,7 @@ describe('profile runtime resolver', () => {
       expect(message).toContain(claude);
       expect(message).toContain('codex');
       expect(message).toContain(codex);
-      expect(message).toContain('--agent <claude|codex>');
+      expect(message).toContain('--agent <claude|codex|trae>');
     } finally {
       process.env.PATH = oldPath;
       if (oldClaude === undefined) {
@@ -275,6 +277,11 @@ describe('profile runtime resolver', () => {
       } else {
         process.env.LARK_CHANNEL_CODEX_BIN = oldCodex;
       }
+      if (oldTrae === undefined) {
+        delete process.env.LARK_CHANNEL_TRAE_BIN;
+      } else {
+        process.env.LARK_CHANNEL_TRAE_BIN = oldTrae;
+      }
     }
   });
 
@@ -286,9 +293,11 @@ describe('profile runtime resolver', () => {
     const oldPath = process.env.PATH;
     const oldClaude = process.env.LARK_CHANNEL_CLAUDE_BIN;
     const oldCodex = process.env.LARK_CHANNEL_CODEX_BIN;
+    const oldTrae = process.env.LARK_CHANNEL_TRAE_BIN;
     process.env.PATH = bin;
     delete process.env.LARK_CHANNEL_CLAUDE_BIN;
     delete process.env.LARK_CHANNEL_CODEX_BIN;
+    delete process.env.LARK_CHANNEL_TRAE_BIN;
 
     try {
       const runtime = await withTty(true, true, () =>
@@ -316,6 +325,11 @@ describe('profile runtime resolver', () => {
         delete process.env.LARK_CHANNEL_CODEX_BIN;
       } else {
         process.env.LARK_CHANNEL_CODEX_BIN = oldCodex;
+      }
+      if (oldTrae === undefined) {
+        delete process.env.LARK_CHANNEL_TRAE_BIN;
+      } else {
+        process.env.LARK_CHANNEL_TRAE_BIN = oldTrae;
       }
     }
   });
@@ -475,6 +489,122 @@ describe('profile runtime resolver', () => {
         delete process.env.LARK_CHANNEL_HOME;
       } else {
         process.env.LARK_CHANNEL_HOME = oldHome;
+      }
+    }
+  });
+
+  it('infers Trae agent kind from an explicit legacy profile name', async () => {
+    const root = await tmpRoot();
+    const bin = join(root, 'bin');
+    const trae = await writeExecutable(bin, 'traecli');
+    const oldTrae = process.env.LARK_CHANNEL_TRAE_BIN;
+    process.env.LARK_CHANNEL_TRAE_BIN = trae;
+    await writeFile(
+      join(root, 'config.json'),
+      `${JSON.stringify({
+        accounts: { app },
+        preferences: {},
+      }, null, 2)}\n`,
+    );
+
+    try {
+      const runtime = await resolveProfileRuntime({
+        config: join(root, 'config.json'),
+        profile: 'trae',
+        allowBootstrap: true,
+      });
+      const saved = JSON.parse(await readFile(join(root, 'config.json'), 'utf8')) as {
+        profiles: Record<string, { agentKind: string; trae?: { binaryPath?: string } }>;
+      };
+
+      expect(runtime.profile).toBe('trae');
+      expect(runtime.profileConfig.agentKind).toBe('trae');
+      expect(runtime.profileConfig.trae?.binaryPath).toBe(trae);
+      expect(saved.profiles.trae?.agentKind).toBe('trae');
+      expect(saved.profiles.trae?.trae?.binaryPath).toBe(trae);
+    } finally {
+      if (oldTrae === undefined) {
+        delete process.env.LARK_CHANNEL_TRAE_BIN;
+      } else {
+        process.env.LARK_CHANNEL_TRAE_BIN = oldTrae;
+      }
+    }
+  });
+
+  it('preserves existing root secret providers when bootstrapping a Trae profile into a root config', async () => {
+    const root = await tmpRoot();
+    const bin = join(root, 'bin');
+    const trae = await writeExecutable(bin, 'traecli');
+    const oldTrae = process.env.LARK_CHANNEL_TRAE_BIN;
+    process.env.LARK_CHANNEL_TRAE_BIN = trae;
+    await writeProfileRoot(
+      root,
+      'claude',
+      {
+        claude: createDefaultProfileConfig({
+          agentKind: 'claude',
+          accounts: { app },
+        }),
+      },
+      {
+        secrets: {
+          providers: {
+            existing: {
+              source: 'env',
+              env: 'EXISTING_SECRET',
+            },
+          },
+          defaults: {
+            env: 'existing',
+          },
+        },
+      },
+    );
+
+    try {
+      const runtime = await resolveProfileRuntime({
+        config: join(root, 'config.json'),
+        profile: 'trae',
+        allowBootstrap: true,
+        appId: 'cli_trae',
+        appSecret: 'trae-secret',
+        tenant: 'feishu',
+      } as Parameters<typeof resolveProfileRuntime>[0] & {
+        appId: string;
+        appSecret: string;
+        tenant: 'feishu';
+      });
+      const saved = JSON.parse(await readFile(join(root, 'config.json'), 'utf8')) as {
+        profiles: Record<string, {
+          agentKind: string;
+          accounts: { app: { secret: unknown } };
+          trae?: { binaryPath?: string };
+        }>;
+        secrets?: {
+          providers?: Record<string, { source?: string; command?: string; env?: string }>;
+          defaults?: { env?: string };
+        };
+      };
+
+      expect(runtime.profileConfig.agentKind).toBe('trae');
+      expect(saved.profiles.trae?.agentKind).toBe('trae');
+      expect(saved.profiles.trae?.trae?.binaryPath).toBe(trae);
+      expect(saved.profiles.trae?.accounts.app.secret).toEqual({
+        source: 'exec',
+        provider: 'bridge',
+        id: 'app-cli_trae',
+      });
+      expect(saved.secrets?.providers?.existing).toEqual({
+        source: 'env',
+        env: 'EXISTING_SECRET',
+      });
+      expect(saved.secrets?.providers?.bridge?.command).toBe(expectedSecretsGetter(root));
+      expect(saved.secrets?.defaults?.env).toBe('existing');
+    } finally {
+      if (oldTrae === undefined) {
+        delete process.env.LARK_CHANNEL_TRAE_BIN;
+      } else {
+        process.env.LARK_CHANNEL_TRAE_BIN = oldTrae;
       }
     }
   });

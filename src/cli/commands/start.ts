@@ -4,6 +4,7 @@ import { createInterface } from 'node:readline';
 import pkg from '../../../package.json';
 import { ClaudeAdapter } from '../../agent/claude/adapter';
 import { CodexAdapter } from '../../agent/codex/adapter';
+import { TraeAdapter } from '../../agent/trae/adapter';
 import {
   AgentPreflightError,
   formatAgentPreflightDiagnostic,
@@ -374,9 +375,9 @@ async function checkRuntimeAgentAvailability(agent: AgentAdapter): Promise<Agent
   if (ok) return { ok: true };
   const diagnostic = {
     code: 'agent-binary-not-found' as const,
-    agentId: agent.id === 'codex' ? 'codex' as const : 'claude' as const,
+    agentId: agent.id === 'codex' ? 'codex' as const : agent.id === 'trae' ? 'trae' as const : 'claude' as const,
     agentName: agent.displayName,
-    command: agent.id === 'codex' ? 'codex' : 'claude',
+    command: agent.id === 'codex' ? 'codex' : agent.id === 'trae' ? 'traecli' : 'claude',
   };
   return {
     ok: false,
@@ -430,6 +431,22 @@ export function createRuntimeAgent(
       inheritCodexHome: codex.inheritCodexHome === true,
       ignoreUserConfig: codex.ignoreUserConfig === true,
       ignoreRules: codex.ignoreRules !== false,
+      sandbox: profileConfig.sandbox.defaultMode,
+      larkChannel,
+    });
+  }
+  if (profileConfig.agentKind === 'trae') {
+    const trae = profileConfig.trae;
+    if (!trae?.binaryPath) {
+      throw new Error('trae profile requires trae.binaryPath');
+    }
+    return new TraeAdapter({
+      binary: trae.binaryPath,
+      profileStateDir: appPaths.profileDir,
+      ...(trae.traeHome ? { traeHome: trae.traeHome } : {}),
+      inheritTraeHome: trae.inheritTraeHome === true,
+      ignoreUserConfig: trae.ignoreUserConfig === true,
+      ignoreRules: trae.ignoreRules !== false,
       sandbox: profileConfig.sandbox.defaultMode,
       larkChannel,
     });

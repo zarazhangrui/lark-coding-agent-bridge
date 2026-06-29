@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { BRIDGE_SYSTEM_PROMPT } from '../../../src/agent/bridge-system-prompt';
-import { claudeCapability, codexCapability } from '../../../src/agent/capability';
+import {
+  claudeCapability,
+  codexCapability,
+  traeCapability,
+} from '../../../src/agent/capability';
 import { createDefaultProfileConfig } from '../../../src/config/profile-schema';
 
 describe('agent capability contract', () => {
@@ -71,5 +75,36 @@ describe('agent capability contract', () => {
     });
 
     expect(codexCapability(profile).permissions.maxAccess).toBe('read-only');
+  });
+
+  it('defines Trae capability as a thread-based stdin agent', () => {
+    const profile = createDefaultProfileConfig({
+      agentKind: 'trae',
+      accounts: {
+        app: {
+          id: 'cli_test',
+          secret: '${APP_SECRET}',
+          tenant: 'feishu',
+        },
+      },
+      trae: {
+        binaryPath: '/usr/local/bin/traecli',
+      },
+      permissions: {
+        defaultAccess: 'workspace',
+        maxAccess: 'workspace',
+      },
+    });
+
+    expect(traeCapability(profile)).toMatchObject({
+      agentId: 'trae',
+      sessionKind: 'trae-thread',
+      promptInjection: 'stdin-prefix',
+      supportsNativeHistory: false,
+      systemPrompt: BRIDGE_SYSTEM_PROMPT,
+      permissions: {
+        maxAccess: 'workspace',
+      },
+    });
   });
 });

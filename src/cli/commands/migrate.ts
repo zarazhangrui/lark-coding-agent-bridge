@@ -1,6 +1,6 @@
 import { mkdir, readFile, readdir, rename, rm, stat } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
-import { createBootstrapCodexConfig } from '../profile-bootstrap';
+import { createBootstrapCodexConfig, createBootstrapTraeConfig } from '../profile-bootstrap';
 import { promptLine } from '../prompt';
 import { stopProcessEntry } from './ps';
 import {
@@ -12,7 +12,7 @@ import {
 } from '../../config/migrate-v2';
 import { legacyPaths, paths } from '../../config/paths';
 import { agentKindFromString } from '../../config/profile-store';
-import type { RootConfig } from '../../config/profile-schema';
+import type { AgentKind, RootConfig } from '../../config/profile-schema';
 import { isComplete, type AppCredentials, type AppConfig } from '../../config/schema';
 import { saveConfig } from '../../config/store';
 
@@ -43,7 +43,7 @@ export async function runMigrate(opts: MigrateOptions): Promise<void> {
   const configPath = opts.config ?? paths.configFile;
   await migrateLegacyPaths();
   await migrateConfigShape(configPath);
-  const agentKind = agentKindFromString(opts.agent) ?? (opts.profile === 'codex' ? 'codex' : undefined);
+  const agentKind = agentKindFromString(opts.agent) ?? agentKindFromProfileName(opts.profile);
   const needsV2Migration = await hasLegacyProfileConfig(configPath);
   const result = await migrateProfileV2WithActiveBridgePrompt({
     rootDir: dirname(configPath),
@@ -53,6 +53,9 @@ export async function runMigrate(opts: MigrateOptions): Promise<void> {
     ...(needsV2Migration && agentKind === 'codex'
       ? { codex: await createBootstrapCodexConfig(undefined) }
       : {}),
+    ...(needsV2Migration && agentKind === 'trae'
+      ? { trae: await createBootstrapTraeConfig(undefined) }
+      : {}),
   }, opts);
   if (!result) return;
   if (result.migrated) {
@@ -60,6 +63,11 @@ export async function runMigrate(opts: MigrateOptions): Promise<void> {
   } else {
     console.log(`✓ profile 目录结构已是最新：${result.profile}`);
   }
+}
+
+function agentKindFromProfileName(profile: string | undefined): AgentKind | undefined {
+  if (profile === 'claude' || profile === 'codex' || profile === 'trae') return profile;
+  return undefined;
 }
 
 async function migrateProfileV2WithActiveBridgePrompt(

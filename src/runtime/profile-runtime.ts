@@ -6,6 +6,7 @@ import { detectInstalledAgents, type DetectedAgent } from '../cli/agent-detectio
 import {
   createBootstrapCodexConfig,
   createBootstrapProfileConfig,
+  createBootstrapTraeConfig,
   resolveBootstrapWorkspace,
 } from '../cli/profile-bootstrap';
 import { promptPassword } from '../cli/prompt';
@@ -36,7 +37,7 @@ import {
   type RootConfig,
 } from '../config/profile-schema';
 import { permissionsToLegacySandbox } from '../config/permissions';
-import type { AppConfig, SecretInput, TenantBrand } from '../config/schema';
+import type { AppConfig, SecretInput, SecretsConfig, TenantBrand } from '../config/schema';
 import { isComplete, isSecretRef, secretKeyForApp } from '../config/schema';
 import { resolveAppSecret } from '../config/secret-resolver';
 import {
@@ -90,6 +91,9 @@ export function createRuntimeProfileConfig(
     ...(input.agentKind === 'codex'
       ? { codex: input.codex ?? { binaryPath: process.env.LARK_CHANNEL_CODEX_BIN ?? 'codex' } }
       : {}),
+    ...(input.agentKind === 'trae'
+      ? { trae: input.trae ?? { binaryPath: process.env.LARK_CHANNEL_TRAE_BIN ?? 'traecli' } }
+      : {}),
   });
 }
 
@@ -108,7 +112,7 @@ export async function resolveProfileRuntime(
   if (!profile && opts.allowBootstrap) {
     const detected = await detectInstalledAgents();
     if (detected.length === 0) {
-      throw new Error('no supported local agent found; install claude or codex first');
+      throw new Error('no supported local agent found; install claude, codex, or traecli first');
     }
     if (detected.length > 1) {
       const selected = await selectDetectedAgent(detected, opts.selectAgent);
@@ -137,6 +141,9 @@ export async function resolveProfileRuntime(
     ...(migrationAgent ? { agentKind: migrationAgent } : {}),
     ...(needsMigration && migrationAgent === 'codex'
       ? { codex: await createBootstrapCodexConfig(undefined) }
+      : {}),
+    ...(needsMigration && migrationAgent === 'trae'
+      ? { trae: await createBootstrapTraeConfig(undefined) }
       : {}),
   }, opts.handleActiveBridgeMigrationConflict);
 
@@ -189,7 +196,7 @@ export async function resolveProfileRuntime(
     assertBootstrapAppMatchesExistingConfig(opts, profile, existing);
     const cfg = await maybeMigratePlaintextSecret(existing, configPath, appPaths);
     const profileConfig = createRuntimeProfileConfig({
-      agentKind: requestedAgent ?? 'claude',
+      agentKind: resolveBootstrapAgent(requestedAgent, profile) ?? 'claude',
       accounts: cfg.accounts,
       preferences: cfg.preferences,
       secrets: cfg.secrets,
@@ -246,11 +253,10 @@ async function bootstrapProfileIntoExistingRoot(args: {
     defaultWorkspace: appPaths.defaultWorkspaceDir,
     profileDir: appPaths.profileDir,
   });
+  const nextSecrets = mergeSecretsConfig(rootConfig.secrets, encrypted.secrets);
   const nextRoot: RootConfig = {
     ...rootConfig,
-    ...(rootConfig.secrets ?? encrypted.secrets
-      ? { secrets: rootConfig.secrets ?? encrypted.secrets }
-      : {}),
+    ...(nextSecrets ? { secrets: nextSecrets } : {}),
     profiles: {
       ...rootConfig.profiles,
       [profile]: {
@@ -395,7 +401,12 @@ function resolveBootstrapAgent(
   requestedAgent: AgentKind | undefined,
   profile: string | undefined,
 ): AgentKind | undefined {
-  return requestedAgent ?? (profile === 'codex' ? 'codex' : undefined);
+  return requestedAgent ?? agentKindFromProfileName(profile);
+}
+
+function agentKindFromProfileName(profile: string | undefined): AgentKind | undefined {
+  if (profile === 'claude' || profile === 'codex' || profile === 'trae') return profile;
+  return undefined;
 }
 
 async function hasLegacyConfig(configPath: string): Promise<boolean> {
@@ -568,7 +579,7 @@ function formatAmbiguousAgentSelectionError(
 ): string {
   const lines = detected.map((agent) => `  - ${agent.kind}: ${agent.binaryPath}`);
   return [
-    '检测到多个本地 agent，请使用 --agent <claude|codex> 指定要初始化哪一个。',
+    '检测到多个本地 agent，请使用 --agent <claude|codex|trae> 指定要初始化哪一个。',
     '已检测到：',
     ...lines,
   ].join('\n');
@@ -613,7 +624,30 @@ class UserCancelledError extends Error {
 }
 
 function displayAgentKind(kind: AgentKind): string {
-  return kind === 'claude' ? 'Claude Code' : 'Codex CLI';
+  switch (kind) {
+    case 'claude':
+      return 'Claude Code';
+    case 'codex':
+      return 'Codex CLI';
+    case 'trae':
+      return 'Trae CLI';
+  }
+}
+
+function mergeSecretsConfig(
+  existing: SecretsConfig | undefined,
+  incoming: SecretsConfig | undefined,
+): SecretsConfig | undefined {
+  if (!existing) return incoming;
+  if (!incoming) return existing;
+  return {
+    ...(existing.defaults ?? incoming.defaults
+      ? { defaults: { ...incoming.defaults, ...existing.defaults } }
+      : {}),
+    ...(existing.providers ?? incoming.providers
+      ? { providers: { ...incoming.providers, ...existing.providers } }
+      : {}),
+  };
 }
 
 async function maybeMigrateRootPlaintextSecret(

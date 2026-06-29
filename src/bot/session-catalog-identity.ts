@@ -1,5 +1,5 @@
 import type { NormalizedMessage } from '@larksuite/channel';
-import { claudeCapability, codexCapability } from '../agent/capability';
+import { claudeCapability, codexCapability, traeCapability } from '../agent/capability';
 import type { Controls } from '../commands';
 import type { AccessDecision } from '../policy/access';
 import { evaluateRunPolicy } from '../policy/run-policy';
@@ -24,7 +24,29 @@ export async function commandSessionCatalogIdentity(input: {
   const capability =
     input.controls.profileConfig.agentKind === 'codex'
       ? codexCapability(input.controls.profileConfig)
-      : claudeCapability(input.controls.profileConfig);
+      : input.controls.profileConfig.agentKind === 'trae'
+        ? traeCapability(input.controls.profileConfig)
+        : claudeCapability(input.controls.profileConfig);
+  const activeAgentHome =
+    input.controls.profileConfig.agentKind === 'codex'
+      ? {
+          ...(input.controls.profileConfig.codex?.codexHome
+            ? { agentHome: input.controls.profileConfig.codex.codexHome }
+            : {}),
+          ...(input.controls.profileConfig.codex?.inheritCodexHome !== undefined
+            ? { inheritAgentHome: input.controls.profileConfig.codex.inheritCodexHome }
+            : {}),
+        }
+      : input.controls.profileConfig.agentKind === 'trae'
+        ? {
+            ...(input.controls.profileConfig.trae?.traeHome
+              ? { agentHome: input.controls.profileConfig.trae.traeHome }
+              : {}),
+            ...(input.controls.profileConfig.trae?.inheritTraeHome !== undefined
+              ? { inheritAgentHome: input.controls.profileConfig.trae.inheritTraeHome }
+              : {}),
+          }
+        : {};
   const policy = evaluateRunPolicy({
     scope: {
       source: 'im',
@@ -40,8 +62,7 @@ export async function commandSessionCatalogIdentity(input: {
     capability,
     profileConfig: input.controls.profileConfig,
     now: Date.now(),
-    codexHome: input.controls.profileConfig.codex?.codexHome,
-    inheritCodexHome: input.controls.profileConfig.codex?.inheritCodexHome,
+    ...activeAgentHome,
   });
   if (!policy.ok) return undefined;
   return {

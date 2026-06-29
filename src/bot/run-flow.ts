@@ -88,6 +88,23 @@ export async function startRunFlow(input: StartRunFlowInput): Promise<StartRunFl
     };
   }
 
+  const activeAgentHome =
+    input.profileConfig.agentKind === 'codex'
+      ? {
+          ...(input.profileConfig.codex?.codexHome ? { agentHome: input.profileConfig.codex.codexHome } : {}),
+          ...(input.profileConfig.codex?.inheritCodexHome !== undefined
+            ? { inheritAgentHome: input.profileConfig.codex.inheritCodexHome }
+            : {}),
+        }
+      : input.profileConfig.agentKind === 'trae'
+        ? {
+            ...(input.profileConfig.trae?.traeHome ? { agentHome: input.profileConfig.trae.traeHome } : {}),
+            ...(input.profileConfig.trae?.inheritTraeHome !== undefined
+              ? { inheritAgentHome: input.profileConfig.trae.inheritTraeHome }
+              : {}),
+          }
+        : {};
+
   const policy = evaluateRunPolicy({
     scope: input.scope,
     attachments: input.attachments,
@@ -98,8 +115,7 @@ export async function startRunFlow(input: StartRunFlowInput): Promise<StartRunFl
     capability: input.capability,
     profileConfig: input.profileConfig,
     now: input.now,
-    codexHome: input.profileConfig.codex?.codexHome,
-    inheritCodexHome: input.profileConfig.codex?.inheritCodexHome,
+    ...activeAgentHome,
   });
   if (!policy.ok) {
     return {
@@ -122,7 +138,7 @@ export async function startRunFlow(input: StartRunFlowInput): Promise<StartRunFl
     if (catalogEntry?.agentId === 'claude') {
       sessionId = catalogEntry.sessionId;
       resumeFrom = sessionId;
-    } else if (catalogEntry?.agentId === 'codex') {
+    } else if (catalogEntry && (catalogEntry.agentId === 'codex' || catalogEntry.agentId === 'trae')) {
       threadId = catalogEntry.threadId;
       resumeFrom = threadId;
     }
@@ -144,7 +160,7 @@ export async function startRunFlow(input: StartRunFlowInput): Promise<StartRunFl
       sessionId,
       threadId,
       images:
-        input.capability.agentId === 'codex'
+        input.capability.agentId === 'codex' || input.capability.agentId === 'trae'
           ? policy.attachments
               .filter((attachment) => attachment.kind === 'image' && attachment.decision === 'accepted')
               .map((attachment) => attachment.path)
@@ -195,10 +211,10 @@ export function recordRunSessionEvent(input: RecordRunSessionEventInput): void {
     });
     return;
   }
-  if (input.capability.agentId === 'codex' && input.event.threadId) {
+  if ((input.capability.agentId === 'codex' || input.capability.agentId === 'trae') && input.event.threadId) {
     input.sessionCatalog?.upsertActive({
       scopeId: input.scopeId,
-      agentId: 'codex',
+      agentId: input.capability.agentId,
       cwdRealpath: input.policy.cwdRealpath,
       policyFingerprint: input.policy.policyFingerprint,
       threadId: input.event.threadId,

@@ -50,6 +50,17 @@ describe('profile schema', () => {
     });
   });
 
+  it('preserves profile-level secret provider configuration', () => {
+    const cfg = normalizeProfileConfig({
+      schemaVersion: 2,
+      agentKind: 'claude',
+      accounts: { app },
+      secrets: { defaults: { env: 'profileEnv' } },
+    });
+
+    expect(cfg.secrets).toEqual({ defaults: { env: 'profileEnv' } });
+  });
+
   it('requires codex configuration when agentKind is codex', () => {
     expect(() =>
       normalizeProfileConfig({
@@ -286,6 +297,50 @@ describe('profile schema', () => {
     });
 
     expect(cfg.codex?.inheritCodexHome).toBe(false);
+  });
+
+  it('keeps Trae binary metadata and user-home defaults without keeping public flags', () => {
+    const cfg = normalizeProfileConfig({
+      schemaVersion: 2,
+      agentKind: 'trae',
+      accounts: { app },
+      trae: {
+        binaryPath: '/usr/local/bin/traecli',
+        realpath: '/opt/trae/bin/traecli',
+        version: 'traecli 0.200.13',
+        sha256: 'abc123',
+        owner: 501,
+        mode: 0o755,
+        flags: ['--sandbox', 'workspace-write'],
+      },
+    });
+
+    expect(cfg.trae).toMatchObject({
+      binaryPath: '/usr/local/bin/traecli',
+      realpath: '/opt/trae/bin/traecli',
+      version: 'traecli 0.200.13',
+      sha256: 'abc123',
+      owner: 501,
+      mode: 0o755,
+      inheritTraeHome: true,
+      ignoreUserConfig: false,
+      ignoreRules: true,
+    });
+    expect(cfg.trae).not.toHaveProperty('flags');
+  });
+
+  it('preserves explicit Trae home isolation when configured', () => {
+    const cfg = normalizeProfileConfig({
+      schemaVersion: 2,
+      agentKind: 'trae',
+      accounts: { app },
+      trae: {
+        binaryPath: '/usr/local/bin/traecli',
+        inheritTraeHome: false,
+      },
+    });
+
+    expect(cfg.trae?.inheritTraeHome).toBe(false);
   });
 
   it('defaults Claude permissions to full/full and derives legacy sandbox for runtime compatibility', () => {

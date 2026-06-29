@@ -25,7 +25,7 @@ describe('agent-aware session catalog', () => {
     ).toBe('chat-1\x1fclaude\x1f/repo\x1ffp-1');
   });
 
-  it('stores Claude sessions and Codex threads in isolated active entries', async () => {
+  it('stores Claude sessions and thread-based agent entries in isolated active entries', async () => {
     const catalog = new SessionCatalog(await path());
 
     catalog.upsertActive({
@@ -44,6 +44,14 @@ describe('agent-aware session catalog', () => {
       threadId: 'thread-1',
       now: 2000,
     });
+    catalog.upsertActive({
+      scopeId: 'chat-1',
+      agentId: 'trae',
+      cwdRealpath: '/repo',
+      policyFingerprint: 'fp-1',
+      threadId: 'thread-trae',
+      now: 3000,
+    });
 
     expect(
       catalog.activeFor({
@@ -61,6 +69,14 @@ describe('agent-aware session catalog', () => {
         policyFingerprint: 'fp-1',
       }),
     ).toMatchObject({ threadId: 'thread-1', agentId: 'codex' });
+    expect(
+      catalog.activeFor({
+        scopeId: 'chat-1',
+        agentId: 'trae',
+        cwdRealpath: '/repo',
+        policyFingerprint: 'fp-1',
+      }),
+    ).toMatchObject({ threadId: 'thread-trae', agentId: 'trae' });
     await catalog.flush();
   });
 
@@ -86,7 +102,7 @@ describe('agent-aware session catalog', () => {
         sessionId: 'sess-wrong',
         now: 1000,
       }),
-    ).toThrow(/Codex.*threadId/i);
+    ).toThrow(/threadId/i);
 
     await catalog.replaceForTest([
       {

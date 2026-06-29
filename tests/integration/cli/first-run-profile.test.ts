@@ -90,6 +90,31 @@ describe('first-run profile bootstrap', () => {
     });
   });
 
+  it('creates a Trae profile with a default workspace and inherited user Trae home', async () => {
+    const root = await makeRoot();
+    const workspace = join(root, 'workspace');
+    const profileDir = join(root, 'profiles', 'trae-dev');
+    await mkdir(workspace, { recursive: true });
+    const trae = await writeVersionExecutable(root, 'traecli', 'traecli 0.200.13');
+
+    const profile = await createBootstrapProfileConfig({
+      agentKind: 'trae',
+      accounts: { app: { id: 'cli_trae', secret: '${APP_SECRET}', tenant: 'feishu' } },
+      workspace,
+      traeBinaryPath: trae,
+      profileDir,
+    });
+
+    const workspaceRealpath = await realpath(workspace);
+    expect(profile.agentKind).toBe('trae');
+    expect(profile.workspaces).toEqual({ default: workspaceRealpath });
+    expect(profile.trae).toMatchObject({
+      binaryPath: trae,
+      inheritTraeHome: true,
+    });
+    await expect(stat(join(profileDir, 'trae-home'))).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
   it('fails closed when a requested bootstrap workspace is not a directory', async () => {
     const root = await makeRoot();
     const file = join(root, 'not-a-dir');
@@ -135,9 +160,11 @@ describe('first-run profile bootstrap', () => {
     const oldPath = process.env.PATH;
     const oldClaude = process.env.LARK_CHANNEL_CLAUDE_BIN;
     const oldCodex = process.env.LARK_CHANNEL_CODEX_BIN;
+    const oldTrae = process.env.LARK_CHANNEL_TRAE_BIN;
     process.env.PATH = root;
     process.env.LARK_CHANNEL_CLAUDE_BIN = 'missing-claude';
     process.env.LARK_CHANNEL_CODEX_BIN = process.platform === 'win32' ? codex : 'codex';
+    process.env.LARK_CHANNEL_TRAE_BIN = 'missing-trae';
     try {
       await expect(detectInstalledAgents()).resolves.toEqual([
         { kind: 'codex', binaryPath: codex },
@@ -153,6 +180,11 @@ describe('first-run profile bootstrap', () => {
         delete process.env.LARK_CHANNEL_CODEX_BIN;
       } else {
         process.env.LARK_CHANNEL_CODEX_BIN = oldCodex;
+      }
+      if (oldTrae === undefined) {
+        delete process.env.LARK_CHANNEL_TRAE_BIN;
+      } else {
+        process.env.LARK_CHANNEL_TRAE_BIN = oldTrae;
       }
     }
   });

@@ -3,7 +3,7 @@ import { readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, isAbsolute } from 'node:path';
 import type { LarkChannel, NormalizedMessage } from '@larksuite/channel';
-import { claudeCapability, codexCapability } from '../agent/capability';
+import { claudeCapability, codexCapability, traeCapability } from '../agent/capability';
 import type { AgentAdapter } from '../agent/types';
 import type { ActiveRuns } from '../bot/active-runs';
 import {
@@ -67,7 +67,7 @@ import {
   type CodexThreadHistoryEntry,
   type ListCodexThreadHistoryOptions,
 } from '../session/codex-history';
-import type { SessionCatalog, SessionCatalogIdentity } from '../session/catalog';
+import type { CatalogAgentId, SessionCatalog, SessionCatalogIdentity } from '../session/catalog';
 import { isAlive, readAndPrune, resolveTarget } from '../runtime/registry';
 import type { SessionStore } from '../session/store';
 import { resolveWorkingDirectory } from '../policy/workspace';
@@ -145,7 +145,7 @@ type Handler = (args: string, ctx: CommandContext) => Promise<void>;
 
 interface ResumeCandidate {
   scopeId: string;
-  agentId: 'claude' | 'codex';
+  agentId: CatalogAgentId;
   cwdRealpath: string;
   policyFingerprint: string;
   sessionId?: string;
@@ -545,13 +545,17 @@ async function handleResume(args: string, ctx: CommandContext): Promise<void> {
     return;
   }
 
-  if (ctx.controls.profileConfig.agentKind === 'codex') {
+  const agentKind = ctx.controls.profileConfig.agentKind;
+  if (agentKind === 'codex' || agentKind === 'trae') {
     const identity = ctx.sessionCatalogIdentity;
     const entry =
       ctx.sessionCatalog && identity
         ? ctx.sessionCatalog.activeFor(identity)
         : undefined;
-    const history = identity ? await listCodexResumeHistory(ctx, cwd, limit) : [];
+    const history = identity && agentKind === 'codex'
+      ? await listCodexResumeHistory(ctx, cwd, limit)
+      : [];
+    const agentLabel = threadAgentLabel(agentKind);
     if (history.length > 0 && identity) {
       const entries = history.map((thread) => {
         const nonce = issueResumeCandidate(identity, { threadId: thread.threadId });
@@ -559,7 +563,7 @@ async function handleResume(args: string, ctx: CommandContext): Promise<void> {
           sessionId: nonce,
           preview: thread.name || thread.preview,
           relTime: formatRelTime(thread.updatedAtMs),
-          detail: `Codex · ${thread.source}`,
+          detail: `${agentLabel} · ${thread.source}`,
           current: thread.threadId === entry?.threadId,
         };
       });
@@ -571,7 +575,7 @@ async function handleResume(args: string, ctx: CommandContext): Promise<void> {
       const nonce = issueResumeCandidate(identity, { threadId: entry.threadId });
       await reply(
         ctx,
-        `当前 Codex thread 可恢复。\n使用 \`/resume use ${nonce}\` 恢复（10 分钟内有效）。`,
+        `当前 ${agentLabel} thread 可恢复。\n使用 \`/resume use ${nonce}\` 恢复（10 分钟内有效）。`,
       );
       return;
     }
@@ -603,10 +607,10 @@ async function applyResume(sessionId: string, ctx: CommandContext): Promise<void
     const resolved = consumeResumeCandidate(sessionId, ctx.sessionCatalogIdentity);
     if (resolved) {
       ctx.activeRuns.interrupt(ctx.scope);
-      if (ctx.sessionCatalogIdentity.agentId === 'codex') {
+      if (ctx.sessionCatalogIdentity.agentId === 'codex' || ctx.sessionCatalogIdentity.agentId === 'trae') {
         ctx.sessionCatalog.upsertActive({
           scopeId: ctx.sessionCatalogIdentity.scopeId,
-          agentId: 'codex',
+          agentId: ctx.sessionCatalogIdentity.agentId,
           cwdRealpath: ctx.sessionCatalogIdentity.cwdRealpath,
           policyFingerprint: ctx.sessionCatalogIdentity.policyFingerprint,
           threadId: resolved.threadId!,
@@ -624,7 +628,7 @@ async function applyResume(sessionId: string, ctx: CommandContext): Promise<void
       await reply(ctx, RESUME_APPLIED_REPLY);
       return;
     }
-    if (ctx.sessionCatalogIdentity.agentId === 'codex') {
+    if (ctx.sessionCatalogIdentity.agentId === 'codex' || ctx.sessionCatalogIdentity.agentId === 'trae') {
       await reply(ctx, '当前上下文不可恢复这个会话，请先用 `/resume` 重新生成恢复候选。');
       return;
     }
@@ -641,8 +645,9 @@ async function applyResume(sessionId: string, ctx: CommandContext): Promise<void
     return;
   }
 
-  if (ctx.controls.profileConfig.agentKind === 'codex') {
-    await reply(ctx, '当前上下文没有可恢复的 Codex thread，请先在当前工作区完成一次运行。');
+  const agentKind = ctx.controls.profileConfig.agentKind;
+  if (agentKind === 'codex' || agentKind === 'trae') {
+    await reply(ctx, `当前上下文没有可恢复的 ${threadAgentLabel(agentKind)} thread，请先在当前工作区完成一次运行。`);
     return;
   }
 
@@ -688,11 +693,22 @@ function consumeResumeCandidate(
     candidate.cwdRealpath !== identity.cwdRealpath ||
     candidate.policyFingerprint !== identity.policyFingerprint ||
     (identity.agentId === 'claude' && !candidate.sessionId) ||
-    (identity.agentId === 'codex' && !candidate.threadId)
+    ((identity.agentId === 'codex' || identity.agentId === 'trae') && !candidate.threadId)
   ) {
     return undefined;
   }
   return candidate;
+}
+
+function threadAgentLabel(agentKind: ProfileConfig['agentKind']): string {
+  switch (agentKind) {
+    case 'codex':
+      return 'Codex';
+    case 'trae':
+      return 'Trae CLI';
+    case 'claude':
+      return 'Claude';
+  }
 }
 
 function pruneResumeCandidates(now = Date.now()): void {
@@ -800,17 +816,18 @@ async function larkCliStatus(ctx: CommandContext): Promise<'app' | 'user-ready' 
 async function handleStatus(_args: string, ctx: CommandContext): Promise<void> {
   const cwd = effectiveWorkspaceCwd(ctx);
   const sess = ctx.sessions.getRaw(ctx.scope);
-  const isCodex = ctx.controls.profileConfig.agentKind === 'codex';
+  const isThreadAgent =
+    ctx.controls.profileConfig.agentKind === 'codex' || ctx.controls.profileConfig.agentKind === 'trae';
   const catalogEntry =
-    isCodex && ctx.sessionCatalog && ctx.sessionCatalogIdentity
+    isThreadAgent && ctx.sessionCatalog && ctx.sessionCatalogIdentity
       ? ctx.sessionCatalog.activeFor(ctx.sessionCatalogIdentity)
       : undefined;
   const card = statusCard({
     profileName: ctx.controls.profile,
     cwd,
-    sessionId: isCodex ? catalogEntry?.threadId : sess?.sessionId,
-    emptySessionText: isCodex ? '(未建立)' : undefined,
-    sessionStale: !isCodex && Boolean(cwd && sess && sess.cwd !== cwd),
+    sessionId: isThreadAgent ? catalogEntry?.threadId : sess?.sessionId,
+    emptySessionText: isThreadAgent ? '(未建立)' : undefined,
+    sessionStale: !isThreadAgent && Boolean(cwd && sess && sess.cwd !== cwd),
     agentName: ctx.agent.displayName,
     runtimeAccess: runtimeAccessStatus(ctx.controls.profileConfig),
     larkCliStatus: await larkCliStatus(ctx),
@@ -1118,7 +1135,9 @@ async function handleDoctor(args: string, ctx: CommandContext): Promise<void> {
   const capability =
     ctx.controls.profileConfig.agentKind === 'codex'
       ? codexCapability(ctx.controls.profileConfig)
-      : claudeCapability(ctx.controls.profileConfig);
+      : ctx.controls.profileConfig.agentKind === 'trae'
+        ? traeCapability(ctx.controls.profileConfig)
+        : claudeCapability(ctx.controls.profileConfig);
   const policy = evaluateRunPolicy({
     scope: {
       source: 'im',

@@ -2,7 +2,8 @@ import { randomUUID } from 'node:crypto';
 import { mkdir } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import type { CommentEvent, LarkChannel } from '@larksuite/channel';
-import { claudeCapability, codexCapability } from '../agent/capability';
+import { claudeCapability, codexCapability, traeCapability } from '../agent/capability';
+import type { AgentCapabilityId } from '../agent/capability';
 import type { AgentAdapter, AgentEvent } from '../agent/types';
 import { getAgentStopGraceMs } from '../config/schema';
 import type { Controls } from '../commands';
@@ -184,13 +185,31 @@ export async function handleCommentMention(deps: CommentDeps): Promise<void> {
     const capability =
       controls.profileConfig.agentKind === 'codex'
         ? codexCapability(controls.profileConfig)
-        : claudeCapability(controls.profileConfig);
+        : controls.profileConfig.agentKind === 'trae'
+          ? traeCapability(controls.profileConfig)
+          : claudeCapability(controls.profileConfig);
     const runTimeoutMs = commentRunTimeoutMs(sessions, runScopeId);
     const threadTimeoutMs = commentRunTimeoutMs(sessions, commentThreadScopeId);
     const commentTimeoutMs = runTimeoutMs !== undefined ? runTimeoutMs : threadTimeoutMs;
     if (typeof commentTimeoutMs === 'number') {
       log.info('comment', 'timeout-watchdog', { commentScopeId: runScopeId, timeoutMs: commentTimeoutMs });
     }
+    const activeAgentHome =
+      controls.profileConfig.agentKind === 'codex'
+        ? {
+            ...(controls.profileConfig.codex?.codexHome ? { agentHome: controls.profileConfig.codex.codexHome } : {}),
+            ...(controls.profileConfig.codex?.inheritCodexHome !== undefined
+              ? { inheritAgentHome: controls.profileConfig.codex.inheritCodexHome }
+              : {}),
+          }
+        : controls.profileConfig.agentKind === 'trae'
+          ? {
+              ...(controls.profileConfig.trae?.traeHome ? { agentHome: controls.profileConfig.trae.traeHome } : {}),
+              ...(controls.profileConfig.trae?.inheritTraeHome !== undefined
+                ? { inheritAgentHome: controls.profileConfig.trae.inheritTraeHome }
+                : {}),
+            }
+          : {};
     const policy = evaluateRunPolicy({
       scope: {
         source: 'comment',
@@ -206,8 +225,7 @@ export async function handleCommentMention(deps: CommentDeps): Promise<void> {
       capability,
       profileConfig: controls.profileConfig,
       now: Date.now(),
-      codexHome: controls.profileConfig.codex?.codexHome,
-      inheritCodexHome: controls.profileConfig.codex?.inheritCodexHome,
+      ...activeAgentHome,
       ...(typeof commentTimeoutMs === 'number' ? { ttlMs: commentTimeoutMs } : {}),
     });
     if (!policy.ok) {
@@ -242,7 +260,9 @@ export async function handleCommentMention(deps: CommentDeps): Promise<void> {
           ? sessions.resumeFor(docSessionScopeId, cwdRealpath) ??
             sessions.resumeFor(legacyDocSessionScopeId, cwdRealpath)
           : undefined;
-      const threadId = capability.agentId === 'codex' ? catalogEntry?.threadId : undefined;
+      const threadId = capability.agentId === 'codex' || capability.agentId === 'trae'
+        ? catalogEntry?.threadId
+        : undefined;
       log.info('comment', 'session', {
         commentScopeId: runScopeId,
         sessionScopeId: agentSessionScopeId,
@@ -377,7 +397,7 @@ export async function handleCommentMention(deps: CommentDeps): Promise<void> {
       }
 
       let reply = stripMarkdown(answer.trim());
-      if (errorMsg) reply = `⚠️ Claude 报错：${errorMsg}`;
+      if (errorMsg) reply = `⚠️ ${commentAgentLabel(capability.agentId)} 报错：${errorMsg}`;
       if (!reply) reply = '（无回复内容）';
       if (reply.length > REPLY_MAX_CHARS) reply = `${reply.slice(0, REPLY_MAX_CHARS - 1)}…`;
 
@@ -395,6 +415,17 @@ export async function handleCommentMention(deps: CommentDeps): Promise<void> {
     if (reactionAdded && ctx.targetReplyId) {
       await channel.comments.removeReaction(target, ctx.targetReplyId);
     }
+  }
+}
+
+function commentAgentLabel(agentId: AgentCapabilityId): string {
+  switch (agentId) {
+    case 'claude':
+      return 'Claude';
+    case 'codex':
+      return 'Codex CLI';
+    case 'trae':
+      return 'Trae CLI';
   }
 }
 

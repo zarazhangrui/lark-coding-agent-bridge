@@ -214,7 +214,7 @@ function normalizeEntry(input: unknown): SessionCatalogEntry | undefined {
   if (
     typeof raw.key !== 'string' ||
     typeof raw.scopeId !== 'string' ||
-    (raw.agentId !== 'claude' && raw.agentId !== 'codex') ||
+    (raw.agentId !== 'claude' && raw.agentId !== 'codex' && raw.agentId !== 'trae') ||
     typeof raw.cwdRealpath !== 'string' ||
     typeof raw.policyFingerprint !== 'string' ||
     (raw.status !== 'active' && raw.status !== 'archived') ||
@@ -259,6 +259,6 @@ function assertAgentIdentity(input: UpsertSessionCatalogInput): void {
     return;
   }
   if (!input.threadId || input.sessionId) {
-    throw new Error('Codex catalog entries require threadId and must not include sessionId');
+    throw new Error('Thread-based catalog entries require threadId and must not include sessionId');
   }
 }

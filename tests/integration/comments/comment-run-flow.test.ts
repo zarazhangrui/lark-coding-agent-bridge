@@ -116,6 +116,23 @@ describe('comment run flow', () => {
     expect(h.inThreadReplies).toEqual(['first final', 'second final']);
   });
 
+
+  it('uses the Trae agent label when a Trae comment run fails', async () => {
+    const h = await createHarness({
+      agentKind: 'trae',
+      agentEventRuns: [
+        [
+          { type: 'system', threadId: 'thread-one' },
+          { type: 'error', message: 'trae failed', terminationReason: 'failed' },
+        ],
+      ],
+    });
+
+    await handleCommentMention(h.deps(event({ commentId: 'comment-1', replyId: 'reply-1' })));
+
+    expect(h.inThreadReplies).toEqual(['⚠️ Trae CLI 报错：trae failed']);
+  });
+
   it('does not reuse an existing Codex thread while another document comment run is active', async () => {
     const h = await createBlockingHarness({
       agentKind: 'codex',
@@ -191,7 +208,7 @@ describe('comment run flow', () => {
 });
 
 async function createHarness(options: {
-  agentKind?: 'claude' | 'codex';
+  agentKind?: 'claude' | 'codex' | 'trae';
   agentTexts?: string[];
   agentEventRuns?: AgentEvent[][];
   sessionIds?: string[];
@@ -221,7 +238,7 @@ async function createHarness(options: {
     agentTexts.map((text, index) => [
       {
         type: 'system',
-        ...(agentKind === 'codex'
+        ...(agentKind === 'codex' || agentKind === 'trae'
           ? { threadId: threadIds[index] ?? `thread-${index}` }
           : { sessionId: sessionIds[index] ?? `session-${index}` }),
         cwd: tmp.workspace,
@@ -229,7 +246,7 @@ async function createHarness(options: {
       { type: 'text', delta: text },
       {
         type: 'done',
-        ...(agentKind === 'codex'
+        ...(agentKind === 'codex' || agentKind === 'trae'
           ? { threadId: threadIds[index] ?? `thread-${index}` }
           : { sessionId: sessionIds[index] ?? `session-${index}` }),
         terminationReason: 'normal',
@@ -518,13 +535,14 @@ async function waitFor(predicate: () => boolean): Promise<void> {
   throw new Error('timed out waiting for condition');
 }
 
-function profile(defaultWorkspace: string, agentKind: 'claude' | 'codex' = 'claude'): ProfileConfig {
+function profile(defaultWorkspace: string, agentKind: 'claude' | 'codex' | 'trae' = 'claude'): ProfileConfig {
   const config = createDefaultProfileConfig({
     agentKind,
     accounts: { app: { id: 'cli_test', secret: '${APP_SECRET}', tenant: 'feishu' } },
     access: { allowedUsers: ['ou-user'] },
     sandbox: { defaultMode: 'read-only', maxMode: 'workspace-write' },
     ...(agentKind === 'codex' ? { codex: { binaryPath: 'codex' } } : {}),
+    ...(agentKind === 'trae' ? { trae: { binaryPath: 'traecli' } } : {}),
   });
   config.workspaces.default = defaultWorkspace;
   return config;
