@@ -89,7 +89,7 @@ function runSchtasks(args: string[]): SchtasksResult {
  */
 export async function installTask(profile: string): Promise<SchtasksResult> {
   await writeLauncherCmd(profile);
-  return runSchtasks([
+  const created = runSchtasks([
     '/Create',
     '/F',
     '/SC',
@@ -101,6 +101,31 @@ export async function installTask(profile: string): Promise<SchtasksResult> {
     '/TR',
     `"${windowsLauncherCmdPath(profile)}"`,
   ]);
+  if (!created.ok) return created;
+  // Best-effort: a locked-down PowerShell leaves the task functional, just
+  // with the default 72h limit.
+  clearTaskExecutionLimits(profile);
+  return created;
+}
+
+/**
+ * schtasks /Create has no flag for the execution time limit, and the Task
+ * Scheduler default (72 hours) silently kills a long-running bot after
+ * 3 days. Clear the limit (PT0S = unlimited) via PowerShell after creation,
+ * and drop the battery gates so laptops keep the bot alive when unplugged.
+ */
+function clearTaskExecutionLimits(profile: string): SchtasksResult {
+  const taskName = windowsTaskName(profile).replace(/'/g, "''");
+  const script =
+    `$t = Get-ScheduledTask -TaskName '${taskName}'; ` +
+    `$t.Settings.ExecutionTimeLimit = 'PT0S'; ` +
+    `$t.Settings.DisallowStartIfOnBatteries = $false; ` +
+    `$t.Settings.StopIfGoingOnBatteries = $false; ` +
+    `Set-ScheduledTask -InputObject $t | Out-Null`;
+  const r = spawnSync('powershell', ['-NoProfile', '-NonInteractive', '-Command', script], {
+    encoding: 'utf8',
+  });
+  return { ok: r.status === 0, stderr: r.stderr ?? '', stdout: r.stdout ?? '' };
 }
 
 /** Start the task now (regardless of trigger). */
