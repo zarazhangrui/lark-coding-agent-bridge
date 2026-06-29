@@ -1,3 +1,5 @@
+import { existsSync } from 'node:fs';
+import { delimiter, join } from 'node:path';
 import { createInterface } from 'node:readline';
 import type { Readable } from 'node:stream';
 import { log } from '../../core/logger';
@@ -31,7 +33,7 @@ export class ClaudeAdapter implements AgentAdapter {
   private botIdentity: AgentBotIdentity | undefined;
 
   constructor(opts: ClaudeAdapterOptions = {}) {
-    this.binary = opts.binary ?? 'claude';
+    this.binary = resolveClaudeBinary(opts.binary);
     this.larkChannel = opts.larkChannel;
   }
 
@@ -257,4 +259,37 @@ function isWindowsCommandNotFoundLine(line: string): boolean {
     process.platform === 'win32' &&
     /is not recognized as an internal or external command|operable program or batch file/i.test(line)
   );
+}
+
+/**
+ * Resolve the Claude executable. On Windows, spawning the bare `claude` resolves
+ * to the npm `claude.cmd` shim, which cross-spawn runs through `cmd.exe /c`.
+ * cmd.exe then treats `<` and `>` in the prompt (the `<bridge_context>` block we
+ * prepend) as redirection operators and truncates the argument, so Claude
+ * receives an empty/garbled prompt and replies with nothing. Resolving the
+ * native `claude.exe` lets cross-spawn launch it directly via CreateProcess,
+ * bypassing cmd.exe entirely so `<` `>` pass through as literal characters.
+ */
+function resolveClaudeBinary(explicit?: string): string {
+  if (explicit && explicit.trim()) return explicit;
+  const fromEnv = process.env.LARK_CHANNEL_CLAUDE_BIN?.trim();
+  if (fromEnv) return fromEnv;
+  if (process.platform !== 'win32') return 'claude';
+  return resolveWindowsClaudeExe() ?? 'claude';
+}
+
+function resolveWindowsClaudeExe(): string | undefined {
+  const pathDirs = (process.env.PATH ?? process.env.Path ?? '').split(delimiter).filter(Boolean);
+  for (const dir of pathDirs) {
+    // A native exe sitting directly on PATH.
+    const directExe = join(dir, 'claude.exe');
+    if (existsSync(directExe)) return directExe;
+    // The usual npm-global layout: a `claude.cmd`/`claude.ps1` shim next to the
+    // package whose real entry is bin/claude.exe.
+    if (existsSync(join(dir, 'claude.cmd')) || existsSync(join(dir, 'claude.ps1'))) {
+      const nested = join(dir, 'node_modules', '@anthropic-ai', 'claude-code', 'bin', 'claude.exe');
+      if (existsSync(nested)) return nested;
+    }
+  }
+  return undefined;
 }

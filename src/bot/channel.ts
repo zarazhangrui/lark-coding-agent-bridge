@@ -246,9 +246,13 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
     },
     // SDK 1.65.0-alpha.3+ knobs.
     wsConfig: {
-      // 3s liveness watchdog: if no inbound message arrives within 3s after
+      // 15s liveness watchdog: if no inbound message arrives within 15s after
       // the last ping, SDK presumes connection dead and forces a reconnect.
-      pingTimeout: 3,
+      // 3s was too aggressive on jittery networks — round-trips to Feishu that
+      // briefly exceeded 3s triggered false-positive reconnects every ~90s, and
+      // inbound messages sent during the reconnect window were silently dropped
+      // (Feishu long-connection does not replay missed events).
+      pingTimeout: 15,
     },
     // 8s handshake timeout (replaces hardcoded 15s). Fast-fail + fast-retry
     // beats slow-fail in unstable networks.
