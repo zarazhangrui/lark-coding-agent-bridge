@@ -87,6 +87,21 @@ lark-channel-bridge unregister [--profile <name>]
 
 daemon 日志在 `~/.lark-channel/profiles/<profile>/logs/daemon/`。
 
+### 代理（中国大陆 / 需要代理的网络）
+
+launchd / systemd / Task Scheduler **不读 shell 的 `.zshrc`/`.bashrc`**，所以你在 shell 里 export 的代理变量默认不会传给后台 daemon。daemon 及其拉起的 agent CLI（claude / codex）会直连模型 API——在需要代理的网络（典型是中国大陆，直连会被 `403` 地域封锁）就会连不上，而你从终端手动 `run` 又一切正常，很难看出问题。
+
+为此，`start` 在**安装服务时**会把当前 shell 里的 `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY` / `NO_PROXY`（含小写）快照进服务定义，和 `PATH` 一样处理。所以只要在**带代理变量的 shell 里**执行 `lark-channel-bridge start`，daemon 就会带上代理：
+
+```bash
+export HTTPS_PROXY=http://127.0.0.1:7890
+export ALL_PROXY=socks5://127.0.0.1:7890
+export NO_PROXY=localhost,127.0.0.1,.feishu.cn,.larksuite.com   # 飞书自身走直连
+lark-channel-bridge start
+```
+
+注意：代理变量是**安装时**烤进去的。之后改了代理端口、或换了代理 App，要在新 shell 里重新 `start`（会重写服务定义）才能生效。没有配置代理的环境不受影响——快照为空时服务定义保持原样。如果代理 URL 带账号密码（`http://user:pass@host`），会被写进服务文件，因此该文件以仅属主可读（`0600`）权限创建。
+
 ### 多 profile：分别运行 Claude 和 Codex
 
 默认情况下，bridge 使用当前激活的 profile；可以通过 `profile use <name>` 切换。每个 profile 会维护独立的应用凭据、会话、工作目录和日志。只有在需要同时连接多个 PersonalAgent 应用，或分别运行 Claude 和 Codex 时，才需要创建多个 profile：

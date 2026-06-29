@@ -1,6 +1,6 @@
 import { spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { mkdir, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, rm, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import {
   daemonLogDir,
@@ -10,6 +10,7 @@ import {
   windowsLauncherCmdPath,
 } from './paths';
 import { paths } from '../config/paths';
+import { collectProxyEnv, type EnvVar } from './proxy-env';
 
 export interface LauncherInputs {
   /** Absolute path to node.exe. */
@@ -22,6 +23,10 @@ export interface LauncherInputs {
   profile: string;
   /** Root directory for config/profile state. */
   channelHome: string;
+  /** Proxy vars captured from the install-time shell. A scheduled task does
+   * not inherit the shell rc, so without these the daemon (and the agent it
+   * spawns) runs with no proxy. Empty when the host has none configured. */
+  proxyEnv?: EnvVar[];
 }
 
 /**
@@ -37,10 +42,19 @@ export interface LauncherInputs {
  * daemon restarts.
  */
 export function buildLauncherCmd(inputs: LauncherInputs): string {
+  // Inside `set "VAR=value"` a literal `%` is treated as a variable-expansion
+  // sigil by cmd.exe (e.g. percent-encoded proxy credentials like `p%40ss`
+  // would expand at runtime), so double it. Strip CR/LF defensively so a value
+  // can't smuggle extra script lines into the wrapper.
+  const escapeCmdValue = (s: string): string => s.replace(/%/g, '%%').replace(/[\r\n]/g, '');
+  const proxyLines = (inputs.proxyEnv ?? []).map(
+    (e) => `set "${escapeCmdValue(e.key)}=${escapeCmdValue(e.value)}"`,
+  );
   return [
     '@echo off',
     `set "LARK_CHANNEL_HOME=${inputs.channelHome}"`,
     `set "PATH=${inputs.envPath}"`,
+    ...proxyLines,
     `"${inputs.nodePath}" "${inputs.bridgeEntryPath}" run --profile "${inputs.profile}" >> "${daemonStdoutPath(inputs.profile)}" 2>> "${daemonStderrPath(inputs.profile)}"`,
     '',
   ].join('\r\n');
@@ -57,11 +71,14 @@ async function writeLauncherCmd(profile: string): Promise<void> {
     envPath: process.env.PATH ?? '',
     profile,
     channelHome: paths.rootDir,
+    proxyEnv: collectProxyEnv(),
   });
   const cmdPath = windowsLauncherCmdPath(profile);
   await mkdir(dirname(cmdPath), { recursive: true });
   await mkdir(daemonLogDir(profile), { recursive: true });
-  await writeFile(cmdPath, content, 'utf8');
+  // 0600: the wrapper may embed proxy URLs carrying credentials (user:pass@host).
+  await writeFile(cmdPath, content, { encoding: 'utf8', mode: 0o600 });
+  await chmod(cmdPath, 0o600);
 }
 
 interface SchtasksResult {

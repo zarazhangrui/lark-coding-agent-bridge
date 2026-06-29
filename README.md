@@ -87,6 +87,21 @@ Platform mapping:
 
 Daemon logs are under `~/.lark-channel/profiles/<profile>/logs/daemon/`.
 
+### Proxy (networks that require one, e.g. mainland China)
+
+launchd / systemd / Task Scheduler **do not read your shell rc** (`.zshrc` / `.bashrc`), so proxy variables you export in a shell are not passed to the background daemon. The daemon — and the agent CLI it spawns (claude / codex) — then connect to the model API directly. On networks that require a proxy (typically mainland China, where direct connections hit a `403` geo-block) this fails, even though running `run` from your terminal works fine, which makes it hard to diagnose.
+
+To handle this, `start` snapshots the current shell's `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY` / `NO_PROXY` (and lower-case spellings) into the service definition at install time, the same way `PATH` is captured. So just run `lark-channel-bridge start` from a shell that has the proxy exported:
+
+```bash
+export HTTPS_PROXY=http://127.0.0.1:7890
+export ALL_PROXY=socks5://127.0.0.1:7890
+export NO_PROXY=localhost,127.0.0.1,.feishu.cn,.larksuite.com   # reach Feishu directly
+lark-channel-bridge start
+```
+
+Note: the proxy is baked in **at install time**. If you later change the proxy port or switch proxy apps, re-run `start` from a fresh shell (it rewrites the service definition) for it to take effect. Hosts with no proxy configured are unaffected — when the snapshot is empty the service definition is unchanged. If your proxy URL embeds credentials (`http://user:pass@host`), they are written into the service file, so it is created with owner-only (`0600`) permissions.
+
 ### Multiple profiles: Claude and Codex
 
 By default, the bridge starts with the currently selected profile. Use `profile use <name>` to change it. Each profile keeps its own app credentials, sessions, working directories, and logs. Create multiple profiles only when you need to connect multiple PersonalAgent apps, or run Claude and Codex as separate bots:

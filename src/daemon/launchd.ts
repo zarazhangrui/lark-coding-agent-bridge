@@ -1,6 +1,6 @@
 import { spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { mkdir, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, rm, writeFile } from 'node:fs/promises';
 import { userInfo } from 'node:os';
 import { dirname } from 'node:path';
 import {
@@ -11,6 +11,7 @@ import {
   launchAgentPlistPath,
 } from './paths';
 import { paths } from '../config/paths';
+import { collectProxyEnv, type EnvVar } from './proxy-env';
 
 export interface PlistInputs {
   /** Absolute path to the node binary that should run the bridge. */
@@ -25,6 +26,10 @@ export interface PlistInputs {
   profile: string;
   /** Root directory for config/profile state. */
   channelHome: string;
+  /** Proxy vars captured from the install-time shell. launchd ignores the
+   * shell rc, so without these the daemon (and the agent it spawns) runs
+   * with no proxy. Empty when the host has none configured. */
+  proxyEnv?: EnvVar[];
 }
 
 export function buildPlist(inputs: PlistInputs): string {
@@ -34,6 +39,9 @@ export function buildPlist(inputs: PlistInputs): string {
       .replace(/</g, '&lt;')
       .replace(/>/g, '&gt;')
       .replace(/"/g, '&quot;');
+  const proxyLines = (inputs.proxyEnv ?? [])
+    .map((e) => `        <key>${escape(e.key)}</key>\n        <string>${escape(e.value)}</string>`)
+    .join('\n');
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -61,7 +69,7 @@ export function buildPlist(inputs: PlistInputs): string {
         <key>PATH</key>
         <string>${escape(inputs.envPath)}</string>
         <key>LARK_CHANNEL_HOME</key>
-        <string>${escape(inputs.channelHome)}</string>
+        <string>${escape(inputs.channelHome)}</string>${proxyLines ? '\n' + proxyLines : ''}
     </dict>
 </dict>
 </plist>
@@ -79,11 +87,14 @@ export async function writePlist(profile: string): Promise<void> {
     envPath: process.env.PATH ?? '',
     profile,
     channelHome: paths.rootDir,
+    proxyEnv: collectProxyEnv(),
   });
   const plistPath = launchAgentPlistPath(profile);
   await mkdir(dirname(plistPath), { recursive: true });
   await mkdir(daemonLogDir(profile), { recursive: true });
-  await writeFile(plistPath, content, 'utf8');
+  // 0600: the plist may embed proxy URLs carrying credentials (user:pass@host).
+  await writeFile(plistPath, content, { encoding: 'utf8', mode: 0o600 });
+  await chmod(plistPath, 0o600);
 }
 
 export function plistExists(profile: string): boolean {

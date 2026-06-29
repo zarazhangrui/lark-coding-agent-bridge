@@ -1,6 +1,6 @@
 import { spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { mkdir, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, rm, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import {
   daemonLogDir,
@@ -10,6 +10,7 @@ import {
   systemdUnitPath,
 } from './paths';
 import { paths } from '../config/paths';
+import { collectProxyEnv, type EnvVar } from './proxy-env';
 
 export interface UnitInputs {
   /** Absolute path to the node binary that should run the bridge. */
@@ -24,6 +25,10 @@ export interface UnitInputs {
   profile: string;
   /** Root directory for config/profile state. */
   channelHome: string;
+  /** Proxy vars captured from the install-time shell. systemd user units
+   * ignore the shell rc, so without these the daemon (and the agent it
+   * spawns) runs with no proxy. Empty when the host has none configured. */
+  proxyEnv?: EnvVar[];
 }
 
 /**
@@ -40,7 +45,14 @@ export interface UnitInputs {
  * this in the user-facing success message.
  */
 export function buildUnit(inputs: UnitInputs): string {
-  const escape = (s: string): string => s.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+  // systemd treats `%` as a specifier-expansion sigil in unit-file values, so a
+  // literal `%` (common in percent-encoded proxy credentials, e.g. `p%40ss`)
+  // must be doubled or systemd rewrites/rejects it.
+  const escape = (s: string): string =>
+    s.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/%/g, '%%');
+  const proxyLines = (inputs.proxyEnv ?? [])
+    .map((e) => `Environment="${escape(e.key)}=${escape(e.value)}"`)
+    .join('\n');
   return `[Unit]
 Description=Lark Channel Bridge bot
 After=network-online.target
@@ -54,7 +66,7 @@ RestartSec=5
 StandardOutput=append:${daemonStdoutPath(inputs.profile)}
 StandardError=append:${daemonStderrPath(inputs.profile)}
 Environment="PATH=${escape(inputs.envPath)}"
-Environment="LARK_CHANNEL_HOME=${escape(inputs.channelHome)}"
+Environment="LARK_CHANNEL_HOME=${escape(inputs.channelHome)}"${proxyLines ? '\n' + proxyLines : ''}
 
 [Install]
 WantedBy=default.target
@@ -72,11 +84,14 @@ export async function writeUnit(profile: string): Promise<void> {
     envPath: process.env.PATH ?? '',
     profile,
     channelHome: paths.rootDir,
+    proxyEnv: collectProxyEnv(),
   });
   const unitPath = systemdUnitPath(profile);
   await mkdir(dirname(unitPath), { recursive: true });
   await mkdir(daemonLogDir(profile), { recursive: true });
-  await writeFile(unitPath, content, 'utf8');
+  // 0600: the unit may embed proxy URLs carrying credentials (user:pass@host).
+  await writeFile(unitPath, content, { encoding: 'utf8', mode: 0o600 });
+  await chmod(unitPath, 0o600);
 }
 
 export function unitExists(profile: string): boolean {
