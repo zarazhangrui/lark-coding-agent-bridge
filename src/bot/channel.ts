@@ -6,6 +6,7 @@ import type {
 import { createLarkChannel } from '@larksuite/channel';
 import { dirname, join } from 'node:path';
 import { claudeCapability, codexCapability } from '../agent/capability';
+import { readSessionContextFileFromEnv } from '../agent/session-context-file';
 import {
   buildAgentPrompt,
   type BridgePromptInteractiveCard,
@@ -738,8 +739,14 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
     }
   }
 
-  const prompt = buildPrompt(batch, attachments, quotes, channel.botIdentity);
-  log.info('prompt', 'built', { promptChars: prompt.length, quotes: quotes.length });
+  const sessionContext = await readSessionContextFileFromEnv();
+  const prompt = buildPrompt(batch, attachments, quotes, channel.botIdentity, sessionContext);
+  log.info('prompt', 'built', {
+    promptChars: prompt.length,
+    quotes: quotes.length,
+    sessionContextBytes: sessionContext?.bytes,
+    sessionContextTruncated: sessionContext?.truncated,
+  });
 
   // For topic groups: thread the reply so it lands in the same topic as the
   // user's message. Otherwise the SDK posts at top level and the user's
@@ -1378,6 +1385,7 @@ function buildPrompt(
   attachments: LocalAttachment[],
   quotes: QuotedContext[] = [],
   botIdentity?: { openId: string; name?: string },
+  sessionContext?: Awaited<ReturnType<typeof readSessionContextFileFromEnv>>,
 ): string {
   const first = batch[0];
   if (!first) return '';
@@ -1421,6 +1429,7 @@ function buildPrompt(
     userInput: userPart,
     quotedMessages: quotes.map(toPromptQuote),
     interactiveCards: batch.map(toPromptInteractiveCard).filter(isDefined),
+    sessionContext,
     attachments: attachments.map(toPromptAttachment),
   });
 }

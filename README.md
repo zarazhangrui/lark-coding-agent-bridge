@@ -299,6 +299,22 @@ grep '"event":"enter"' ~/.lark-channel/profiles/<profile>/logs/bridge-$(date +%Y
 
 Each line carries `chatId` (group / DM id) and `senderId` (user `open_id`). After a manual edit, **restart the bridge** or send `/reconnect` from an allowed admin context to apply it. For day-to-day tweaks `/invite` / `/config` are easier; direct edits are mainly for deployment scripts that pre-seed access.
 
+## Deterministic session context file
+
+For multi-backend handoffs, set `LARK_CHANNEL_CONTEXT_FILE` before starting the bridge.
+On every user message the bridge reads that UTF-8 file and injects it as a
+`<session_context>` prompt section before `<user_input>`. This makes the read/load
+side deterministic at the bridge layer while still letting Claude/Codex update the
+file however your workspace instructions prefer.
+
+```bash
+LARK_CHANNEL_CONTEXT_FILE=$PWD/data/memory/handoff-oc_xxx.md lark-channel-bridge start
+```
+
+The injected section includes the absolute path, byte count, content, and a
+`truncated: true` flag when the file exceeds 64 KiB. It does not read prior
+transcripts or other handoff files implicitly; only the configured file is loaded.
+
 ## Cloud-doc comments
 
 Cloud-doc comments do not need a separate workspace binding or document allowlist. In supported document comments, mention the bot and the bridge replies in the same thread. Comment runs reuse the document session key and fall back to the user home directory when no document cwd was previously recorded.

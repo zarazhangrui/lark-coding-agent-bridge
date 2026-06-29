@@ -44,6 +44,13 @@ export interface BridgePromptComment {
   quote?: string;
 }
 
+export interface BridgePromptSessionContext {
+  path: string;
+  content: string;
+  bytes: number;
+  truncated?: boolean;
+}
+
 export interface BridgePromptAttachment {
   path: string;
   kind: string;
@@ -63,6 +70,7 @@ export interface BuildAgentPromptInput {
   quotedMessages?: BridgePromptQuotedMessage[];
   interactiveCards?: BridgePromptInteractiveCard[];
   comment?: BridgePromptComment;
+  sessionContext?: BridgePromptSessionContext;
   attachments?: BridgePromptAttachment[];
 }
 
@@ -79,6 +87,7 @@ export function buildAgentPrompt(input: BuildAgentPromptInput): string {
       ? promptSection('interactive_cards', input.interactiveCards)
       : undefined,
     input.comment ? promptSection('comment_context', input.comment) : undefined,
+    input.sessionContext ? promptSection('session_context', input.sessionContext) : undefined,
     promptSection('user_input', {
       text: input.userInput,
       ...(input.attachments && input.attachments.length > 0
