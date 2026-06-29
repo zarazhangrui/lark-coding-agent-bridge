@@ -43,22 +43,26 @@ describe('ClaudeAdapter process contract', () => {
 
     expect(await realpath(record.cwd)).toBe(await realpath(fake.dir));
     expect(record.env.LARK_CHANNEL).toBe('1');
-    expect(record.argv.slice(0, 8)).toEqual([
+    expect(record.argv.slice(0, 7)).toEqual([
       '-p',
-      'hello',
       '--output-format',
       'stream-json',
       '--verbose',
       '--permission-mode',
       'acceptEdits',
-      '--append-system-prompt',
+      '--append-system-prompt-file',
     ]);
-    expect(record.argv[8]).toContain('lark-channel-bridge 运行约定');
-    expect(record.argv[8]).toContain('__bridge_cb');
-    expect(record.argv[8]).toContain('LARK_CHANNEL_PROFILE');
-    expect(record.argv[8]).toContain('LARKSUITE_CLI_CONFIG_DIR');
-    expect(record.argv[8]).not.toContain('lark-cli config bind --source lark-channel');
-    expect(record.argv[8]).not.toContain('__claude_cb');
+    expect(record.argv).not.toContain('hello');
+    expect(record.argv).not.toContain('--append-system-prompt');
+    expect(record.stdin).toBe('hello');
+    const sysPromptFilePath = record.argv[7];
+    expect(sysPromptFilePath).toBeTruthy();
+    expect(record.sysPromptFileContent).toContain('lark-channel-bridge 运行约定');
+    expect(record.sysPromptFileContent).toContain('__bridge_cb');
+    expect(record.sysPromptFileContent).toContain('LARK_CHANNEL_PROFILE');
+    expect(record.sysPromptFileContent).toContain('LARKSUITE_CLI_CONFIG_DIR');
+    expect(record.sysPromptFileContent).not.toContain('lark-cli config bind --source lark-channel');
+    expect(record.sysPromptFileContent).not.toContain('__claude_cb');
     expect(record.argv).not.toContain('--resume');
     expect(record.argv).not.toContain('--model');
   });
@@ -120,7 +124,7 @@ describe('ClaudeAdapter process contract', () => {
     const record = await readRecord(fake.recordPath);
 
     expect(record.argv.slice(-4)).toEqual(['--resume', 'sess-old', '--model', 'sonnet']);
-    expect(record.argv[6]).toBe('bypassPermissions');
+    expect(record.argv[5]).toBe('bypassPermissions');
   });
 
   it('includes stderr when the process exits non-zero', async () => {
@@ -228,22 +232,36 @@ async function createFakeClaude(options: {
     path,
     [
       '#!/usr/bin/env node',
-      'import { writeFileSync } from "node:fs";',
-      `writeFileSync(${JSON.stringify(recordPath)}, JSON.stringify({`,
-      '  argv: process.argv.slice(2),',
-      '  cwd: process.cwd(),',
-      '  env: {',
-      '    LARK_CHANNEL: process.env.LARK_CHANNEL,',
-      '    LARK_CHANNEL_PROFILE: process.env.LARK_CHANNEL_PROFILE,',
-      '    LARK_CHANNEL_HOME: process.env.LARK_CHANNEL_HOME,',
-      '    LARK_CHANNEL_CONFIG: process.env.LARK_CHANNEL_CONFIG,',
-      '    LARKSUITE_CLI_CONFIG_DIR: process.env.LARKSUITE_CLI_CONFIG_DIR,',
-      '  },',
-      '}));',
-      `const lines = ${JSON.stringify(options.lines)};`,
-      'for (const line of lines) console.log(JSON.stringify(line));',
-      options.stderr ? `process.stderr.write(${JSON.stringify(options.stderr)});` : '',
-      `setTimeout(() => process.exit(${options.exitCode ?? 0}), ${options.exitDelayMs ?? 0});`,
+      'import { readFileSync, writeFileSync } from "node:fs";',
+      'const argv = process.argv.slice(2);',
+      'const sysFlagIdx = argv.indexOf("--append-system-prompt-file");',
+      'const sysPromptFileContent = sysFlagIdx >= 0 && argv[sysFlagIdx + 1]',
+      '  ? (() => { try { return readFileSync(argv[sysFlagIdx + 1], "utf8"); } catch { return ""; } })()',
+      '  : "";',
+      'let stdinBuf = "";',
+      'process.stdin.setEncoding("utf8");',
+      'process.stdin.on("data", (c) => { stdinBuf += c; });',
+      'process.stdin.on("end", () => finish());',
+      'if (process.stdin.isTTY) finish();',
+      'function finish() {',
+      `  writeFileSync(${JSON.stringify(recordPath)}, JSON.stringify({`,
+      '    argv,',
+      '    stdin: stdinBuf,',
+      '    sysPromptFileContent,',
+      '    cwd: process.cwd(),',
+      '    env: {',
+      '      LARK_CHANNEL: process.env.LARK_CHANNEL,',
+      '      LARK_CHANNEL_PROFILE: process.env.LARK_CHANNEL_PROFILE,',
+      '      LARK_CHANNEL_HOME: process.env.LARK_CHANNEL_HOME,',
+      '      LARK_CHANNEL_CONFIG: process.env.LARK_CHANNEL_CONFIG,',
+      '      LARKSUITE_CLI_CONFIG_DIR: process.env.LARKSUITE_CLI_CONFIG_DIR,',
+      '    },',
+      '  }));',
+      `  const lines = ${JSON.stringify(options.lines)};`,
+      '  for (const line of lines) console.log(JSON.stringify(line));',
+      options.stderr ? `  process.stderr.write(${JSON.stringify(options.stderr)});` : '',
+      `  setTimeout(() => process.exit(${options.exitCode ?? 0}), ${options.exitDelayMs ?? 0});`,
+      '}',
     ].filter(Boolean).join('\n'),
     'utf8',
   );
@@ -253,6 +271,8 @@ async function createFakeClaude(options: {
 
 async function readRecord(path: string): Promise<{
   argv: string[];
+  stdin: string;
+  sysPromptFileContent: string;
   cwd: string;
   env: {
     LARK_CHANNEL?: string;
@@ -264,6 +284,8 @@ async function readRecord(path: string): Promise<{
 }> {
   return JSON.parse(await readFile(path, 'utf8')) as {
     argv: string[];
+    stdin: string;
+    sysPromptFileContent: string;
     cwd: string;
     env: {
       LARK_CHANNEL?: string;

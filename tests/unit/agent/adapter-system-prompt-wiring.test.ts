@@ -1,4 +1,5 @@
 import { EventEmitter } from 'node:events';
+import { readFileSync } from 'node:fs';
 import { PassThrough } from 'node:stream';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -45,7 +46,7 @@ beforeEach(() => {
 });
 
 describe('ClaudeAdapter system prompt wiring', () => {
-  it('appends the identity-aware bridge system prompt after setBotIdentity', () => {
+  it('writes the identity-aware bridge system prompt to the file referenced by --append-system-prompt-file after setBotIdentity', () => {
     spawnMock.spawnProcess.mockReturnValue(fakeChild());
     const adapter = new ClaudeAdapter();
     adapter.setBotIdentity({ openId: 'ou_bot_self', name: 'Bridge' });
@@ -53,9 +54,11 @@ describe('ClaudeAdapter system prompt wiring', () => {
     adapter.run({ runId: 'r1', prompt: 'hi', cwd: '/tmp' });
 
     const args = spawnMock.spawnProcess.mock.calls[0]?.[1] as string[];
-    const flagIndex = args.indexOf('--append-system-prompt');
+    const flagIndex = args.indexOf('--append-system-prompt-file');
     expect(flagIndex).toBeGreaterThan(-1);
-    expect(args[flagIndex + 1]).toBe(
+    const filePath = args[flagIndex + 1];
+    if (!filePath) throw new Error('--append-system-prompt-file path missing');
+    expect(readFileSync(filePath, 'utf8')).toBe(
       buildBridgeSystemPrompt({ openId: 'ou_bot_self', name: 'Bridge' }),
     );
   });
@@ -67,8 +70,23 @@ describe('ClaudeAdapter system prompt wiring', () => {
     adapter.run({ runId: 'r1', prompt: 'hi', cwd: '/tmp' });
 
     const args = spawnMock.spawnProcess.mock.calls[0]?.[1] as string[];
-    const flagIndex = args.indexOf('--append-system-prompt');
-    expect(args[flagIndex + 1]).toBe(buildBridgeSystemPrompt(undefined));
+    const flagIndex = args.indexOf('--append-system-prompt-file');
+    const filePath = args[flagIndex + 1];
+    if (!filePath) throw new Error('--append-system-prompt-file path missing');
+    expect(readFileSync(filePath, 'utf8')).toBe(buildBridgeSystemPrompt(undefined));
+  });
+
+  it('routes the user prompt through stdin instead of argv to avoid Windows cmd.exe argument mangling', async () => {
+    const child = fakeChild();
+    spawnMock.spawnProcess.mockReturnValue(child);
+    const adapter = new ClaudeAdapter();
+
+    adapter.run({ runId: 'r1', prompt: 'hi from stdin', cwd: '/tmp' });
+
+    const args = spawnMock.spawnProcess.mock.calls[0]?.[1] as string[];
+    expect(args).not.toContain('hi from stdin');
+    const stdin = await readAll(child.stdin);
+    expect(stdin).toBe('hi from stdin');
   });
 });
 
