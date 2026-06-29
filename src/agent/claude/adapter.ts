@@ -1,26 +1,27 @@
 import { createInterface } from 'node:readline';
-import type { Readable } from 'node:stream';
+import type { Readable, Writable } from 'node:stream';
 import { log } from '../../core/logger';
 import { mergeProcessEnv, spawnProcess, type SpawnedProcessByStdio } from '../../platform/spawn';
 import { buildBridgeSystemPrompt } from '../bridge-system-prompt';
 import { buildLarkChannelEnv, type LarkChannelEnvContext } from '../lark-channel-env';
 import { checkAgentAvailability, type AgentAvailability } from '../preflight';
 import {
-  CLAUDE_DEFAULT_PERMISSION_MODE,
   type AgentAdapter,
   type AgentBotIdentity,
   type AgentEvent,
   type AgentRun,
   type AgentRunOptions,
 } from '../types';
+import { buildClaudeArgs } from './argv';
 import { translateEvent } from './stream-json';
+import { buildStreamJsonInput } from './stream-json-input';
 
 export interface ClaudeAdapterOptions {
   binary?: string;
   larkChannel?: LarkChannelEnvContext;
 }
 
-type ClaudeChild = SpawnedProcessByStdio<null, Readable, Readable>;
+type ClaudeChild = SpawnedProcessByStdio<Writable | null, Readable, Readable>;
 
 export class ClaudeAdapter implements AgentAdapter {
   readonly id = 'claude';
@@ -29,6 +30,14 @@ export class ClaudeAdapter implements AgentAdapter {
   private readonly binary: string;
   private readonly larkChannel: LarkChannelEnvContext | undefined;
   private botIdentity: AgentBotIdentity | undefined;
+  // stream-json stdin payloads precomputed in prepareRun() and consumed once by
+  // the matching run(). Base64-encoding images is async, but run() must stay
+  // synchronous (it attaches process listeners in the same tick), so the async
+  // work happens in the prepareRun() hook beforehand. Keyed on the AgentRunOptions
+  // object (the executor passes the same reference to both hooks) via a WeakMap,
+  // so a prepareRun() that is never followed by run() — e.g. the executor aborts
+  // between the two — leaves no leaked entry.
+  private readonly pendingStdin = new WeakMap<AgentRunOptions, string>();
 
   constructor(opts: ClaudeAdapterOptions = {}) {
     this.binary = opts.binary ?? 'claude';
@@ -52,29 +61,39 @@ export class ClaudeAdapter implements AgentAdapter {
     });
   }
 
+  // Claude Code ingests images only through `--input-format stream-json` on
+  // stdin (no `--image` flag). When the run carries accepted images, encode
+  // them into a stream-json user message here so run() can feed it via stdin.
+  async prepareRun(opts: AgentRunOptions): Promise<void> {
+    if (!opts.images || opts.images.length === 0) return;
+    const payload = await buildStreamJsonInput(opts.prompt, opts.images);
+    if (payload) this.pendingStdin.set(opts, payload);
+  }
+
   run(opts: AgentRunOptions): AgentRun {
     if (!opts.cwd) {
       throw new Error('cwd is required for ClaudeAdapter.run');
     }
 
-    const args = [
-      '-p',
-      opts.prompt,
-      '--output-format',
-      'stream-json',
-      '--verbose',
-      '--permission-mode',
-      opts.permissionMode ?? CLAUDE_DEFAULT_PERMISSION_MODE,
-      '--append-system-prompt',
-      buildBridgeSystemPrompt(this.botIdentity),
-    ];
-    if (opts.sessionId) args.push('--resume', opts.sessionId);
-    if (opts.model) args.push('--model', opts.model);
+    // prepareRun() stages a stdin payload only when the run has images; its
+    // presence selects stdin stream-json over the plain `-p <prompt>` path.
+    const stdinPayload = this.pendingStdin.get(opts);
+    this.pendingStdin.delete(opts);
+    const useStreamJson = stdinPayload !== undefined;
+
+    const args = buildClaudeArgs({
+      prompt: opts.prompt,
+      systemPrompt: buildBridgeSystemPrompt(this.botIdentity),
+      permissionMode: opts.permissionMode,
+      sessionId: opts.sessionId,
+      model: opts.model,
+      streamJson: useStreamJson,
+    });
 
     const child = spawnProcess(this.binary, args, {
       cwd: opts.cwd,
       env: mergeProcessEnv(process.env, buildLarkChannelEnv(this.larkChannel)),
-      stdio: ['ignore', 'pipe', 'pipe'],
+      stdio: [useStreamJson ? 'pipe' : 'ignore', 'pipe', 'pipe'],
     }) as ClaudeChild;
 
     log.info('agent', 'spawn', {
@@ -83,7 +102,19 @@ export class ClaudeAdapter implements AgentAdapter {
       hasSession: Boolean(opts.sessionId),
       promptChars: opts.prompt.length,
       model: opts.model,
+      images: opts.images?.length ?? 0,
+      streamJson: useStreamJson,
     });
+
+    // Feed the stream-json user message (text + base64 image blocks) and close
+    // stdin so claude starts processing. Guard stdin errors like the codex
+    // adapter does — a broken pipe here must not crash the bridge.
+    if (useStreamJson && child.stdin) {
+      child.stdin.on('error', (err: Error) => {
+        log.warn('agent', 'stdin-error', { message: err.message });
+      });
+      child.stdin.end(stdinPayload, 'utf8');
+    }
 
     // Listeners MUST be attached synchronously here, before we return.
     // The 'error' and exit-related events can fire in the next tick; if we
