@@ -93,9 +93,34 @@ describe('start runtime agent factory', () => {
     expect(releaseIndex).toBeLessThan(exitIndex);
   });
 
+  it('creates OpenCodeAdapter from opencode profile config', () => {
+    const agent = createRuntimeAgent(
+      createDefaultProfileConfig({
+        agentKind: 'opencode',
+        accounts: appAccount(),
+        opencode: { binaryPath: '/usr/local/bin/opencode' },
+      }),
+      { profileDir: '/tmp/lark-channel-bridge/profiles/opencode-e2e' },
+    );
+
+    expect(agent.id).toBe('opencode');
+    expect(agent.displayName).toBe('OpenCode');
+  });
+
+  it('seeds a default OpenCode binary when bootstrapping a new OpenCode profile', () => {
+    const profile = createRuntimeProfileConfig({
+      agentKind: 'opencode',
+      accounts: appAccount(),
+    });
+
+    expect(profile.opencode?.binaryPath).toBe('opencode');
+  });
+
   it('rejects reconnect when a profile changes agent kind in place', () => {
     expect(() => assertReconnectAgentKindUnchanged('claude', 'codex')).toThrow(/agent kind/i);
     expect(() => assertReconnectAgentKindUnchanged('codex', 'codex')).not.toThrow();
+    expect(() => assertReconnectAgentKindUnchanged('opencode', 'codex')).toThrow(/agent kind/i);
+    expect(() => assertReconnectAgentKindUnchanged('opencode', 'opencode')).not.toThrow();
   });
 });
 
