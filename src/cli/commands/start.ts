@@ -4,10 +4,12 @@ import { createInterface } from 'node:readline';
 import pkg from '../../../package.json';
 import { ClaudeAdapter } from '../../agent/claude/adapter';
 import { CodexAdapter } from '../../agent/codex/adapter';
+import { OpenCodeAdapter } from '../../agent/opencode/adapter';
 import {
   AgentPreflightError,
   formatAgentPreflightDiagnostic,
   type AgentAvailability,
+  type LocalAgentId,
 } from '../../agent/preflight';
 import type { AgentAdapter } from '../../agent/types';
 import { startChannel, type BridgeChannel } from '../../bot/channel';
@@ -374,9 +376,9 @@ async function checkRuntimeAgentAvailability(agent: AgentAdapter): Promise<Agent
   if (ok) return { ok: true };
   const diagnostic = {
     code: 'agent-binary-not-found' as const,
-    agentId: agent.id === 'codex' ? 'codex' as const : 'claude' as const,
+    agentId: agent.id as LocalAgentId,
     agentName: agent.displayName,
-    command: agent.id === 'codex' ? 'codex' : 'claude',
+    command: agent.id,
   };
   return {
     ok: false,
@@ -431,6 +433,16 @@ export function createRuntimeAgent(
       ignoreUserConfig: codex.ignoreUserConfig === true,
       ignoreRules: codex.ignoreRules !== false,
       sandbox: profileConfig.sandbox.defaultMode,
+      larkChannel,
+    });
+  }
+  if (profileConfig.agentKind === 'opencode') {
+    const opencode = profileConfig.opencode;
+    if (!opencode?.binaryPath) {
+      throw new Error('opencode profile requires opencode.binaryPath');
+    }
+    return new OpenCodeAdapter({
+      binary: opencode.binaryPath,
       larkChannel,
     });
   }
