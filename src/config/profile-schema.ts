@@ -1,3 +1,4 @@
+import { isPresentationMode } from './schema';
 import type {
   AppCredentials,
   AppPreferences,
@@ -230,15 +231,21 @@ function normalizePreferences(
     access: _access,
     requireMentionInGroup: _mention,
     messageReply,
+    showToolCalls,
+    presentation,
     ...rest
   } = preferences ?? {};
+  const normalized: ProfileConfig['preferences'] = { ...rest };
   if (messageReply !== undefined && isMessageReply(messageReply)) {
-    return {
-      ...rest,
-      messageReply,
-    };
+    normalized.messageReply = messageReply;
   }
-  return rest;
+  if (typeof showToolCalls === 'boolean') {
+    normalized.showToolCalls = showToolCalls;
+  }
+  if (presentation && typeof presentation === 'object' && isPresentationMode(presentation.mode)) {
+    normalized.presentation = { mode: presentation.mode };
+  }
+  return normalized;
 }
 
 function isMessageReply(value: unknown): value is MessageReplyMode {

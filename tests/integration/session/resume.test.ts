@@ -95,6 +95,76 @@ describe('agent-aware run-flow resume', () => {
     });
   });
 
+  it('force-starts a fresh Claude session and archives the matching catalog entry', async () => {
+    const h = await createHarness('claude');
+    const probe = await start(h);
+    expect(probe.ok).toBe(true);
+    if (!probe.ok) throw new Error('expected probe run');
+    await collect(probe.execution.subscribe());
+    h.sessions.set('chat-1', 'legacy-session', probe.cwdRealpath);
+    h.catalog.upsertActive({
+      scopeId: 'chat-1',
+      agentId: 'claude',
+      cwdRealpath: probe.cwdRealpath,
+      policyFingerprint: probe.policy.policyFingerprint,
+      sessionId: 'sess-catalog',
+      now: 1000,
+    });
+
+    const fresh = await start(h, { forceNewSession: true });
+
+    expect(fresh.ok).toBe(true);
+    if (!fresh.ok) throw new Error('expected fresh run');
+    expect(fresh.resumeFrom).toBeUndefined();
+    expect(h.agent.runOptions[1]).toMatchObject({
+      sessionId: undefined,
+      threadId: undefined,
+    });
+    expect(
+      h.catalog.activeFor({
+        scopeId: 'chat-1',
+        agentId: 'claude',
+        cwdRealpath: probe.cwdRealpath,
+        policyFingerprint: probe.policy.policyFingerprint,
+      }),
+    ).toBeUndefined();
+    expect(h.sessions.resumeFor('chat-1', probe.cwdRealpath)).toBeUndefined();
+  });
+
+  it('force-starts a fresh Codex thread and archives the matching catalog entry', async () => {
+    const h = await createHarness('codex');
+    const probe = await start(h);
+    expect(probe.ok).toBe(true);
+    if (!probe.ok) throw new Error('expected probe run');
+    await collect(probe.execution.subscribe());
+    h.catalog.upsertActive({
+      scopeId: 'chat-1',
+      agentId: 'codex',
+      cwdRealpath: probe.cwdRealpath,
+      policyFingerprint: probe.policy.policyFingerprint,
+      threadId: 'thread-catalog',
+      now: 1000,
+    });
+
+    const fresh = await start(h, { forceNewSession: true });
+
+    expect(fresh.ok).toBe(true);
+    if (!fresh.ok) throw new Error('expected fresh run');
+    expect(fresh.resumeFrom).toBeUndefined();
+    expect(h.agent.runOptions[1]).toMatchObject({
+      sessionId: undefined,
+      threadId: undefined,
+    });
+    expect(
+      h.catalog.activeFor({
+        scopeId: 'chat-1',
+        agentId: 'codex',
+        cwdRealpath: probe.cwdRealpath,
+        policyFingerprint: probe.policy.policyFingerprint,
+      }),
+    ).toBeUndefined();
+  });
+
   it('does not resume when the policy fingerprint changes', async () => {
     const h = await createHarness('claude');
     const first = await start(h);
@@ -237,7 +307,10 @@ async function collect(events: AsyncIterable<unknown>): Promise<void> {
   }
 }
 
-async function start(h: Awaited<ReturnType<typeof createHarness>>) {
+async function start(
+  h: Awaited<ReturnType<typeof createHarness>>,
+  overrides: Pick<StartRunFlowInput, 'forceNewSession'> = {},
+) {
   const input = {
     scopeId: 'chat-1',
     scope: { source: 'im', chatId: 'chat-1', actorId: 'ou_user' },
@@ -254,6 +327,7 @@ async function start(h: Awaited<ReturnType<typeof createHarness>>) {
     workspaces: h.workspaces,
     executor: h.executor,
     now: 1000,
+    ...overrides,
   } satisfies StartRunFlowInput & { sessionCatalog: SessionCatalog };
   return startRunFlow(input);
 }

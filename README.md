@@ -9,7 +9,7 @@ For a product walkthrough, see the [Feishu document](https://larkcommunity.feish
 ## What it does
 
 - Forwards Feishu / Lark messages to local Claude Code or Codex CLI. Send a DM directly, or `@bot` in a group.
-- **Streaming card**: text replies and tool calls update on one Lark card in real time.
+- **Streaming replies**: user-facing text updates in chat, while raw tool/reasoning details can stay hidden unless you enable debug mode.
 - **COT process messages**: optionally send a process message with agent progress text and tool calls, then send the final answer separately.
 - **Session continuity**: each chat, topic, or document comment thread keeps its own session.
 - **Queueing and batching**: messages sent in quick succession are handled together; messages sent during a run are queued for the next turn, while commands like `/new`, `/cd`, `/ws use`, and `/stop` can interrupt the current task.
@@ -161,15 +161,17 @@ If a profile was created with the wrong agent kind, stop or unregister any match
 
 DMs do not require an @ mention. Groups and topic groups require `@bot` by default; `@all` is ignored. Cloud-doc comments in supported document types run when the bot is mentioned.
 
-## Reply Display and COT
+## Presentation modes and COT
 
-`/config` controls three presentation settings:
+`/config` controls how much run detail is shown in Feishu / Lark:
 
-- **Message reply mode**: `message card` streams the final reply; `plain text` sends once after the run finishes.
-- **Tool-call display**: controls whether tool blocks appear in the final card / markdown reply.
-- **COT process message**: `off` sends only the final reply; `brief` first sends a COT message with agent progress text and tool summaries; `detailed` also includes tool args and truncated output.
+- `clean` (default): user-facing text plus a minimal processing status. Raw `Read` / `Bash` / `Write` / `Edit` events and reasoning are kept out of chat.
+- `progress`: user-facing text plus coarse phases such as planning, internal steps, and reply drafting. Commands, file paths from tool calls, outputs, and diffs stay out of chat.
+- `debug`: full reasoning and tool-call panels, useful for maintainers when diagnosing bridge or agent behavior.
 
-When COT is enabled, the bridge splits the process view and final answer into two messages. The COT message is for tracing what the agent did; the final answer is still generated from the agent's raw text, without heuristic bridge-side filtering. If an agent emits final-answer text as ordinary stream text, that text can also appear in the COT process message.
+Separately, **COT process message** controls whether to send a process message before the final answer: `off` sends only the final reply; `brief` first sends a COT message with agent progress text and tool summaries; `detailed` also includes tool args and truncated output.
+
+The bridge still records agent events and tool results in local logs/session state; presentation mode only changes what is rendered back to chat.
 
 ## lark-cli identity policy
 

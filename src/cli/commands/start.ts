@@ -44,6 +44,7 @@ import { resolveProfileRuntime } from '../../runtime/profile-runtime';
 import { refreshOwnerControls } from '../../policy/owner';
 import { SessionStore } from '../../session/store';
 import { SessionCatalog } from '../../session/catalog';
+import { ContextBudgetStore } from '../../session/context-budget';
 import { WorkspaceStore } from '../../workspace/store';
 
 // Prefer IPv4 — Node 20+ defaults to "verbatim" which respects whatever
@@ -141,6 +142,8 @@ export async function runStart(opts: StartOptions): Promise<void> {
           await sessions.load();
           const sessionCatalog = new SessionCatalog(`${appPaths.sessionsFile}.catalog.json`);
           await sessionCatalog.load();
+          const contextBudget = new ContextBudgetStore(`${appPaths.sessionsFile}.context-budget.json`);
+          await contextBudget.load();
           const workspaces = new WorkspaceStore(appPaths.workspacesFile);
           await workspaces.load();
 
@@ -271,6 +274,7 @@ export async function runStart(opts: StartOptions): Promise<void> {
                   agent: nextAgent,
                   sessions,
                   sessionCatalog,
+                  contextBudget,
                   workspaces,
                   controls: nextControls,
                   appPaths: nextRuntime.appPaths,
@@ -327,6 +331,7 @@ export async function runStart(opts: StartOptions): Promise<void> {
           agent,
           sessions,
           sessionCatalog,
+          contextBudget,
           workspaces,
           controls,
           appPaths,

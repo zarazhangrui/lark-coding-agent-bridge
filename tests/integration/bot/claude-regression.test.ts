@@ -1,7 +1,12 @@
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { getMessageReplyMode, getRequireMentionInGroup } from '../../../src/config/schema.js';
+import {
+  getMessageReplyMode,
+  getPresentationMode,
+  getRequireMentionInGroup,
+  getShowToolCalls,
+} from '../../../src/config/schema.js';
 import { PendingQueue } from '../../../src/bot/pending-queue.js';
 import type { NormalizedMessage } from '@larksuite/channel';
 
@@ -29,6 +34,27 @@ describe('Claude IM regression boundaries', () => {
 
     expect(getMessageReplyMode(defaultCfg)).toBe('markdown');
     expect(getMessageReplyMode(cardCfg)).toBe('card');
+  });
+
+  it('defaults chat presentation to clean while preserving explicit legacy debug mode', () => {
+    const defaultCfg = {
+      accounts: { app: { id: 'app-id', secret: 'secret', tenant: 'feishu' as const } },
+    };
+    const legacyDebugCfg = {
+      ...defaultCfg,
+      preferences: { showToolCalls: true },
+    };
+    const explicitProgressCfg = {
+      ...defaultCfg,
+      preferences: { presentation: { mode: 'progress' as const }, showToolCalls: true },
+    };
+
+    expect(getPresentationMode(defaultCfg)).toBe('clean');
+    expect(getShowToolCalls(defaultCfg)).toBe(false);
+    expect(getPresentationMode(legacyDebugCfg)).toBe('debug');
+    expect(getShowToolCalls(legacyDebugCfg)).toBe(true);
+    expect(getPresentationMode(explicitProgressCfg)).toBe('progress');
+    expect(getShowToolCalls(explicitProgressCfg)).toBe(false);
   });
 
   it('queues messages that arrive while a run is active and flushes them as the next batch', () => {

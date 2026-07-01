@@ -33,6 +33,7 @@ export interface StartRunFlowInput {
   workspaces: WorkspaceStore;
   executor: RunExecutor;
   now: number;
+  forceNewSession?: boolean;
   stopGraceMs?: number;
   observability?: {
     profile: string;
@@ -107,6 +108,17 @@ export async function startRunFlow(input: StartRunFlowInput): Promise<StartRunFl
       rejectReason: policy.rejectReason,
       workspace,
     };
+  }
+
+  if (input.forceNewSession) {
+    input.sessionCatalog?.archiveActive({
+      scopeId: input.scopeId,
+      agentId: input.capability.agentId,
+      cwdRealpath: workspace.cwdRealpath,
+      policyFingerprint: policy.policyFingerprint,
+      now: input.now,
+    });
+    input.sessions.clear(input.scopeId);
   }
 
   let resumeFrom: string | undefined;

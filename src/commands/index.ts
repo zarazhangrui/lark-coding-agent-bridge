@@ -24,15 +24,21 @@ import { GROUP_MSG_SCOPE, hasGroupMsgScope } from '../bot/app-scope';
 import { requestScopeGrantLink } from '../bot/wizard';
 import { forgetManagedCard, sendManagedCard, updateManagedCard } from '../card/managed';
 import { helpCard, resumeCard, statusCard, workspacesCard } from '../card/templates';
-import type { AppConfig, AppPreferences, MessageReplyMode, TenantBrand } from '../config/schema';
+import type {
+  AppConfig,
+  AppPreferences,
+  MessageReplyMode,
+  PresentationMode,
+  TenantBrand,
+} from '../config/schema';
 import {
   getAgentStopGraceMs,
   getCotMessages,
   getMaxConcurrentRuns,
   getMessageReplyMode,
+  getPresentationMode,
   getRequireMentionInGroup,
   getRunIdleTimeoutMs,
-  getShowToolCalls,
   secretKeyForApp,
 } from '../config/schema';
 import type { ProfileAccess, ProfileConfig } from '../config/profile-schema';
@@ -77,6 +83,7 @@ import type { RunExecutor } from '../runtime/run-executor';
 import { RunRejected } from '../runtime/errors';
 import { validateAppCredentials } from '../utils/feishu-auth';
 import type { WorkspaceStore } from '../workspace/store';
+import type { ContextBudgetStore } from '../session/context-budget';
 import { createBoundChat, defaultChatName } from '../bot/group';
 import { fetchKnownChats, type KnownChat } from '../bot/lark-info';
 import { applyLarkCliIdentityPolicy, hasStructuredLarkCliUserAuth } from '../lark-cli/identity-policy';
@@ -123,6 +130,7 @@ export interface CommandContext {
   sessions: SessionStore;
   sessionCatalog?: SessionCatalog;
   sessionCatalogIdentity?: SessionCatalogIdentity;
+  contextBudget?: ContextBudgetStore;
   workspaces: WorkspaceStore;
   agent: AgentAdapter;
   activeRuns: ActiveRuns;
@@ -327,6 +335,7 @@ async function handleNew(args: string, ctx: CommandContext): Promise<void> {
     });
   }
   ctx.sessions.clear(ctx.scope);
+  ctx.contextBudget?.reset(ctx.scope);
   await reply(ctx, wasRunning ? '已中断当前任务并开始新会话。' : '已开始新会话。');
 }
 
@@ -388,6 +397,7 @@ async function handleCd(args: string, ctx: CommandContext): Promise<void> {
   ctx.activeRuns.interrupt(ctx.scope);
   ctx.workspaces.setCwd(ctx.scope, workspace.cwdRealpath);
   ctx.sessions.clear(ctx.scope);
+  ctx.contextBudget?.reset(ctx.scope);
   await reply(ctx, `✓ 已切换 cwd 到 \`${workspace.cwdRealpath}\`\n（session 已重置）`);
 }
 
@@ -453,6 +463,7 @@ async function handleWsUse(name: string, ctx: CommandContext): Promise<void> {
   ctx.activeRuns.interrupt(ctx.scope);
   ctx.workspaces.setCwd(ctx.scope, workspace.cwdRealpath);
   ctx.sessions.clear(ctx.scope);
+  ctx.contextBudget?.reset(ctx.scope);
   await reply(ctx, `✓ 已切换到 \`${name}\` (${workspace.cwdRealpath})\n（session 已重置）`);
 }
 
@@ -621,6 +632,7 @@ async function applyResume(sessionId: string, ctx: CommandContext): Promise<void
         });
         ctx.sessions.set(ctx.scope, resolved.sessionId!, ctx.sessionCatalogIdentity.cwdRealpath);
       }
+      ctx.contextBudget?.reset(ctx.scope);
       await reply(ctx, RESUME_APPLIED_REPLY);
       return;
     }
@@ -637,6 +649,7 @@ async function applyResume(sessionId: string, ctx: CommandContext): Promise<void
     if (ctx.sessionCatalogIdentity.agentId === 'claude') {
       ctx.sessions.set(ctx.scope, sessionId, ctx.sessionCatalogIdentity.cwdRealpath);
     }
+    ctx.contextBudget?.reset(ctx.scope);
     await reply(ctx, RESUME_APPLIED_REPLY);
     return;
   }
@@ -653,6 +666,7 @@ async function applyResume(sessionId: string, ctx: CommandContext): Promise<void
   }
   ctx.activeRuns.interrupt(ctx.scope);
   ctx.sessions.set(ctx.scope, sessionId, cwd);
+  ctx.contextBudget?.reset(ctx.scope);
   await reply(ctx, RESUME_APPLIED_REPLY);
 }
 
@@ -1762,7 +1776,7 @@ async function showConfigForm(ctx: CommandContext): Promise<void> {
   const access = ctx.controls.profileConfig.access;
   const card = configFormCard({
     messageReply: getMessageReplyMode(ctx.controls.cfg),
-    showToolCalls: getShowToolCalls(ctx.controls.cfg),
+    presentationMode: getPresentationMode(ctx.controls.cfg),
     cotMessages: getCotMessages(ctx.controls.cfg),
     maxConcurrentRuns: getMaxConcurrentRuns(ctx.controls.cfg),
     runIdleTimeoutMinutes: ms ? Math.round(ms / 60_000) : 0,
@@ -1812,8 +1826,11 @@ async function submitConfig(ctx: CommandContext): Promise<void> {
     rawReply === 'markdown' || rawReply === 'text' || rawReply === 'card'
       ? (rawReply as MessageReplyMode)
       : getMessageReplyMode(ctx.controls.cfg);
-  const rawTools = String(fv.show_tool_calls ?? '').trim();
-  const showToolCalls = rawTools !== 'hide';
+  const rawPresentation = String(fv.presentation_mode ?? '').trim();
+  const presentationMode: PresentationMode =
+    rawPresentation === 'clean' || rawPresentation === 'progress' || rawPresentation === 'debug'
+      ? rawPresentation
+      : getPresentationMode(ctx.controls.cfg);
   const rawCotMessages = String(fv.cot_messages ?? '').trim();
   const cotMessages =
     rawCotMessages === 'brief'
@@ -1885,7 +1902,8 @@ async function submitConfig(ctx: CommandContext): Promise<void> {
       // markdown card. Set unconditionally on every submit so a user who
       // explicitly picks any option gets out of the legacy-coerce path.
       messageReplyMigrated: true,
-      showToolCalls,
+      showToolCalls: presentationMode === 'debug',
+      presentation: { mode: presentationMode },
       cotMessages,
       maxConcurrentRuns,
       runIdleTimeoutMinutes,
@@ -1930,7 +1948,7 @@ async function submitConfig(ctx: CommandContext): Promise<void> {
 
     log.info('command', 'config-saved', {
       messageReply,
-      showToolCalls,
+      presentationMode,
       cotMessages,
       maxConcurrentRuns,
       runIdleTimeoutMinutes,
@@ -1946,7 +1964,7 @@ async function submitConfig(ctx: CommandContext): Promise<void> {
       formMsgId,
       configSavedCard({
         messageReply,
-        showToolCalls,
+        presentationMode,
         cotMessages,
         maxConcurrentRuns,
         runIdleTimeoutMinutes,

@@ -67,7 +67,30 @@ export interface SecretsConfig {
  * `markdown`. See `messageReplyMigrated` for the auto-coercion logic.
  */
 export type MessageReplyMode = 'card' | 'markdown' | 'text';
+export type PresentationMode = 'clean' | 'progress' | 'debug';
 export type CotMessagesMode = 'off' | 'brief' | 'detailed';
+
+export interface PresentationPreferences {
+  mode?: PresentationMode;
+}
+
+export interface AutoNewSessionPreferences {
+  /** Enable automatic fresh-session rotation before context windows overflow. */
+  enabled?: boolean;
+  /** Rotate after the previous run reports this many input tokens. */
+  inputTokenThreshold?: number;
+  /** Require at least this many completed turns before token usage can rotate. */
+  minTurnsBeforeInputTokenReset?: number;
+  /** Rotate after this many completed turns when token usage is unavailable. */
+  maxTurns?: number;
+}
+
+export interface AutoNewSessionConfig {
+  enabled: boolean;
+  inputTokenThreshold: number;
+  minTurnsBeforeInputTokenReset: number;
+  maxTurns: number;
+}
 
 /**
  * Access control settings. Empty lists are fail-closed in the v2 policy:
@@ -100,10 +123,18 @@ export interface AppPreferences {
   messageReplyMigrated?: boolean;
   /**
    * Whether to render tool-call blocks (Bash / Read / Edit / ...) in the
-   * output. Default true. Turn off if you only care about Claude's final
-   * text answer and want to hide the "工具调用过程".
+   * output. Legacy compatibility field. Prefer `presentation.mode`:
+   * `debug` shows the full tool stream, while `clean` / `progress` hide raw
+   * tool details from the chat surface.
    */
   showToolCalls?: boolean;
+  /**
+   * User-facing presentation mode for agent runs.
+   *   - clean: user text + minimal "processing" status only
+   *   - progress: user text + coarse running phase, no command/file details
+   *   - debug: full reasoning and tool-call stream for maintainers
+   */
+  presentation?: PresentationPreferences;
   /**
    * Whether to send a separate Lark COT process message before the final
    * answer. `brief` mirrors the lightweight tool/progress visibility from
@@ -124,6 +155,11 @@ export interface AppPreferences {
    * can hang indefinitely). Per-scope `/timeout` overrides this.
    */
   runIdleTimeoutMinutes?: number;
+  /**
+   * Automatic `/new` guard. The bridge starts a fresh session before the
+   * next turn when the previous session is likely to exceed the model context.
+   */
+  autoNewSession?: AutoNewSessionPreferences;
   /**
    * Whether the bot only responds to messages that @-mention it in groups
    * (regular and topic groups). p2p is always unrestricted. Default true:
@@ -204,9 +240,21 @@ export function getMessageReplyMode(cfg: AppConfig): MessageReplyMode {
   return 'markdown';
 }
 
+export function isPresentationMode(value: unknown): value is PresentationMode {
+  return value === 'clean' || value === 'progress' || value === 'debug';
+}
+
+/** Resolve the presentation mode with legacy showToolCalls fallback. */
+export function getPresentationMode(cfg: AppConfig): PresentationMode {
+  const raw = cfg.preferences?.presentation?.mode;
+  if (isPresentationMode(raw)) return raw;
+  if (cfg.preferences?.showToolCalls === true) return 'debug';
+  return 'clean';
+}
+
 /** Resolve the show-tool-calls preference with default fallback. */
 export function getShowToolCalls(cfg: AppConfig): boolean {
-  return cfg.preferences?.showToolCalls !== false;
+  return getPresentationMode(cfg) === 'debug';
 }
 
 export function getCotMessages(cfg: AppConfig): CotMessagesMode {
@@ -266,4 +314,37 @@ export function getRunIdleTimeoutMs(cfg: AppConfig): number | undefined {
   if (typeof raw !== 'number' || !Number.isFinite(raw) || raw <= 0) return undefined;
   const clamped = Math.min(Math.max(Math.floor(raw), 1), 120);
   return clamped * 60_000;
+}
+
+export const DEFAULT_AUTO_NEW_INPUT_TOKEN_THRESHOLD = 100_000;
+export const DEFAULT_AUTO_NEW_MIN_TURNS_BEFORE_INPUT_TOKEN_RESET = 3;
+export const DEFAULT_AUTO_NEW_MAX_TURNS = 8;
+
+export function getAutoNewSessionConfig(cfg: AppConfig): AutoNewSessionConfig {
+  const raw = cfg.preferences?.autoNewSession;
+  const enabled = raw?.enabled !== false;
+  const threshold =
+    typeof raw?.inputTokenThreshold === 'number' &&
+    Number.isFinite(raw.inputTokenThreshold) &&
+    raw.inputTokenThreshold > 0
+      ? Math.floor(raw.inputTokenThreshold)
+      : DEFAULT_AUTO_NEW_INPUT_TOKEN_THRESHOLD;
+  const maxTurns =
+    typeof raw?.maxTurns === 'number' &&
+    Number.isFinite(raw.maxTurns) &&
+    raw.maxTurns >= 0
+      ? Math.min(1000, Math.floor(raw.maxTurns))
+      : DEFAULT_AUTO_NEW_MAX_TURNS;
+  const minTurnsBeforeInputTokenReset =
+    typeof raw?.minTurnsBeforeInputTokenReset === 'number' &&
+    Number.isFinite(raw.minTurnsBeforeInputTokenReset) &&
+    raw.minTurnsBeforeInputTokenReset > 0
+      ? Math.min(1000, Math.floor(raw.minTurnsBeforeInputTokenReset))
+      : DEFAULT_AUTO_NEW_MIN_TURNS_BEFORE_INPUT_TOKEN_RESET;
+  return {
+    enabled,
+    inputTokenThreshold: threshold,
+    minTurnsBeforeInputTokenReset,
+    maxTurns,
+  };
 }

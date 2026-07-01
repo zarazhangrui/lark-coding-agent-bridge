@@ -1,3 +1,4 @@
+import type { PresentationMode } from '../config/schema';
 import type { Block, RunState, ToolEntry } from './run-state';
 import { toolHeaderText } from './tool-render';
 
@@ -11,11 +12,16 @@ import { toolHeaderText } from './tool-render';
  *   - No reasoning / thinking output (no place to fold it; would be noise)
  *   - Footer is appended inline at the bottom while running
  */
-export function renderText(state: RunState): string {
+export interface TextRenderOptions {
+  presentationMode?: PresentationMode;
+}
+
+export function renderText(state: RunState, options: TextRenderOptions = {}): string {
+  const presentationMode = options.presentationMode ?? 'debug';
   const parts: string[] = [];
 
   for (const block of state.blocks) {
-    const piece = renderBlock(block);
+    const piece = renderBlock(block, presentationMode);
     if (piece) parts.push(piece);
   }
 
@@ -27,16 +33,17 @@ export function renderText(state: RunState): string {
   } else if (state.terminal === 'error' && state.errorMsg) {
     parts.push(`⚠️ agent 失败:${state.errorMsg}`);
   } else if (state.terminal === 'running' && state.footer) {
-    parts.push(footerLine(state.footer));
+    parts.push(footerLine(state.footer, presentationMode));
   }
 
   return parts.join('\n\n');
 }
 
-function renderBlock(block: Block): string {
+function renderBlock(block: Block, presentationMode: PresentationMode): string {
   if (block.kind === 'text') {
     return block.content.trim();
   }
+  if (presentationMode !== 'debug') return '';
   return toolLine(block.tool);
 }
 
@@ -50,7 +57,16 @@ function toolLine(tool: ToolEntry): string {
   return `> ${toolHeaderText(tool)}`;
 }
 
-function footerLine(status: 'thinking' | 'tool_running' | 'streaming'): string {
+function footerLine(
+  status: 'thinking' | 'tool_running' | 'streaming',
+  presentationMode: PresentationMode,
+): string {
+  if (presentationMode === 'clean') return '_处理中…_';
+  if (presentationMode === 'progress') {
+    if (status === 'thinking') return '_处理中：规划中…_';
+    if (status === 'tool_running') return '_处理中：执行内部步骤…_';
+    return '_处理中：整理回复…_';
+  }
   if (status === 'thinking') return '_🧠 正在思考…_';
   if (status === 'tool_running') return '_🧰 正在调用工具…_';
   return '_✍️ 正在输出…_';

@@ -1,10 +1,10 @@
 import type { KnownChat } from '../bot/lark-info';
 import type { LarkCliIdentityPreset } from '../config/profile-schema';
-import type { CotMessagesMode, MessageReplyMode } from '../config/schema';
+import type { CotMessagesMode, MessageReplyMode, PresentationMode } from '../config/schema';
 
 export interface ConfigFormOpts {
   messageReply: MessageReplyMode;
-  showToolCalls: boolean;
+  presentationMode: PresentationMode;
   cotMessages: CotMessagesMode;
   maxConcurrentRuns: number;
   /** 0 means "disabled". */
@@ -126,17 +126,19 @@ export function configFormCard(opts: ConfigFormOpts): object {
             {
               tag: 'markdown',
               content:
-                '\n**工具调用显示**\n' +
-                '_显示:可以看到 bot 跑了什么命令、读了哪些文件等过程_\n' +
-                '_隐藏:只看 agent 最终的文字答复,跳过所有工具块_',
+                '\n**输出模式**\n' +
+                '_清爽:只显示用户态文字和最小处理中状态_\n' +
+                '_进度:显示粗粒度阶段,不显示命令和文件细节_\n' +
+                '_调试:显示完整 reasoning 和工具调用流_',
             },
             {
               tag: 'select_static',
-              name: 'show_tool_calls',
-              initial_option: opts.showToolCalls ? 'show' : 'hide',
+              name: 'presentation_mode',
+              initial_option: opts.presentationMode,
               options: [
-                { text: { tag: 'plain_text', content: '显示(默认)' }, value: 'show' },
-                { text: { tag: 'plain_text', content: '隐藏' }, value: 'hide' },
+                { text: { tag: 'plain_text', content: '清爽(默认)' }, value: 'clean' },
+                { text: { tag: 'plain_text', content: '进度' }, value: 'progress' },
+                { text: { tag: 'plain_text', content: '调试' }, value: 'debug' },
               ],
             },
             {
@@ -267,6 +269,12 @@ export function configSavedCard(opts: ConfigFormOpts): object {
       : opts.messageReply === 'markdown'
         ? '消息卡片'
         : '纯文本';
+  const presentationLabel =
+    opts.presentationMode === 'debug'
+      ? '调试'
+      : opts.presentationMode === 'progress'
+        ? '进度'
+        : '清爽';
   const summarize = (list: string[]): string =>
     list.length === 0 ? '_(空)_' : `${list.length} 项`;
   const cotLabel = cotMessagesLabel(opts.cotMessages);
@@ -280,7 +288,7 @@ export function configSavedCard(opts: ConfigFormOpts): object {
           content:
             '✅ **偏好已保存**\n\n' +
             `**消息回复方式**:${replyLabel}\n` +
-            `**工具调用显示**:\`${opts.showToolCalls ? 'show' : 'hide'}\`\n` +
+            `**输出模式**:\`${presentationLabel}\`\n` +
             `**COT 过程消息**:\`${cotLabel}\`\n` +
             `**并发上限**:\`${opts.maxConcurrentRuns}\`\n` +
             `**run 探活**:\`${opts.runIdleTimeoutMinutes > 0 ? `${opts.runIdleTimeoutMinutes} 分钟` : '关闭'}\`\n` +

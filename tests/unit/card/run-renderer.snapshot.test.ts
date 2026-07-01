@@ -85,6 +85,36 @@ describe('run card renderer snapshots', () => {
     expect(renderText(stateFrom([{ type: 'error', message: 'process failed', terminationReason: 'failed' }]))).toMatchSnapshot();
   });
 
+  it('hides reasoning and raw tool details outside debug presentation', () => {
+    const state = stateFrom([
+      { type: 'thinking', delta: 'private reasoning' },
+      { type: 'tool_use', id: 'tool-1', name: 'Bash', input: { command: 'cat /repo/secret.txt' } },
+      { type: 'tool_result', id: 'tool-1', output: 'secret output', isError: false },
+      { type: 'text', delta: 'User-facing result' },
+    ]);
+
+    const cleanCard = JSON.stringify(renderCard(state, { presentationMode: 'clean' }));
+    expect(cleanCard).toContain('User-facing result');
+    expect(cleanCard).toContain('处理中');
+    expect(cleanCard).not.toContain('private reasoning');
+    expect(cleanCard).not.toContain('Bash');
+    expect(cleanCard).not.toContain('cat /repo/secret.txt');
+    expect(cleanCard).not.toContain('secret output');
+
+    const progressText = renderText(state, { presentationMode: 'progress' });
+    expect(progressText).toContain('User-facing result');
+    expect(progressText).toContain('整理回复');
+    expect(progressText).not.toContain('private reasoning');
+    expect(progressText).not.toContain('Bash');
+    expect(progressText).not.toContain('cat /repo/secret.txt');
+    expect(progressText).not.toContain('secret output');
+
+    const debugCard = JSON.stringify(renderCard(state, { presentationMode: 'debug' }));
+    expect(debugCard).toContain('private reasoning');
+    expect(debugCard).toContain('Bash');
+    expect(debugCard).toContain('cat /repo/secret.txt');
+  });
+
   it('injects signed bridge callback values for managed run controls', () => {
     const card = renderCard(initialState, {
       signCallback: (action) => `token-for-${action}`,
