@@ -3,7 +3,12 @@ import type { Readable, Writable } from 'node:stream';
 import { join } from 'node:path';
 import type { SandboxMode } from '../../config/profile-schema';
 import { log } from '../../core/logger';
-import { mergeProcessEnv, spawnProcess, type SpawnedProcessByStdio } from '../../platform/spawn';
+import {
+  mergeProcessEnv,
+  resolveWindowsCmdShim,
+  spawnProcess,
+  type SpawnedProcessByStdio,
+} from '../../platform/spawn';
 import { SpawnFailed } from '../../runtime/errors';
 import { prefixBridgeSystemPrompt } from '../bridge-system-prompt';
 import { buildLarkChannelEnv, type LarkChannelEnvContext } from '../lark-channel-env';
@@ -107,7 +112,14 @@ export class CodexAdapter implements AgentAdapter {
     } else if (!this.inheritCodexHome) {
       envOverrides.CODEX_HOME = join(this.profileStateDir, 'codex-home');
     }
-    const child = spawnProcess(this.binary, args, {
+
+    // On Windows, bypass cmd.exe by spawning node + the resolved entry script
+    // directly. See resolveWindowsCmdShim for the full rationale.
+    const shim = resolveWindowsCmdShim(this.binary);
+    const spawnBin = shim?.command ?? this.binary;
+    const spawnArgs = shim ? [...shim.prependArgs, ...args] : args;
+
+    const child = spawnProcess(spawnBin, spawnArgs, {
       cwd: opts.cwd,
       env: mergeProcessEnv(process.env, envOverrides),
       stdio: ['pipe', 'pipe', 'pipe'],
@@ -119,6 +131,7 @@ export class CodexAdapter implements AgentAdapter {
       hasThread: Boolean(opts.threadId),
       promptChars: opts.prompt.length,
       images: opts.images?.length ?? 0,
+      shim: shim ? 'win32-node' : null,
     });
 
     const stderrChunks: Buffer[] = [];
