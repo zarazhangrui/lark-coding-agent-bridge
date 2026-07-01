@@ -121,6 +121,55 @@ describe('agent-aware run-flow resume', () => {
     });
   });
 
+  it('injects a compact handoff into the next fresh run only once', async () => {
+    const h = await createHarness('codex');
+    const cwdRealpath = await realpath(h.tmp.workspace);
+    h.sessions.setPendingCompactSummary('chat-1', cwdRealpath, 'Important handoff state');
+
+    const first = await start(h);
+
+    expect(first.ok).toBe(true);
+    if (!first.ok) throw new Error('expected fresh run');
+    expect(first.resumeFrom).toBeUndefined();
+    expect(h.agent.runOptions[0]?.prompt).toContain('Important handoff state');
+    expect(h.agent.runOptions[0]?.prompt).toContain('New user request:');
+    expect(h.sessions.getPendingCompactSummary('chat-1', cwdRealpath)).toBeUndefined();
+    await collect(first.execution.subscribe());
+
+    const second = await start(h);
+
+    expect(second.ok).toBe(true);
+    if (!second.ok) throw new Error('expected second run');
+    expect(h.agent.runOptions[1]?.prompt).toBe('hello');
+  });
+
+  it('does not inject a pending compact handoff when resuming an active session', async () => {
+    const h = await createHarness('codex');
+    const probe = await start(h);
+    expect(probe.ok).toBe(true);
+    if (!probe.ok) throw new Error('expected probe run');
+    await collect(probe.execution.subscribe());
+
+    h.catalog.upsertActive({
+      scopeId: 'chat-1',
+      agentId: 'codex',
+      cwdRealpath: probe.cwdRealpath,
+      policyFingerprint: probe.policy.policyFingerprint,
+      threadId: 'thread-catalog',
+      now: 1000,
+    });
+    h.sessions.setPendingCompactSummary('chat-1', probe.cwdRealpath, 'Should wait');
+
+    const resumed = await start(h);
+
+    expect(resumed.ok).toBe(true);
+    if (!resumed.ok) throw new Error('expected resumed run');
+    expect(resumed.resumeFrom).toBe('thread-catalog');
+    expect(h.agent.runOptions[1]?.threadId).toBe('thread-catalog');
+    expect(h.agent.runOptions[1]?.prompt).toBe('hello');
+    expect(h.sessions.getPendingCompactSummary('chat-1', probe.cwdRealpath)).toBe('Should wait');
+  });
+
   it('records system session identifiers into the agent-aware catalog', async () => {
     const claude = await createHarness('claude');
     const claudeRun = await start(claude);

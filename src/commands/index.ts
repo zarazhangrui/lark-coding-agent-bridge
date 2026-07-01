@@ -4,7 +4,7 @@ import { homedir } from 'node:os';
 import { dirname, isAbsolute } from 'node:path';
 import type { LarkChannel, NormalizedMessage } from '@larksuite/channel';
 import { claudeCapability, codexCapability } from '../agent/capability';
-import type { AgentAdapter } from '../agent/types';
+import type { AgentAdapter, AgentEvent } from '../agent/types';
 import type { ActiveRuns } from '../bot/active-runs';
 import {
   accountCurrentCard,
@@ -67,6 +67,10 @@ import {
   type CodexThreadHistoryEntry,
   type ListCodexThreadHistoryOptions,
 } from '../session/codex-history';
+import {
+  compactCodexThread,
+  type CompactCodexThreadOptions,
+} from '../session/codex-compact';
 import type { SessionCatalog, SessionCatalogIdentity } from '../session/catalog';
 import { isAlive, readAndPrune, resolveTarget } from '../runtime/registry';
 import type { SessionStore } from '../session/store';
@@ -132,6 +136,7 @@ export interface CommandContext {
   codexHistoryProvider?: (
     options: ListCodexThreadHistoryOptions,
   ) => Promise<CodexThreadHistoryEntry[]>;
+  codexCompactProvider?: (options: CompactCodexThreadOptions) => Promise<void>;
   claudeHistoryProvider?: (cwd: string, limit: number) => Promise<SessionSummary[]>;
   /** Set when invoked from a CardKit 2.0 form submit. Keys are input `name`s. */
   formValue?: Record<string, unknown>;
@@ -164,6 +169,7 @@ const handlers: Record<string, Handler> = {
   '/cd': handleCd,
   '/ws': handleWs,
   '/resume': handleResume,
+  '/compact': handleCompact,
   '/status': handleStatus,
   '/help': handleHelp,
   '/account': handleAccount,
@@ -191,6 +197,7 @@ const ADMIN_COMMANDS = new Set([
   '/exit',
   '/reconnect',
   '/doctor',
+  '/compact',
   '/cd',
   '/ws',
   '/invite',
@@ -319,15 +326,243 @@ async function handleNew(args: string, ctx: CommandContext): Promise<void> {
     return handleNewChat(rawName, ctx);
   }
 
+  const wasRunning = resetCurrentScopeSession(ctx);
+  await reply(ctx, wasRunning ? '已中断当前任务并开始新会话。' : '已开始新会话。');
+}
+
+function resetCurrentScopeSession(
+  ctx: CommandContext,
+  identity = ctx.sessionCatalogIdentity,
+): boolean {
   const wasRunning = ctx.activeRuns.interrupt(ctx.scope);
-  if (ctx.sessionCatalog && ctx.sessionCatalogIdentity) {
+  if (ctx.sessionCatalog && identity) {
     ctx.sessionCatalog.archiveActive({
-      ...ctx.sessionCatalogIdentity,
+      ...identity,
       now: Date.now(),
     });
   }
   ctx.sessions.clear(ctx.scope);
-  await reply(ctx, wasRunning ? '已中断当前任务并开始新会话。' : '已开始新会话。');
+  return wasRunning;
+}
+
+const COMPACT_SUMMARY_PROMPT = [
+  'You are compacting this agent session for continuation in a new thread.',
+  'Write a concise Markdown handoff summary only. Include:',
+  '- Current objective and workspace',
+  '- Important decisions and current state',
+  '- Files, commands, data sources, and IDs that matter',
+  '- Known blockers, risks, and unfinished work',
+  '- Concrete next steps',
+  'Do not continue the task. Do not ask follow-up questions. Do not run tools unless absolutely necessary to inspect already-local state.',
+].join('\n');
+
+const compactInFlightScopes = new Set<string>();
+
+async function handleCompact(_args: string, ctx: CommandContext): Promise<void> {
+  if (!ctx.runExecutor) {
+    await reply(ctx, '❌ 当前 bridge 没有可用的 run executor，无法压缩会话。');
+    return;
+  }
+  if (ctx.activeRuns.get(ctx.scope)) {
+    await reply(ctx, '当前会话已有运行在执行，请先等它结束，或用 `/stop` 停止后再 `/compact`。');
+    return;
+  }
+  if (compactInFlightScopes.has(ctx.scope)) {
+    await reply(ctx, '当前会话已经在 compact 中，请稍后。');
+    return;
+  }
+
+  const requestedCwd = effectiveWorkspaceCwd(ctx);
+  if (!requestedCwd) {
+    await reply(ctx, '未设置工作目录。先用 `/cd <path>` 或 `/ws use <name>` 选择工作目录后再 `/compact`。');
+    return;
+  }
+
+  const workspace = await resolveWorkingDirectory(requestedCwd);
+  if (!workspace.ok) {
+    await reply(ctx, workspace.userVisible);
+    return;
+  }
+
+  const capability =
+    ctx.controls.profileConfig.agentKind === 'codex'
+      ? codexCapability(ctx.controls.profileConfig)
+      : claudeCapability(ctx.controls.profileConfig);
+  const now = Date.now();
+  const access = canRunAdminCommand(ctx.controls.profileConfig, ctx.controls, ctx.msg.senderId);
+  const policy = evaluateRunPolicy({
+    scope: {
+      source: 'im',
+      chatId: ctx.msg.chatId,
+      actorId: ctx.msg.senderId,
+      ...(ctx.chatMode === 'topic' && ctx.msg.threadId ? { threadId: ctx.msg.threadId } : {}),
+    },
+    attachments: [],
+    prompt: COMPACT_SUMMARY_PROMPT,
+    requestedCwd,
+    cwdRealpath: workspace.cwdRealpath,
+    access,
+    capability,
+    profileConfig: ctx.controls.profileConfig,
+    now,
+    codexHome: ctx.controls.profileConfig.codex?.codexHome,
+    inheritCodexHome: ctx.controls.profileConfig.codex?.inheritCodexHome,
+    ttlMs: 5 * 60_000,
+  });
+  if (!policy.ok) {
+    await reply(ctx, policy.rejectReason.userVisible);
+    return;
+  }
+
+  const identity: SessionCatalogIdentity = {
+    scopeId: ctx.scope,
+    agentId: capability.agentId,
+    cwdRealpath: workspace.cwdRealpath,
+    policyFingerprint: policy.policyFingerprint,
+  };
+  const activeEntry = compactCatalogEntry(ctx, identity);
+  const sessionId =
+    capability.agentId === 'claude'
+      ? activeEntry?.sessionId ?? ctx.sessions.resumeFor(ctx.scope, workspace.cwdRealpath)
+      : undefined;
+  const threadId = capability.agentId === 'codex' ? activeEntry?.threadId : undefined;
+  if (!sessionId && !threadId) {
+    await reply(ctx, '当前没有可压缩的历史会话；已经是新会话或还没有建立 session。');
+    return;
+  }
+
+  await reply(
+    ctx,
+    capability.agentId === 'codex'
+      ? '正在调用 Codex 原生 compact；成功后会保留当前 thread。'
+      : '正在压缩当前会话：会先生成交接摘要，成功后再开始新会话。',
+  );
+  compactInFlightScopes.add(ctx.scope);
+  try {
+    if (capability.agentId === 'codex' && threadId) {
+      const codex = ctx.controls.profileConfig.codex;
+      const binary = codex?.binaryPath;
+      if (!binary) {
+        await reply(ctx, '❌ 当前 Codex profile 没有配置 binaryPath，无法调用原生 compact。');
+        return;
+      }
+      const provider = ctx.codexCompactProvider ?? compactCodexThread;
+      await provider({
+        binary,
+        threadId,
+        profileStateDir: commandProfilePaths(ctx).profileDir,
+        cwd: workspace.cwdRealpath,
+        sandbox: policy.sandbox,
+        ...(codex.codexHome ? { codexHome: codex.codexHome } : {}),
+        ...(codex.inheritCodexHome !== undefined
+          ? { inheritCodexHome: codex.inheritCodexHome }
+          : {}),
+      });
+      await reply(ctx, '✓ Codex 原生 compact 已完成，当前 thread 保持不变。');
+      return;
+    }
+
+    const execution = await ctx.runExecutor.submit({
+      scopeId: `${ctx.scope}:compact`,
+      policy,
+      sessionId,
+      threadId,
+      stopGraceMs: getAgentStopGraceMs(ctx.controls.cfg),
+      observability: {
+        profile: ctx.controls.profile,
+        agent: capability.agentId,
+        source: 'compact',
+        stage: 'summarize',
+      },
+    });
+
+    const result = await collectCompactSummary(execution.subscribe());
+    if (!result.ok) {
+      await reply(ctx, `❌ compact 失败：${result.message}\n旧会话未归档。`);
+      return;
+    }
+
+    resetCurrentScopeSession(ctx, activeEntry ? catalogEntryIdentity(activeEntry) : identity);
+    ctx.sessions.setPendingCompactSummary(ctx.scope, workspace.cwdRealpath, result.summary);
+    await reply(
+      ctx,
+      [
+        '✓ 已压缩并开始新会话。',
+        '下一条普通消息会自动携带这份交接摘要，然后摘要会从 bridge 待注入队列中清除。',
+      ].join('\n'),
+    );
+  } catch (err) {
+    if (err instanceof RunRejected) {
+      await reply(
+        ctx,
+        err.code === 'pool-full'
+          ? '❌ 当前运行池已满，稍后再 `/compact`。'
+          : err.code === 'run-already-active'
+            ? '❌ compact 已在运行，请稍后。'
+            : `❌ compact 未能启动：${err.code}`,
+      );
+      return;
+    }
+    log.fail('command', err, { step: 'compact' });
+    reportMetric('command_fail', 1, { step: 'compact' });
+    await reply(ctx, `❌ compact 失败：${err instanceof Error ? err.message : String(err)}`);
+  } finally {
+    compactInFlightScopes.delete(ctx.scope);
+  }
+}
+
+function compactCatalogEntry(ctx: CommandContext, identity: SessionCatalogIdentity) {
+  const exact = ctx.sessionCatalog?.activeFor(identity);
+  if (exact) return exact;
+  return ctx.sessionCatalog
+    ?.entries()
+    .filter(
+      (entry) =>
+        entry.status === 'active' &&
+        entry.scopeId === identity.scopeId &&
+        entry.agentId === identity.agentId &&
+        entry.cwdRealpath === identity.cwdRealpath,
+    )
+    .sort((a, b) => b.updatedAt - a.updatedAt)[0];
+}
+
+function catalogEntryIdentity(entry: SessionCatalogIdentity): SessionCatalogIdentity {
+  return {
+    scopeId: entry.scopeId,
+    agentId: entry.agentId,
+    cwdRealpath: entry.cwdRealpath,
+    policyFingerprint: entry.policyFingerprint,
+  };
+}
+
+type CompactSummaryResult =
+  | { ok: true; summary: string }
+  | { ok: false; message: string };
+
+async function collectCompactSummary(
+  events: AsyncIterable<AgentEvent>,
+): Promise<CompactSummaryResult> {
+  let summary = '';
+  for await (const evt of events) {
+    if (evt.type === 'text') {
+      summary += evt.delta;
+      continue;
+    }
+    if (evt.type === 'done') {
+      if (evt.terminationReason !== 'normal') {
+        return { ok: false, message: evt.terminationReason };
+      }
+      const trimmed = summary.trim();
+      if (!trimmed) return { ok: false, message: 'agent 没有生成摘要' };
+      return { ok: true, summary: trimmed };
+    }
+    if (evt.type === 'error') {
+      return { ok: false, message: evt.message || evt.terminationReason };
+    }
+  }
+  const trimmed = summary.trim();
+  if (!trimmed) return { ok: false, message: 'agent 输出流提前结束且没有摘要' };
+  return { ok: true, summary: trimmed };
 }
 
 async function handleNewChat(rawName: string, ctx: CommandContext): Promise<void> {
