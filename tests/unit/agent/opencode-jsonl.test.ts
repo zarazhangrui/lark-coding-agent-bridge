@@ -80,4 +80,142 @@ describe('OpenCode JSONL translator', () => {
     expect(t.translate(42)).toEqual([]);
     expect(t.translate({})).toEqual([]);
   });
+
+  it('translates completed tool_use events into tool_use and tool_result', () => {
+    const t = new OpenCodeJsonlTranslator();
+
+    expect(
+      t.translate({
+        type: 'tool_use',
+        part: {
+          type: 'tool',
+          tool: 'write',
+          callID: 'call-123',
+          state: {
+            status: 'completed',
+            input: { filePath: '/tmp/test.txt', content: '你好！' },
+            output: 'Wrote file successfully.',
+            metadata: { filepath: '/tmp/test.txt' },
+            title: 'tmp/test.txt',
+          },
+        },
+      }),
+    ).toEqual([
+      {
+        type: 'tool_use',
+        id: 'call-123',
+        name: 'write',
+        input: { filePath: '/tmp/test.txt', content: '你好！' },
+      },
+      {
+        type: 'tool_result',
+        id: 'call-123',
+        output: 'Wrote file successfully.',
+        isError: false,
+      },
+    ]);
+  });
+
+  it('emits only tool_use when tool_use event is not yet completed', () => {
+    const t = new OpenCodeJsonlTranslator();
+
+    expect(
+      t.translate({
+        type: 'tool_use',
+        part: {
+          type: 'tool',
+          tool: 'bash',
+          callID: 'call-456',
+          state: {
+            status: 'in_progress',
+            input: { command: 'ls' },
+          },
+        },
+      }),
+    ).toEqual([
+      {
+        type: 'tool_use',
+        id: 'call-456',
+        name: 'bash',
+        input: { command: 'ls' },
+      },
+    ]);
+  });
+
+  it('falls back to tool name when callID is missing', () => {
+    const t = new OpenCodeJsonlTranslator();
+
+    expect(
+      t.translate({
+        type: 'tool_use',
+        part: {
+          type: 'tool',
+          tool: 'read',
+          state: {
+            status: 'completed',
+            input: { filePath: '/tmp/a.txt' },
+            output: 'file contents',
+          },
+        },
+      }),
+    ).toEqual([
+      {
+        type: 'tool_use',
+        id: 'read',
+        name: 'read',
+        input: { filePath: '/tmp/a.txt' },
+      },
+      {
+        type: 'tool_result',
+        id: 'read',
+        output: 'file contents',
+        isError: false,
+      },
+    ]);
+  });
+
+  it('uses title as fallback output when state.output is missing', () => {
+    const t = new OpenCodeJsonlTranslator();
+
+    expect(
+      t.translate({
+        type: 'tool_use',
+        part: {
+          type: 'tool',
+          tool: 'write',
+          callID: 'call-789',
+          state: {
+            status: 'completed',
+            input: { filePath: '/tmp/b.txt', content: 'data' },
+            title: 'tmp/b.txt',
+          },
+        },
+      }),
+    ).toEqual([
+      {
+        type: 'tool_use',
+        id: 'call-789',
+        name: 'write',
+        input: { filePath: '/tmp/b.txt', content: 'data' },
+      },
+      {
+        type: 'tool_result',
+        id: 'call-789',
+        output: 'tmp/b.txt',
+        isError: false,
+      },
+    ]);
+  });
+
+  it('ignores malformed tool_use events safely', () => {
+    const t = new OpenCodeJsonlTranslator();
+
+    expect(t.translate({ type: 'tool_use' })).toEqual([]);
+    expect(t.translate({ type: 'tool_use', part: null })).toEqual([]);
+    expect(t.translate({ type: 'tool_use', part: { type: 'unknown' } })).toEqual([]);
+    expect(t.translate({ type: 'tool_use', part: { type: 'tool' } })).toEqual([]);
+    expect(t.translate({ type: 'tool_use', part: { type: 'tool', tool: '' } })).toEqual(
+      [],
+    );
+  });
 });

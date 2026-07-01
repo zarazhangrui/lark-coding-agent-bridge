@@ -15,6 +15,8 @@ export class OpenCodeJsonlTranslator {
         return [];
       case 'text':
         return this.translateText(raw);
+      case 'tool_use':
+        return this.translateToolUse(raw);
       case 'step_finish':
         return this.translateStepFinish();
       default:
@@ -52,6 +54,44 @@ export class OpenCodeJsonlTranslator {
     this.terminal = true;
     return [{ type: 'done', terminationReason: 'normal' }];
   }
+
+  private translateToolUse(raw: Record<string, unknown>): AgentEvent[] {
+    const part = recordValue(raw.part);
+    if (!part || part.type !== 'tool') return [];
+    const tool = stringValue(part.tool);
+    if (!tool) return [];
+    const callId = stringValue(part.callID);
+    const id = callId ?? tool;
+    const state = recordValue(part.state);
+    const input = state ? state.input : undefined;
+    const output = state ? stringValue(state.output) : undefined;
+    const status = state ? stringValue(state.status) : undefined;
+
+    const events: AgentEvent[] = [
+      { type: 'tool_use', id, name: tool, input: input ?? {} },
+    ];
+
+    if (status === 'completed') {
+      const fallbackOutput = fallbackToolOutput(state);
+      events.push({
+        type: 'tool_result',
+        id,
+        output: output ?? fallbackOutput,
+        isError: false,
+      });
+    }
+
+    return events;
+  }
+}
+
+function fallbackToolOutput(state: Record<string, unknown> | undefined): string {
+  if (!state) return '';
+  const title = stringValue(state.title);
+  if (title) return title;
+  const metadata = recordValue(state.metadata);
+  const filepath = metadata ? stringValue(metadata.filepath) : undefined;
+  return filepath ?? '';
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
