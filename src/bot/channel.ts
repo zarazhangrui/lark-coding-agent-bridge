@@ -30,6 +30,7 @@ import { tryHandleCommand, type Controls } from '../commands';
 import type { AppConfig } from '../config/schema';
 import {
   getAgentStopGraceMs,
+  getAutoNewSessionConfig,
   getCotMessages,
   getMaxConcurrentRuns,
   getMessageReplyMode,
@@ -1132,7 +1133,6 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
   }
 }
 
-<<<<<<< HEAD
 function observeContextBudgetEvents(
   events: AsyncIterable<AgentEvent>,
   observe: (event: AgentEvent) => void,

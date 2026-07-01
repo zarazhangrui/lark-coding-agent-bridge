@@ -38,7 +38,7 @@
     "test:process": "vitest run tests/process --passWithNoTests",
     "ci:local": "git diff --check && pnpm test && pnpm typecheck && pnpm build",
     "ci:platform": "pnpm test && pnpm typecheck && pnpm build",
-    "prepare": "npm run build",
+    "prepare": "node bin/prepare-git-install.mjs",
     "prepublishOnly": "pnpm typecheck && pnpm build"
   },
   "dependencies": {
