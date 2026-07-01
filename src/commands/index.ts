@@ -12,7 +12,16 @@ import {
   accountFormCard,
   accountSuccessCard,
 } from '../card/account-cards';
-import { configCancelledCard, configFailedCard, configFormCard, configSavedCard } from '../card/config-card';
+import {
+  configCancelledCard,
+  configFailedCard,
+  configFormCard,
+  configSavedCard,
+  groupMsgScopeGrantCard,
+  groupMsgScopeGrantedCard,
+} from '../card/config-card';
+import { GROUP_MSG_SCOPE, hasGroupMsgScope } from '../bot/app-scope';
+import { requestScopeGrantLink } from '../bot/wizard';
 import { forgetManagedCard, sendManagedCard, updateManagedCard } from '../card/managed';
 import { helpCard, resumeCard, statusCard, workspacesCard } from '../card/templates';
 import type {
@@ -24,6 +33,7 @@ import type {
 } from '../config/schema';
 import {
   getAgentStopGraceMs,
+  getCotMessages,
   getMaxConcurrentRuns,
   getMessageReplyMode,
   getPresentationMode,
@@ -265,7 +275,7 @@ export async function runCommandHandler(
  */
 async function reply(ctx: CommandContext, markdown: string): Promise<void> {
   try {
-    await ctx.channel.send(ctx.msg.chatId, { markdown }, { replyTo: ctx.msg.messageId });
+    await ctx.channel.send(ctx.msg.chatId, { markdown }, commandReplyOptions(ctx));
   } catch (err) {
     log.fail('command', err, { step: 'reply' });
     reportMetric('command_fail', 1, { step: 'reply' });
@@ -274,13 +284,20 @@ async function reply(ctx: CommandContext, markdown: string): Promise<void> {
       await ctx.channel.send(
         ctx.msg.chatId,
         { markdown: AUDIT_SAFE_COMMAND_REPLY },
-        { replyTo: ctx.msg.messageId },
+        commandReplyOptions(ctx),
       );
     } catch (fallbackErr) {
       log.fail('command', fallbackErr, { step: 'reply-audit-fallback' });
       reportMetric('command_fail', 1, { step: 'reply-audit-fallback' });
     }
   }
+}
+
+function commandReplyOptions(ctx: CommandContext): { replyTo: string; replyInThread?: true } {
+  return {
+    replyTo: ctx.msg.messageId,
+    ...(ctx.chatMode === 'topic' && ctx.msg.threadId ? { replyInThread: true as const } : {}),
+  };
 }
 
 function isMessageAuditReject(err: unknown): boolean {
@@ -411,7 +428,7 @@ async function handleWsList(ctx: CommandContext): Promise<void> {
     currentCwd,
     named,
   );
-  await ctx.channel.send(ctx.msg.chatId, { card }, { replyTo: ctx.msg.messageId });
+  await ctx.channel.send(ctx.msg.chatId, { card }, commandReplyOptions(ctx));
 }
 
 async function handleWsSave(name: string, ctx: CommandContext): Promise<void> {
@@ -558,7 +575,7 @@ async function handleResume(args: string, ctx: CommandContext): Promise<void> {
         };
       });
       const card = resumeCard(cwd, entries);
-      await ctx.channel.send(ctx.msg.chatId, { card }, { replyTo: ctx.msg.messageId });
+      await ctx.channel.send(ctx.msg.chatId, { card }, commandReplyOptions(ctx));
       return;
     }
     if (entry?.threadId && identity) {
@@ -570,7 +587,7 @@ async function handleResume(args: string, ctx: CommandContext): Promise<void> {
       return;
     }
     const card = resumeCard(cwd, []);
-    await ctx.channel.send(ctx.msg.chatId, { card }, { replyTo: ctx.msg.messageId });
+    await ctx.channel.send(ctx.msg.chatId, { card }, commandReplyOptions(ctx));
     return;
   }
 
@@ -588,7 +605,7 @@ async function handleResume(args: string, ctx: CommandContext): Promise<void> {
     current: s.sessionId === currentSession?.sessionId,
   }));
   const card = resumeCard(cwd, entries);
-  await ctx.channel.send(ctx.msg.chatId, { card }, { replyTo: ctx.msg.messageId });
+  await ctx.channel.send(ctx.msg.chatId, { card }, commandReplyOptions(ctx));
 }
 
 async function applyResume(sessionId: string, ctx: CommandContext): Promise<void> {
@@ -812,13 +829,14 @@ async function handleStatus(_args: string, ctx: CommandContext): Promise<void> {
     runtimeAccess: runtimeAccessStatus(ctx.controls.profileConfig),
     larkCliStatus: await larkCliStatus(ctx),
     activeRun: Boolean(ctx.activeRuns.get(ctx.scope)),
+    activeScopes: ctx.activeRuns.scopes().filter((scope) => !scope.startsWith('comment:')),
     activeCommentScopes: ctx.activeRuns.scopes().filter((scope) => scope.startsWith('comment:')),
     queue: ctx.processPool?.snapshot(),
     ownerState: formatOwnerState(ctx),
     scope: ctx.scope,
     chatMode: ctx.chatMode,
   });
-  await ctx.channel.send(ctx.msg.chatId, { card }, { replyTo: ctx.msg.messageId });
+  await ctx.channel.send(ctx.msg.chatId, { card }, commandReplyOptions(ctx));
 }
 
 function formatOwnerState(ctx: CommandContext): string {
@@ -1315,7 +1333,7 @@ function formatDoctorEchoStatus(echoText: string, state: RunState): string {
 
 async function handleHelp(_args: string, ctx: CommandContext): Promise<void> {
   const card = helpCard(ctx.agent.displayName);
-  await ctx.channel.send(ctx.msg.chatId, { card }, { replyTo: ctx.msg.messageId });
+  await ctx.channel.send(ctx.msg.chatId, { card }, commandReplyOptions(ctx));
 }
 
 // ─── /account ─────────────────────────────────────────────────────────────
@@ -1345,7 +1363,7 @@ async function showCurrent(ctx: CommandContext): Promise<void> {
     botName: ctx.channel.botIdentity?.name,
     tenant: ctx.controls.cfg.accounts.app.tenant,
   });
-  await ctx.channel.send(ctx.msg.chatId, { card }, { replyTo: ctx.msg.messageId });
+  await ctx.channel.send(ctx.msg.chatId, { card }, commandReplyOptions(ctx));
 }
 
 async function showForm(ctx: CommandContext): Promise<void> {
@@ -1353,7 +1371,7 @@ async function showForm(ctx: CommandContext): Promise<void> {
   if (ctx.fromCardAction) {
     await recallMessage(ctx, ctx.msg.messageId);
   }
-  await sendManagedCard(ctx.channel, ctx.msg.chatId, card);
+  await sendManagedCard(ctx.channel, ctx.msg.chatId, card, commandReplyOptions(ctx));
 }
 
 async function cancelAccount(ctx: CommandContext): Promise<void> {
@@ -1377,6 +1395,7 @@ async function submitAccount(ctx: CommandContext): Promise<void> {
   const formMsgId = ctx.msg.messageId;
   const channel = ctx.channel;
   const restart = ctx.controls.restart;
+  const retryReplyOptions = commandReplyOptions(ctx);
 
   // CRITICAL: detach the work from the cardAction handler. Lark's client
   // keeps the form locked while the handler is pending — if we await the
@@ -1422,7 +1441,7 @@ async function submitAccount(ctx: CommandContext): Promise<void> {
         initialTenant: tenant,
         prefillAppId: appId,
       });
-      await sendManagedCard(channel, chatId, retry).catch((err) =>
+      await sendManagedCard(channel, chatId, retry, retryReplyOptions).catch((err) =>
         console.warn('[account] post retry form failed:', err),
       );
     };
@@ -1758,6 +1777,7 @@ async function showConfigForm(ctx: CommandContext): Promise<void> {
   const card = configFormCard({
     messageReply: getMessageReplyMode(ctx.controls.cfg),
     presentationMode: getPresentationMode(ctx.controls.cfg),
+    cotMessages: getCotMessages(ctx.controls.cfg),
     maxConcurrentRuns: getMaxConcurrentRuns(ctx.controls.cfg),
     runIdleTimeoutMinutes: ms ? Math.round(ms / 60_000) : 0,
     requireMentionInGroup: getRequireMentionInGroup(ctx.controls.cfg),
@@ -1768,7 +1788,7 @@ async function showConfigForm(ctx: CommandContext): Promise<void> {
     knownChats: ctx.controls.knownChats ?? [],
   });
   if (ctx.fromCardAction) await recallMessage(ctx, ctx.msg.messageId);
-  await sendManagedCard(ctx.channel, ctx.msg.chatId, card);
+  await sendManagedCard(ctx.channel, ctx.msg.chatId, card, commandReplyOptions(ctx));
 }
 
 async function showResultCardInPlace(
@@ -1780,7 +1800,7 @@ async function showResultCardInPlace(
     await updateManagedCard(ctx.channel, formMsgId, card);
   } catch (err) {
     log.warn('command', 'config-card-update-fallback', { err: String(err) });
-    await sendManagedCard(ctx.channel, ctx.msg.chatId, card).catch((fallbackErr) =>
+    await sendManagedCard(ctx.channel, ctx.msg.chatId, card, commandReplyOptions(ctx)).catch((fallbackErr) =>
       log.warn('command', 'config-card-fallback-send-failed', {
         err: String(fallbackErr),
       }),
@@ -1805,17 +1825,21 @@ async function submitConfig(ctx: CommandContext): Promise<void> {
   const messageReply: MessageReplyMode =
     rawReply === 'markdown' || rawReply === 'text' || rawReply === 'card'
       ? (rawReply as MessageReplyMode)
-      : 'card';
-  const rawTools = String(fv.show_tool_calls ?? '').trim();
+      : getMessageReplyMode(ctx.controls.cfg);
   const rawPresentation = String(fv.presentation_mode ?? '').trim();
   const presentationMode: PresentationMode =
     rawPresentation === 'clean' || rawPresentation === 'progress' || rawPresentation === 'debug'
       ? rawPresentation
-      : rawTools === 'hide'
-        ? 'clean'
-        : rawTools === 'show'
-          ? 'debug'
-          : getPresentationMode(ctx.controls.cfg);
+      : getPresentationMode(ctx.controls.cfg);
+  const rawCotMessages = String(fv.cot_messages ?? '').trim();
+  const cotMessages =
+    rawCotMessages === 'brief'
+      ? 'brief'
+      : rawCotMessages === 'detailed' || rawCotMessages === 'on'
+        ? 'detailed'
+        : rawCotMessages === 'off'
+          ? 'off'
+          : getCotMessages(ctx.controls.cfg);
   // Parse max_concurrent_runs; invalid input falls back to current value.
   const rawMaxCC = String(fv.max_concurrent_runs ?? '').trim();
   const parsedMaxCC = Number(rawMaxCC);
@@ -1880,6 +1904,7 @@ async function submitConfig(ctx: CommandContext): Promise<void> {
       messageReplyMigrated: true,
       showToolCalls: presentationMode === 'debug',
       presentation: { mode: presentationMode },
+      cotMessages,
       maxConcurrentRuns,
       runIdleTimeoutMinutes,
       requireMentionInGroup,
@@ -1924,6 +1949,7 @@ async function submitConfig(ctx: CommandContext): Promise<void> {
     log.info('command', 'config-saved', {
       messageReply,
       presentationMode,
+      cotMessages,
       maxConcurrentRuns,
       runIdleTimeoutMinutes,
       requireMentionInGroup,
@@ -1939,6 +1965,7 @@ async function submitConfig(ctx: CommandContext): Promise<void> {
       configSavedCard({
         messageReply,
         presentationMode,
+        cotMessages,
         maxConcurrentRuns,
         runIdleTimeoutMinutes,
         requireMentionInGroup,
@@ -1949,7 +1976,66 @@ async function submitConfig(ctx: CommandContext): Promise<void> {
         knownChats: ctx.controls.knownChats ?? [],
       }),
     );
+
+    // "群里不需要 @ bot" only works if the app can actually receive non-@
+    // group messages (`im:message.group_msg`). When the user opts in, verify
+    // the scope and, if missing, push a one-click re-authorization link.
+    if (!requireMentionInGroup) {
+      await promptGroupMsgScopeIfMissing(ctx);
+    }
   })();
+}
+
+/**
+ * When the user enables "群里不需要 @ bot", confirm the app holds the
+ * `im:message.group_msg` scope. If it's missing, generate an incremental
+ * authorization link and push a guidance card; once the user finishes
+ * authorizing, swap the card to a success state in place. Best-effort — any
+ * failure here is logged and swallowed (the saved-config card already showed).
+ */
+async function promptGroupMsgScopeIfMissing(ctx: CommandContext): Promise<void> {
+  const appId = ctx.controls.cfg.accounts.app.id;
+  // `false` = confirmed missing; `null` = lookup failed → don't nag.
+  const has = await hasGroupMsgScope(ctx.channel, appId);
+  if (has !== false) return;
+  log.info('command', 'group-msg-scope-missing', { appId });
+
+  let link;
+  try {
+    link = await requestScopeGrantLink({ appId, tenantScopes: [GROUP_MSG_SCOPE] });
+  } catch (err) {
+    log.warn('command', 'scope-grant-link-failed', { err: String(err) });
+    return;
+  }
+
+  const expireMins = Math.max(1, Math.round(link.expireIn / 60));
+  let sent;
+  try {
+    sent = await sendManagedCard(
+      ctx.channel,
+      ctx.msg.chatId,
+      groupMsgScopeGrantCard(link.url, expireMins),
+    );
+  } catch (err) {
+    log.warn('command', 'scope-grant-card-send-failed', { err: String(err) });
+    return;
+  }
+
+  // Detached: flip the card to "授权成功" once the user authorizes (or just
+  // clean up the managed-card mapping if the link expires / is aborted).
+  void link.completion.then(
+    async () => {
+      log.info('command', 'group-msg-scope-granted', { appId });
+      await updateManagedCard(ctx.channel, sent.messageId, groupMsgScopeGrantedCard()).catch(
+        () => {},
+      );
+      forgetManagedCard(sent.messageId);
+    },
+    (err) => {
+      log.info('command', 'scope-grant-not-completed', { err: String(err) });
+      forgetManagedCard(sent.messageId);
+    },
+  );
 }
 
 function configFailureMessage(step: string, rollbackFailed: boolean, larkCliPolicyApplied: boolean): string {

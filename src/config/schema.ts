@@ -68,6 +68,7 @@ export interface SecretsConfig {
  */
 export type MessageReplyMode = 'card' | 'markdown' | 'text';
 export type PresentationMode = 'clean' | 'progress' | 'debug';
+export type CotMessagesMode = 'off' | 'brief' | 'detailed';
 
 export interface PresentationPreferences {
   mode?: PresentationMode;
@@ -134,6 +135,13 @@ export interface AppPreferences {
    *   - debug: full reasoning and tool-call stream for maintainers
    */
   presentation?: PresentationPreferences;
+  /**
+   * Whether to send a separate Lark COT process message before the final
+   * answer. `brief` mirrors the lightweight tool/progress visibility from
+   * the legacy tool display; `detailed` also includes tool args/output.
+   * Legacy boolean/string `on` is accepted by the resolver for upgrades.
+   */
+  cotMessages?: CotMessagesMode | 'on' | 'simple';
   /**
    * Cap on concurrent claude runs across all chats / topics. Excess runs
    * queue FIFO. Default 10. Mostly relevant for topic groups where each
@@ -247,6 +255,13 @@ export function getPresentationMode(cfg: AppConfig): PresentationMode {
 /** Resolve the show-tool-calls preference with default fallback. */
 export function getShowToolCalls(cfg: AppConfig): boolean {
   return getPresentationMode(cfg) === 'debug';
+}
+
+export function getCotMessages(cfg: AppConfig): CotMessagesMode {
+  const raw = cfg.preferences?.cotMessages;
+  if (raw === 'brief' || raw === 'simple') return 'brief';
+  if (raw === 'detailed' || raw === 'on') return 'detailed';
+  return 'off';
 }
 
 /** Resolve the max-concurrent-runs preference with default + sanity clamp. */

@@ -1,7 +1,7 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   closeLogger,
   configureLogger,
@@ -45,6 +45,54 @@ describe('profile logger observability', () => {
       profile: 'claude',
       agent: 'claude',
     });
+    expect(JSON.parse(text.trim()).ts).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}[+-]\d{2}:\d{2}$/);
+  });
+
+  it('prints topic scope, message id, run, COT, outbound, and fallback context on stdout', () => {
+    const out = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    configureLogger({ now: () => new Date('2026-05-25T12:34:56.000Z') });
+
+    log.info('intake', 'enter', {
+      chatType: 'group',
+      chatMode: 'topic',
+      scope: 'oc_chat:omt_topic_abcdef',
+      sender: 'ou_sender_123456',
+      msgId: 'om_msg_654321',
+      preview: 'hello',
+    });
+    log.info('run', 'started', {
+      scope: 'oc_chat:omt_topic_abcdef',
+      runId: 'run_123456',
+      queueWaitMs: 7,
+    });
+    log.info('run', 'completed', {
+      scope: 'oc_chat:omt_topic_abcdef',
+      runId: 'run_123456',
+      result: 'normal',
+      durationMs: 202000,
+    });
+    log.info('cot', 'created', { cotId: 'cot_123456', messageId: 'om_cot_456789' });
+    log.info('outbound', 'sent', {
+      type: 'markdown',
+      scope: 'oc_chat:omt_topic_abcdef',
+      replyTo: 'om_reply_111111',
+      messageId: 'om_out_222222',
+      replyInThread: true,
+    });
+    log.warn('outbound', 'markdown-stream-fallback', { err: 'cardid is invalid' });
+
+    expect(out.mock.calls.map((call) => String(call[0]))).toEqual([
+      '▸ topic/- scope=abcdef sender=...123456 msg=654321: hello',
+      '  ▶ run start scope=abcdef run=123456 queue=7ms',
+      '  ✓ run normal scope=abcdef run=123456 duration=3m22s',
+      '  ◇ cot created message=456789 cot=123456',
+      '  ↗ sent markdown scope=abcdef thread=111111 msg=222222',
+    ]);
+    expect(String(warn.mock.calls[0]?.[0])).toContain('markdown stream fallback');
+
+    out.mockRestore();
+    warn.mockRestore();
   });
 
   it('redacts raw payloads, tokens, paths, proxy, env, and resource ids before writing local logs', async () => {

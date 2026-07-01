@@ -31,6 +31,8 @@ interface MessageHandlerMap {
 }
 
 interface FakeLarkChannel {
+  sent: Array<{ chatId: string; content: unknown; options: unknown }>;
+  streams: Array<{ chatId: string; options: unknown }>;
   botIdentity: { openId: string; name: string };
   rawClient: {
     request: ReturnType<typeof vi.fn>;
@@ -51,7 +53,7 @@ interface FakeLarkChannel {
   disconnect(): Promise<void>;
   getChatMode(chatId: string): Promise<'group' | 'topic'>;
   getConnectionStatus(): { state: 'connected'; reconnectAttempts: number };
-  send(chatId: string, content: unknown, options?: unknown): Promise<void>;
+  send(chatId: string, content: unknown, options?: unknown): Promise<{ messageId: string }>;
   stream(chatId: string, input: unknown, options?: unknown): Promise<void>;
 }
 
@@ -87,6 +89,33 @@ describe('topic message quote handling', () => {
     expect(prompt).not.toContain('<quoted_messages>');
     expect(prompt).not.toContain('topic root content');
     expect(h.channel.fetchRawMessage).not.toHaveBeenCalled();
+  });
+
+  it('treats messages with threadId as topic messages even when chat mode cache says group', async () => {
+    const h = await createHarness({ chatMode: 'group' });
+
+    await startTestBridge(h);
+
+    await h.channel.handlers.message?.(
+      message({
+        messageId: 'om_converted_topic',
+        rootId: 'om_topic_root',
+        parentId: 'om_topic_root',
+        threadId: 'omt_converted_topic',
+        content: '@Bridge 继续说一下',
+      }),
+    );
+    await waitFor(() => h.agent.runOptions.length === 1);
+
+    const prompt = h.agent.runOptions[0]?.prompt ?? '';
+    expect(prompt).toContain('"threadId":"omt_converted_topic"');
+    expect(prompt).not.toContain('<quoted_messages>');
+    expect(h.channel.fetchRawMessage).not.toHaveBeenCalled();
+    await waitFor(() => h.channel.streams.length === 1);
+    expect(h.channel.streams[0]?.options).toMatchObject({
+      replyTo: 'om_converted_topic',
+      replyInThread: true,
+    });
   });
 
   it('keeps regular group reply quotes as quoted context', async () => {
@@ -228,12 +257,16 @@ function createFakeLarkChannel(options: {
   quotedMessages?: Record<string, string>;
 } = {}): FakeLarkChannel & { handlers: MessageHandlerMap } {
   const handlers: MessageHandlerMap = {};
+  const sent: Array<{ chatId: string; content: unknown; options: unknown }> = [];
+  const streams: Array<{ chatId: string; options: unknown }> = [];
   const chatMode = options.chatMode ?? 'topic';
   const quotedMessages = options.quotedMessages ?? {
     om_topic_root: 'topic root content',
   };
   return {
     handlers,
+    sent,
+    streams,
     botIdentity: { openId: 'ou_bot', name: 'Bridge' },
     rawClient: {
       request: vi.fn(async () => ({ data: { items: [] } })),
@@ -272,8 +305,12 @@ function createFakeLarkChannel(options: {
     getConnectionStatus() {
       return { state: 'connected', reconnectAttempts: 0 };
     },
-    async send() {},
-    async stream(_chatId, input) {
+    async send(chatId, content, options) {
+      sent.push({ chatId, content, options });
+      return { messageId: `om_sent_${sent.length}` };
+    },
+    async stream(chatId, input, options) {
+      streams.push({ chatId, options });
       if (isMarkdownStreamInput(input)) {
         await input.markdown({ setContent: async () => {} });
       }

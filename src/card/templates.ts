@@ -74,6 +74,7 @@ export interface StatusInfo {
   };
   larkCliStatus?: 'app' | 'user-ready' | 'user-missing' | 'check-failed';
   activeRun: boolean;
+  activeScopes?: string[];
   activeCommentScopes?: string[];
   queue?: { active: number; waiting: number; cap: number };
   ownerState: string;
@@ -106,6 +107,11 @@ export function statusCard(info: StatusInfo): object {
     `🛡 **${escapeMd(info.runtimeAccess.label)}**: ${escapeMd(info.runtimeAccess.value)}`,
     ...(info.larkCliStatus ? [`🔐 **lark-cli**: ${info.larkCliStatus}`] : []),
     `🏃 **active run**: ${info.activeRun ? 'yes' : 'no'}`,
+    ...(info.activeScopes && info.activeScopes.length > 0
+      ? [
+          `🏃 **active scopes**: ${info.activeScopes.map((scope) => `\`${escapeCode(scope)}\``).join(', ')}`,
+        ]
+      : []),
     ...(info.activeCommentScopes && info.activeCommentScopes.length > 0
       ? [
           `📝 **comment runs**: ${info.activeCommentScopes.map((scope) => `\`${escapeCode(scope)}\``).join(', ')}`,

@@ -32,6 +32,14 @@ const STDOUT_INFO_ALLOWLIST = new Set<string>([
   'ws.reconnecting',
   'ws.reconnected',
   'intake.enter',
+  'intake.command',
+  'run.started',
+  'run.completed',
+  'run.failed',
+  'cot.created',
+  'cot.completed',
+  'outbound.sent',
+  'outbound.markdown-stream-fallback',
   'card.final',
 ]);
 
@@ -60,7 +68,7 @@ let stream: WriteStream | null = null;
 let currentDate = '';
 
 function todayKey(): string {
-  return loggerOptions.now().toISOString().slice(0, 10).replace(/-/g, '');
+  return formatLocalDateKey(loggerOptions.now());
 }
 
 function logsDir(): string | undefined {
@@ -228,7 +236,7 @@ function redactId(value: unknown): unknown {
 function emit(level: Level, phase: string, event: string, fields: LogFields = {}): void {
   const ctx = als.getStore() ?? {};
   const entry = sanitizeLogEntry({
-    ts: loggerOptions.now().toISOString(),
+    ts: formatLocalTimestamp(loggerOptions.now()),
     level,
     phase,
     event,
@@ -328,15 +336,48 @@ function formatStdout(
   }
   if (phase === 'intake' && event === 'enter') {
     const c = ctx.chatId ? ctx.chatId.slice(-6) : '-';
+    const mode = fields.chatMode ?? fields.chatType ?? '?';
+    const scope = shortId(fields.scope);
     const sender = fields.sender ?? '-';
+    const msg = shortId(ctx.msgId ?? fields.msgId ?? fields._msgId);
     const preview = fields.preview ?? '';
-    return `▸ ${fields.chatType ?? '?'}/${c} ${sender}: ${preview}`;
+    return `▸ ${mode}/${c} scope=${scope} sender=${sender} msg=${msg}: ${preview}`;
+  }
+  if (phase === 'intake' && event === 'command') {
+    const scope = shortId(fields.scope);
+    return `  ↳ command scope=${scope} dropped=${fields.droppedPending ?? 0}`;
+  }
+  if (phase === 'run' && event === 'started') {
+    const scope = shortId(fields.scope);
+    return `  ▶ run start scope=${scope} run=${shortId(fields.runId)} queue=${fields.queueWaitMs ?? 0}ms`;
+  }
+  if (phase === 'run' && (event === 'completed' || event === 'failed')) {
+    const result = event === 'failed' ? 'failed' : fields.result ?? 'done';
+    const mark = event === 'failed' ? '✗' : result === 'interrupted' ? '⏹' : '✓';
+    const scope = shortId(fields.scope);
+    const duration = formatDurationMs(fields.durationMs);
+    return `  ${mark} run ${result} scope=${scope} run=${shortId(fields.runId)}${duration ? ` duration=${duration}` : ''}`;
+  }
+  if (phase === 'cot' && event === 'created') {
+    return `  ◇ cot created message=${shortId(fields.messageId)} cot=${shortId(fields.cotId)}`;
+  }
+  if (phase === 'cot' && event === 'completed') {
+    return `  ◇ cot completed cot=${shortId(fields.cotId)} reason=${fields.reason ?? '-'}`;
+  }
+  if (phase === 'outbound' && event === 'markdown-stream-fallback') {
+    return `  ⚠ markdown stream fallback: ${fields.err ?? ''}`;
+  }
+  if (phase === 'outbound' && event === 'sent') {
+    const scope = shortId(fields.scope);
+    const reply = fields.replyInThread === true ? 'thread' : 'reply';
+    return `  ↗ sent ${fields.type ?? 'message'} scope=${scope} ${reply}=${shortId(fields.replyTo)} msg=${shortId(fields.messageId)}`;
   }
   if (phase === 'card' && event === 'final') {
     const c = ctx.chatId ? ctx.chatId.slice(-6) : '-';
     const t = fields.terminal;
     const mark = t === 'done' ? '✓' : t === 'interrupted' ? '⏹' : '✗';
-    return `  ${mark} ${c} ${t}`;
+    const scope = fields.scope ? shortId(fields.scope) : c;
+    return `  ${mark} ${scope} ${t}`;
   }
 
   // Generic compact form for warns / errors / unmatched info.
@@ -347,6 +388,47 @@ function formatStdout(
   const summary = formatFields(fields);
   const tag = level === 'error' ? '✗' : level === 'warn' ? '⚠' : '·';
   return `${tag} [${phase}.${event}]${ctxStr}${summary ? ` ${summary}` : ''}`;
+}
+
+function formatLocalDateKey(date: Date): string {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, '0');
+  const d = String(date.getDate()).padStart(2, '0');
+  return `${y}${m}${d}`;
+}
+
+function formatLocalTimestamp(date: Date): string {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, '0');
+  const d = String(date.getDate()).padStart(2, '0');
+  const hh = String(date.getHours()).padStart(2, '0');
+  const mm = String(date.getMinutes()).padStart(2, '0');
+  const ss = String(date.getSeconds()).padStart(2, '0');
+  const ms = String(date.getMilliseconds()).padStart(3, '0');
+  const offsetMinutes = -date.getTimezoneOffset();
+  const sign = offsetMinutes >= 0 ? '+' : '-';
+  const abs = Math.abs(offsetMinutes);
+  const oh = String(Math.floor(abs / 60)).padStart(2, '0');
+  const om = String(abs % 60).padStart(2, '0');
+  return `${y}-${m}-${d}T${hh}:${mm}:${ss}.${ms}${sign}${oh}:${om}`;
+}
+
+function shortId(value: unknown): string {
+  if (value === undefined || value === null) return '-';
+  const s = String(value);
+  const last = s.includes(':') ? s.split(':').at(-1) ?? s : s;
+  const bare = last.startsWith('...') ? last.slice(3) : last;
+  return bare.length > 6 ? bare.slice(-6) : bare;
+}
+
+function formatDurationMs(value: unknown): string | undefined {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return undefined;
+  if (value < 1000) return `${value}ms`;
+  const seconds = value / 1000;
+  if (seconds < 60) return `${seconds.toFixed(1)}s`;
+  const minutes = Math.floor(seconds / 60);
+  const rest = Math.round(seconds % 60);
+  return rest > 0 ? `${minutes}m${rest}s` : `${minutes}m`;
 }
 
 function formatFields(fields: LogFields): string {

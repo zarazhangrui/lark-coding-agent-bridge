@@ -44,7 +44,8 @@ export async function resolveWorkingDirectory(
   }
 
   const tempRealpath = await realpath(tmpdir()).catch(() => resolve(tmpdir()));
-  const broad = classifyHighRiskWorkingDirectory(resolved, requestedCwd, tempRealpath);
+  const homeRealpath = await realpath(homedir()).catch(() => resolve(homedir()));
+  const broad = classifyHighRiskWorkingDirectory(resolved, requestedCwd, tempRealpath, homeRealpath);
   if (broad) return broad;
 
   return {
@@ -66,12 +67,13 @@ function classifyHighRiskWorkingDirectory(
   real: string,
   requestedCwd: string,
   tempRealpath: string,
+  homeRealpath: string,
 ): WorkingDirectoryResolveResult | undefined {
   if (real === dirname(real)) {
     return reject('filesystem-root', requestedCwd, '不能把文件系统根目录设为工作目录。');
   }
 
-  const home = resolve(homedir());
+  const home = homeRealpath;
   if (real === home) {
     return reject('home-root', requestedCwd, '不能把 Home 根目录设为工作目录，请选择更具体的子目录。');
   }

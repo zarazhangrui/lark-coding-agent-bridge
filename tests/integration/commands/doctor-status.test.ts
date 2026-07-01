@@ -46,6 +46,7 @@ describe('/status and /doctor diagnostics', () => {
     const status = JSON.stringify(lastContent(h.channel));
     expect(status).toContain('旧 cwd');
     expect(status).toContain('active run');
+    expect(status).toContain('active scopes');
     expect(status).toContain('1/1 active');
     expect(status).toContain('owner API');
     expect(status).toContain('profile');

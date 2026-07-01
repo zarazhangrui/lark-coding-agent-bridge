@@ -1,10 +1,11 @@
 import type { KnownChat } from '../bot/lark-info';
 import type { LarkCliIdentityPreset } from '../config/profile-schema';
-import type { MessageReplyMode, PresentationMode } from '../config/schema';
+import type { CotMessagesMode, MessageReplyMode, PresentationMode } from '../config/schema';
 
 export interface ConfigFormOpts {
   messageReply: MessageReplyMode;
   presentationMode: PresentationMode;
+  cotMessages: CotMessagesMode;
   maxConcurrentRuns: number;
   /** 0 means "disabled". */
   runIdleTimeoutMinutes: number;
@@ -143,6 +144,24 @@ export function configFormCard(opts: ConfigFormOpts): object {
             {
               tag: 'markdown',
               content:
+                '\n**COT 过程消息**\n' +
+                '_关闭:只发送最终回复_\n' +
+                '_简略:展示 agent 过程文本和工具摘要_\n' +
+                '_详细:额外展示工具参数和输出摘要_',
+            },
+            {
+              tag: 'select_static',
+              name: 'cot_messages',
+              initial_option: opts.cotMessages,
+              options: [
+                { text: { tag: 'plain_text', content: '关闭' }, value: 'off' },
+                { text: { tag: 'plain_text', content: '简略' }, value: 'brief' },
+                { text: { tag: 'plain_text', content: '详细' }, value: 'detailed' },
+              ],
+            },
+            {
+              tag: 'markdown',
+              content:
                 '\n**并发上限**\n' +
                 '_全局同时运行的 agent 进程数(主要影响话题群多话题并行场景)_\n' +
                 '_默认 10,范围 1-50。超出的请求会 FIFO 排队_',
@@ -258,6 +277,7 @@ export function configSavedCard(opts: ConfigFormOpts): object {
         : '清爽';
   const summarize = (list: string[]): string =>
     list.length === 0 ? '_(空)_' : `${list.length} 项`;
+  const cotLabel = cotMessagesLabel(opts.cotMessages);
   return {
     schema: '2.0',
     config: { summary: { content: '偏好已保存' } },
@@ -269,6 +289,7 @@ export function configSavedCard(opts: ConfigFormOpts): object {
             '✅ **偏好已保存**\n\n' +
             `**消息回复方式**:${replyLabel}\n` +
             `**输出模式**:\`${presentationLabel}\`\n` +
+            `**COT 过程消息**:\`${cotLabel}\`\n` +
             `**并发上限**:\`${opts.maxConcurrentRuns}\`\n` +
             `**run 探活**:\`${opts.runIdleTimeoutMinutes > 0 ? `${opts.runIdleTimeoutMinutes} 分钟` : '关闭'}\`\n` +
             `**群里需要 @ bot**:\`${opts.requireMentionInGroup ? '是' : '否'}\`\n\n` +
@@ -278,6 +299,59 @@ export function configSavedCard(opts: ConfigFormOpts): object {
             `**允许响应的群**:${summarize(opts.allowedChats)}\n` +
             `**管理员**:${summarize(opts.admins)}\n\n` +
             '下条消息开始生效。',
+        },
+      ],
+    },
+  };
+}
+
+function cotMessagesLabel(value: CotMessagesMode): string {
+  if (value === 'brief') return '简略';
+  if (value === 'detailed') return '详细';
+  return '关闭';
+}
+
+/**
+ * Shown after `/config` saves "群里不需要 @ bot" but the app is missing the
+ * `im:message.group_msg` scope. Guides the user through one-click incremental
+ * authorization via the link from `requestScopeGrantLink`.
+ */
+export function groupMsgScopeGrantCard(url: string, expireMins: number): object {
+  return {
+    schema: '2.0',
+    config: { summary: { content: '需要补授权' } },
+    body: {
+      elements: [
+        {
+          tag: 'markdown',
+          content:
+            '⚠️ **「群里不需要 @ bot」还差一个权限**\n\n' +
+            '你已开启「不 @ bot 也回复」，但当前应用没有 **获取群组中所有消息**（`im:message.group_msg`）权限。' +
+            '没有它，飞书不会把群里非 @ 的消息推给 bot，所以这个设置暂时不生效。\n\n' +
+            `**点下面的链接补授权**（约 ${expireMins} 分钟内有效）：\n` +
+            `[🔗 点此一键授权](${url})\n\n` +
+            '_扫码/点击后会进入确认页，新权限已预填好，确认即可。授权成功后，群里新消息开始自动生效，无需重启。_\n' +
+            `_若链接打不开，可复制：_\n\`${url}\`\n\n` +
+            '_授权后若群里仍收不到非 @ 消息，发 `/reconnect` 重连一次即可。_',
+        },
+      ],
+    },
+  };
+}
+
+/** Replaces {@link groupMsgScopeGrantCard} in place once authorization completes. */
+export function groupMsgScopeGrantedCard(): object {
+  return {
+    schema: '2.0',
+    config: { summary: { content: '授权成功' } },
+    body: {
+      elements: [
+        {
+          tag: 'markdown',
+          content:
+            '✅ **授权成功**\n\n' +
+            '`im:message.group_msg` 权限已生效，群里非 @ bot 的消息从现在开始会触发回复。\n\n' +
+            '_若仍未生效，发 `/reconnect` 重连一次。_',
         },
       ],
     },

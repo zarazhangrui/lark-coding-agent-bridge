@@ -7,10 +7,13 @@ export type ChatMode = 'p2p' | 'group' | 'topic';
  * In-memory cache for `channel.getChatMode()` results.
  *
  * Why: chat mode (`p2p` / `group` / `topic`) doesn't change within a chat's
- * lifetime — but SDK doesn't expose it on the message event (Feishu server
- * never includes it in the payload). The only way to know is one extra
- * `im.v1.chat.get` API call per chat. We cache by chatId so each chat costs
- * at most one round-trip after which it's all in-memory.
+ * lifetime under normal use, and the SDK doesn't expose it on the message
+ * event — so we cache by chatId to avoid an `im.v1.chat.get` round-trip per
+ * message. Admins can still convert a regular group into a topic group: the
+ * channel layer treats a message-level `threadId` as authoritative and calls
+ * `invalidate(chatId)` whenever a cached non-topic answer is contradicted, so
+ * the next resolve re-probes and a stale `group` entry can't outlive one
+ * message.
  *
  * On lookup failure (network / permission / unknown chatId) we **fall back
  * to 'group'** — that's the conservative default since it means "treat as
