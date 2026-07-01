@@ -18,7 +18,7 @@ export class OpenCodeJsonlTranslator {
       case 'tool_use':
         return this.translateToolUse(raw);
       case 'step_finish':
-        return this.translateStepFinish();
+        return [];
       default:
         return [];
     }
@@ -28,14 +28,17 @@ export class OpenCodeJsonlTranslator {
     if (this.terminal) return [];
     this.terminal = true;
     if (reason === 'failed') {
-      const detail = this.lastNonTerminalError ? `: ${this.lastNonTerminalError}` : '';
-      return [
-        {
-          type: 'error',
-          message: truncate(`opencode stream ended before a terminal event${detail}`, 4096),
-          terminationReason: 'failed',
-        },
-      ];
+      if (this.lastNonTerminalError) {
+        const detail = this.lastNonTerminalError;
+        return [
+          {
+            type: 'error',
+            message: truncate(`opencode stream ended before a terminal event: ${detail}`, 4096),
+            terminationReason: 'failed',
+          },
+        ];
+      }
+      return [{ type: 'done', terminationReason: 'normal' }];
     }
     return [{ type: 'done', terminationReason: reason }];
   }
@@ -48,11 +51,6 @@ export class OpenCodeJsonlTranslator {
     const part = recordValue(raw.part);
     const text = part ? stringValue(part.text) : undefined;
     return text ? [{ type: 'text', delta: text }] : [];
-  }
-
-  private translateStepFinish(): AgentEvent[] {
-    this.terminal = true;
-    return [{ type: 'done', terminationReason: 'normal' }];
   }
 
   private translateToolUse(raw: Record<string, unknown>): AgentEvent[] {

@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { OpenCodeJsonlTranslator } from '../../../src/agent/opencode/jsonl.js';
 
 describe('OpenCode JSONL translator', () => {
-  it('translates text deltas and step_finish events', () => {
+  it('translates text deltas, step_finish is non-terminal', () => {
     const t = new OpenCodeJsonlTranslator();
 
     expect(t.translate({ type: 'text', part: { text: 'hello' } })).toEqual([
@@ -11,7 +11,9 @@ describe('OpenCode JSONL translator', () => {
     expect(t.translate({ type: 'text', part: { text: ' world' } })).toEqual([
       { type: 'text', delta: ' world' },
     ]);
-    expect(t.translate({ type: 'step_finish' })).toEqual([
+    expect(t.translate({ type: 'step_finish' })).toEqual([]);
+    expect(t.terminalEmitted()).toBe(false);
+    expect(t.finish()).toEqual([
       { type: 'done', terminationReason: 'normal' },
     ]);
   });
@@ -24,30 +26,30 @@ describe('OpenCode JSONL translator', () => {
     expect(t.translate({ type: 'step_start', session_id: 'abc' })).toEqual([]);
   });
 
-  it('blocks translation after a terminal step_finish', () => {
+  it('allows text events after step_finish (multi-step run)', () => {
     const t = new OpenCodeJsonlTranslator();
 
     expect(t.translate({ type: 'text', part: { text: 'before' } })).toEqual([
       { type: 'text', delta: 'before' },
     ]);
-    expect(t.translate({ type: 'step_finish' })).toEqual([
-      { type: 'done', terminationReason: 'normal' },
+    expect(t.translate({ type: 'step_finish' })).toEqual([]);
+    expect(t.terminalEmitted()).toBe(false);
+    expect(t.translate({ type: 'step_start' })).toEqual([]);
+    expect(t.translate({ type: 'text', part: { text: 'after' } })).toEqual([
+      { type: 'text', delta: 'after' },
     ]);
-    expect(t.terminalEmitted()).toBe(true);
-    expect(t.translate({ type: 'text', part: { text: 'after' } })).toEqual([]);
+    expect(t.translate({ type: 'step_finish' })).toEqual([]);
+    expect(t.terminalEmitted()).toBe(false);
   });
 
-  it('emits a failed terminal event on EOF without a terminal event', () => {
+  it('emits a normal done event on clean EOF without errors', () => {
     const t = new OpenCodeJsonlTranslator();
     t.translate({ type: 'text', part: { text: 'partial' } });
 
     expect(t.finish()).toEqual([
-      {
-        type: 'error',
-        message: 'opencode stream ended before a terminal event',
-        terminationReason: 'failed',
-      },
+      { type: 'done', terminationReason: 'normal' },
     ]);
+    expect(t.terminalEmitted()).toBe(true);
     expect(t.finish()).toEqual([]);
   });
 
@@ -217,5 +219,38 @@ describe('OpenCode JSONL translator', () => {
     expect(t.translate({ type: 'tool_use', part: { type: 'tool', tool: '' } })).toEqual(
       [],
     );
+  });
+
+  it('passes text through after tool step finishes (multi-step run)', () => {
+    const t = new OpenCodeJsonlTranslator();
+
+    t.translate({ type: 'step_start' });
+    t.translate({
+      type: 'tool_use',
+      part: {
+        type: 'tool',
+        tool: 'write',
+        callID: 'c1',
+        state: {
+          status: 'completed',
+          input: { filePath: '/tmp/x' },
+          output: 'ok',
+        },
+      },
+    });
+    t.translate({ type: 'step_finish' });
+
+    expect(t.terminalEmitted()).toBe(false);
+
+    t.translate({ type: 'step_start' });
+    expect(
+      t.translate({ type: 'text', part: { text: 'File created at /tmp/x' } }),
+    ).toEqual([{ type: 'text', delta: 'File created at /tmp/x' }]);
+    t.translate({ type: 'step_finish' });
+
+    expect(t.terminalEmitted()).toBe(false);
+    expect(t.finish()).toEqual([
+      { type: 'done', terminationReason: 'normal' },
+    ]);
   });
 });
