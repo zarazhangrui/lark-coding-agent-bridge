@@ -9,6 +9,13 @@ const rootDir = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const isWindows = platform() === 'win32';
 const localTsup = join(rootDir, 'node_modules', '.bin', isWindows ? 'tsup.cmd' : 'tsup');
 const forceNpmExec = process.env.LARK_CHANNEL_BRIDGE_FORCE_NPM_EXEC === '1';
+const requiredDistFiles = ['cli.js', 'index.js', 'index.d.ts'].map((file) =>
+  join(rootDir, 'dist', file),
+);
+
+if (!forceNpmExec && requiredDistFiles.every((file) => existsSync(file))) {
+  process.exit(0);
+}
 
 const command = !forceNpmExec && existsSync(localTsup) ? localTsup : isWindows ? 'npm.cmd' : 'npm';
 const args =
