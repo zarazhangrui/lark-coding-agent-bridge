@@ -90,6 +90,53 @@ describe('profile-aware account and config commands', () => {
     expect((root as unknown as { accounts?: unknown }).accounts).toBeUndefined();
   });
 
+  it('persists the picked model and clears it when "default" is chosen', async () => {
+    vi.useFakeTimers();
+    const h = await createHarness();
+
+    await h.command('/config submit', {
+      model: 'claude-opus-4-8',
+      message_reply: 'text',
+    });
+    const withModel = await waitForRoot(h.rootDir, (candidate) =>
+      candidate.profiles.claude?.preferences.model === 'claude-opus-4-8',
+    );
+    expect(withModel.profiles.claude?.preferences.model).toBe('claude-opus-4-8');
+
+    await h.command('/config submit', {
+      model: 'default',
+      message_reply: 'text',
+    });
+    const cleared = await waitForRoot(h.rootDir, (candidate) =>
+      candidate.profiles.claude?.preferences.model === undefined,
+    );
+    expect(cleared.profiles.claude?.preferences.model).toBeUndefined();
+  });
+
+  it('keeps the current message reply mode when the config submit payload omits it', async () => {
+    vi.useFakeTimers();
+    const h = await createHarness({
+      preferences: {
+        messageReply: 'text',
+        messageReplyMigrated: true,
+      },
+    });
+
+    await h.command('/config submit', {
+      show_tool_calls: 'show',
+      max_concurrent_runs: '8',
+      run_idle_timeout_minutes: '20',
+      require_mention_in_group: 'yes',
+    });
+
+    const root = await waitForRoot(h.rootDir, (candidate) =>
+      candidate.profiles.claude?.preferences.maxConcurrentRuns === 8,
+    );
+    expect(root.profiles.claude?.preferences.messageReply).toBe('text');
+    expect(root.profiles.claude?.preferences.messageReplyMigrated).toBe(true);
+    expect(getMessageReplyMode(runtimeProfileConfig(root, 'claude'))).toBe('text');
+  });
+
   it('does not save a lark-cli identity change when applying the runtime policy fails', async () => {
     vi.useFakeTimers();
     identityPolicyMocks.applyLarkCliIdentityPolicy.mockResolvedValueOnce(false);

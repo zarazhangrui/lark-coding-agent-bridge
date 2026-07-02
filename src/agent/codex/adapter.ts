@@ -100,6 +100,7 @@ export class CodexAdapter implements AgentAdapter {
       images: opts.images,
       ignoreUserConfig: this.ignoreUserConfig,
       ignoreRules: this.ignoreRules,
+      model: opts.model,
     });
     const envOverrides: NodeJS.ProcessEnv = buildLarkChannelEnv(this.larkChannel);
     if (this.codexHome) {
@@ -119,6 +120,7 @@ export class CodexAdapter implements AgentAdapter {
       hasThread: Boolean(opts.threadId),
       promptChars: opts.prompt.length,
       images: opts.images?.length ?? 0,
+      model: opts.model,
     });
 
     const stderrChunks: Buffer[] = [];

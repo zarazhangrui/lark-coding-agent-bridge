@@ -6,6 +6,7 @@ import type {
 import { createLarkChannel } from '@larksuite/channel';
 import { dirname, join } from 'node:path';
 import { resolveCapability } from '../agent/capability';
+import { modelLabel, normalizeModelSelection, resolveModelArg } from '../agent/models';
 import {
   buildAgentPrompt,
   type BridgePromptInteractiveCard,
@@ -196,6 +197,25 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
       })
     : undefined;
   const activePolicyFingerprints = new Map<string, string>();
+  // Per-scope record of the model used on the last run, so a `/config` model
+  // switch can inject a one-time "model changed" note into the next (resumed)
+  // prompt. In-memory only: on restart the first run re-seeds silently.
+  const lastRunModelByScope = new Map<string, string>();
+  const cotClient = new CotClient({
+    tenant: cfg.accounts.app.tenant,
+    appId: cfg.accounts.app.id,
+    appSecret,
+  });
+  const threadModeOverrideWarnedChats = new Set<string>();
+  const logThreadModeOverride: LogThreadModeOverride = ({ chatId, resolvedMode, threadId }) => {
+    const fields = { chatId, cachedMode: resolvedMode, threadId };
+    if (threadModeOverrideWarnedChats.has(chatId)) {
+      log.info('chat', 'mode-overridden-by-thread', fields);
+      return;
+    }
+    threadModeOverrideWarnedChats.add(chatId);
+    log.warn('chat', 'mode-overridden-by-thread', fields);
+  };
 
   const opts: LarkChannelOptions = {
     appId: cfg.accounts.app.id,
@@ -265,6 +285,7 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
           controls,
           callbackAuth,
           activePolicyFingerprints,
+          lastRunModelByScope,
           scope,
           mode,
         });
@@ -601,6 +622,7 @@ interface RunBatchDeps {
   controls: Controls;
   callbackAuth?: CallbackAuth;
   activePolicyFingerprints: Map<string, string>;
+  lastRunModelByScope: Map<string, string>;
   scope: string;
   mode: ChatMode;
 }
@@ -617,6 +639,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
     controls,
     callbackAuth,
     activePolicyFingerprints,
+    lastRunModelByScope,
     scope,
     mode,
   } = deps;
@@ -670,8 +693,33 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
     }
   }
 
-  const prompt = buildPrompt(batch, attachments, quotes, channel.botIdentity);
-  log.info('prompt', 'built', { promptChars: prompt.length, quotes: quotes.length });
+  // Detect a model switch since this scope's last run. When resuming an
+  // existing conversation the transcript still claims the old model, so tell
+  // the (now-switched) agent its model changed — otherwise it keeps echoing
+  // the previously-announced model. Only fires when a prior model was seen
+  // for this scope (never on the first run) and the selection actually
+  // changed. `requestedModel` (the `--model` value, or undefined for default)
+  // is reused below to log requested-vs-actual against the init event.
+  const agentKind = controls.profileConfig.agentKind;
+  const modelPref = controls.profileConfig.preferences.model;
+  const modelSelection = normalizeModelSelection(agentKind, modelPref);
+  const requestedModel = resolveModelArg(agentKind, modelPref);
+  const prevModel = lastRunModelByScope.get(scope);
+  const modelSwitched = prevModel !== undefined && prevModel !== modelSelection;
+  lastRunModelByScope.set(scope, modelSelection);
+  const extraInstructions = modelSwitched
+    ? [
+        `用户刚把本会话使用的模型切换为「${modelLabel(agentKind, modelPref)}」。` +
+          '之前的对话里可能提到别的模型,请以当前模型为准;若被问到你用的是什么模型,据此回答。',
+      ]
+    : undefined;
+
+  const prompt = buildPrompt(batch, attachments, quotes, channel.botIdentity, extraInstructions);
+  log.info('prompt', 'built', {
+    promptChars: prompt.length,
+    quotes: quotes.length,
+    ...(modelSwitched ? { modelSwitchedTo: modelSelection } : {}),
+  });
 
   // For topic groups: thread the reply so it lands in the same topic as the
   // user's message. Otherwise the SDK posts at top level and the user's
@@ -744,6 +792,16 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
     });
     if (evt.type === 'system' && evt.sessionId) {
       log.info('session', 'set', { sessionId: evt.sessionId });
+    }
+    // Ground truth for "which model is actually running": claude reports the
+    // model it loaded in its init event. Logging requested-vs-actual reveals
+    // whether the --model pin took effect or claude silently fell back (e.g.
+    // an id this claude build/account doesn't recognize).
+    if (evt.type === 'system' && evt.model) {
+      log.info('session', 'model', {
+        requested: requestedModel ?? 'default',
+        actual: evt.model,
+      });
     }
     if (evt.type === 'system' && evt.threadId) {
       log.info('session', 'set-thread', { threadId: evt.threadId });
@@ -1146,6 +1204,7 @@ function buildPrompt(
   attachments: LocalAttachment[],
   quotes: QuotedContext[] = [],
   botIdentity?: { openId: string; name?: string },
+  extraInstructions?: string[],
 ): string {
   const first = batch[0];
   if (!first) return '';
@@ -1204,7 +1263,10 @@ function buildPrompt(
       messageIds: batch.map((m) => m.messageId),
       source: 'im',
     },
-    instructions: BRIDGE_AGENT_INSTRUCTIONS,
+    instructions:
+      extraInstructions && extraInstructions.length > 0
+        ? [...BRIDGE_AGENT_INSTRUCTIONS, ...extraInstructions]
+        : BRIDGE_AGENT_INSTRUCTIONS,
     userInput: userPart,
     quotedMessages: quotes.map(toPromptQuote),
     interactiveCards: batch.map(toPromptInteractiveCard).filter(isDefined),

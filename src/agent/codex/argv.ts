@@ -7,6 +7,8 @@ export interface BuildCodexArgsInput {
   images?: readonly string[];
   ignoreUserConfig?: boolean;
   ignoreRules?: boolean;
+  /** Forwarded to `codex exec --model`. Omitted uses the Codex default. */
+  model?: string;
 }
 
 export function buildCodexArgs(input: BuildCodexArgsInput): string[] {
@@ -21,6 +23,7 @@ export function buildCodexArgs(input: BuildCodexArgsInput): string[] {
   const globalFlags = [
     '--sandbox',
     input.sandbox,
+    ...(input.model ? ['--model', input.model] : []),
     '-c',
     'approval_policy="never"',
     '-c',

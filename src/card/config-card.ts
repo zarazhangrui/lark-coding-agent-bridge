@@ -1,8 +1,13 @@
+import { modelLabel, supportedModels } from '../agent/models';
 import type { KnownChat } from '../bot/lark-info';
-import type { LarkCliIdentityPreset } from '../config/profile-schema';
-import type { MessageReplyMode } from '../config/schema';
+import type { AgentKind, LarkCliIdentityPreset } from '../config/profile-schema';
+import type { CotMessagesMode, MessageReplyMode } from '../config/schema';
 
 export interface ConfigFormOpts {
+  /** Profile's agent kind — decides which model catalog the picker shows. */
+  agentKind: AgentKind;
+  /** Current model selection (a value from {@link supportedModels}). */
+  model: string;
   messageReply: MessageReplyMode;
   showToolCalls: boolean;
   maxConcurrentRuns: number;
@@ -102,6 +107,23 @@ export function configFormCard(opts: ConfigFormOpts): object {
           tag: 'form',
           name: 'config_form',
           elements: [
+            {
+              tag: 'markdown',
+              content:
+                '**模型**\n' +
+                '_底层 agent 运行使用的模型_\n' +
+                '_「跟随默认」= 不指定,由 CLI/账号决定_',
+            },
+            {
+              tag: 'select_static',
+              name: 'model',
+              initial_option: opts.model,
+              options: supportedModels(opts.agentKind).map((m) => ({
+                text: { tag: 'plain_text', content: m.label },
+                value: m.value,
+              })),
+            },
+            { tag: 'hr' },
             {
               tag: 'markdown',
               content:
@@ -259,6 +281,7 @@ export function configSavedCard(opts: ConfigFormOpts): object {
           tag: 'markdown',
           content:
             '✅ **偏好已保存**\n\n' +
+            `**模型**:\`${modelLabel(opts.agentKind, opts.model)}\`\n` +
             `**消息回复方式**:${replyLabel}\n` +
             `**工具调用显示**:\`${opts.showToolCalls ? 'show' : 'hide'}\`\n` +
             `**并发上限**:\`${opts.maxConcurrentRuns}\`\n` +

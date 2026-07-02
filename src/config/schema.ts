@@ -104,6 +104,20 @@ export interface AppPreferences {
    */
   showToolCalls?: boolean;
   /**
+   * Model the underlying agent runs with, forwarded as `--model`. The catalog
+   * of valid values is agent-kind specific — see `agent/models.ts`. `undefined`
+   * or the `'default'` sentinel means "don't pass `--model`" so the agent
+   * CLI / account default applies. Default: unset.
+   */
+  model?: string;
+  /**
+   * Whether to send a separate Lark COT process message before the final
+   * answer. `brief` mirrors the lightweight tool/progress visibility from
+   * the legacy tool display; `detailed` also includes tool args/output.
+   * Legacy boolean/string `on` is accepted by the resolver for upgrades.
+   */
+  cotMessages?: CotMessagesMode | 'on' | 'simple';
+  /**
    * Cap on concurrent claude runs across all chats / topics. Excess runs
    * queue FIFO. Default 10. Mostly relevant for topic groups where each
    * topic can spawn its own run; capping protects RAM / token spend.

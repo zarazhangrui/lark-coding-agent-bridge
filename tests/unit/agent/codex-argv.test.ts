@@ -108,6 +108,24 @@ describe('Codex argv contract', () => {
     ]);
   });
 
+  it('forwards the selected model as a global --model flag before resume', () => {
+    const args = buildCodexArgs({
+      cwd: '/repo',
+      sandbox: 'workspace-write',
+      threadId: 'thread-123',
+      model: 'gpt-5-codex',
+    });
+    expect(args).toContain('--model');
+    const modelIdx = args.indexOf('--model');
+    expect(args[modelIdx + 1]).toBe('gpt-5-codex');
+    // Global flag: must come before the `resume` subcommand.
+    expect(modelIdx).toBeLessThan(args.indexOf('resume'));
+  });
+
+  it('omits --model when no model is selected', () => {
+    expect(buildCodexArgs({ cwd: '/repo', sandbox: 'read-only' })).not.toContain('--model');
+  });
+
   it('can explicitly ignore the user config when profile isolation asks for it', () => {
     expect(
       buildCodexArgs({
