@@ -21,6 +21,8 @@ export function buildPiArgs(input: BuildPiArgsInput): string[] {
     args.push('--session', input.sessionId);
   }
 
+  // pi has no native workspace-scoped sandbox: 'workspace' and 'full' both
+  // run unrestricted; only 'read-only' gets a --tools allowlist.
   if (input.accessMode === 'read-only') {
     args.push('--tools', 'read,grep,find,ls');
   }
