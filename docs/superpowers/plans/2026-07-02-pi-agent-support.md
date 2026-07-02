@@ -21,9 +21,10 @@ Every task below assumes you're working directly in `/Users/fanfei/monorepo/lark
 - Piped stdin becomes the entire initial message when no positional message argument is given (`src/cli/initial-message.ts`: `buildInitialMessage` pushes `stdinContent` first, then `parsed.messages[0]` only if present — so stdin alone is sufficient).
 - The first stdout line is normally `{"type":"session","version":3,"id":"<uuid>","timestamp":"...","cwd":"..."}`.
 - Assistant message usage fields are `usage.input` / `usage.output` / `usage.cacheRead` / `usage.cacheWrite` / `usage.cost.total` (NOT `input_tokens` like Codex — different field-naming convention, confirmed via `packages/coding-agent/docs/rpc.md`'s `AssistantMessage` example, which documents the same message shape JSON mode emits).
-- Error/abort surfaces via `message.stopReason === 'error' | 'aborted'` plus `message.errorMessage`, confirmed directly from `src/modes/print-mode.ts`'s own error handling: `if (assistantMsg.stopReason === 'error' || assistantMsg.stopReason === 'aborted') { console.error(assistantMsg.errorMessage || ...) }`.
+- Error/abort surfaces via `message.stopReason === 'error' | 'aborted'` plus `message.errorMessage`, confirmed directly from `src/modes/print-mode.ts`'s own error handling: `if (assistantMsg.stopReason === 'error' || assistantMsg.stopReason === 'aborted') { console.error(assistantMsg.errorMessage || ...) }`. Note: despite `json.md`'s docs table listing an `"error"` variant of `assistantMessageEvent` (inside `message_update`), that variant cannot actually appear in pi's real event stream (verified against `packages/agent/src/agent-loop.ts`'s `streamAssistantResponse`) — `message_end.message.stopReason`/`errorMessage` is the only real error-detection path. Task 3's translator below still lists `'error'` in `IGNORED_ASSISTANT_MESSAGE_EVENT_TYPES` for forward-compatibility/doc-parity, but don't rely on it ever firing.
 - `--tools read,grep,find,ls` is pi's documented read-only invocation (drops `bash`/`edit`/`write`).
 - pi has no `-C`/`--cwd` flag; cwd is inherited from the process's working directory only.
+- pi's real `AgentSessionEvent`/`AgentEvent` unions include a few more event types than `json.md`'s docs table emphasizes: `tool_execution_update` (streams partial tool output — fires frequently on long-running bash commands), `session_info_changed`, and `thinking_level_changed`. Task 3's translator explicitly ignores all three rather than counting them as protocol drift.
 
 ---
 
@@ -396,6 +397,9 @@ describe('Pi JSONL translator', () => {
       'compaction_end',
       'auto_retry_start',
       'auto_retry_end',
+      'tool_execution_update',
+      'session_info_changed',
+      'thinking_level_changed',
     ]) {
       expect(t.translate({ type })).toEqual([]);
     }
@@ -519,6 +523,14 @@ describe('Pi JSONL translator', () => {
     expect(t.protocolDrift()).toEqual({ unknownEvents: 1, anomalies: 0 });
   });
 
+  it('does not count real-but-ignored pi event types as protocol drift', () => {
+    const t = new PiJsonlTranslator();
+    t.translate({ type: 'tool_execution_update', toolCallId: 'x', toolName: 'bash', args: {}, partialResult: {} });
+    t.translate({ type: 'session_info_changed' });
+    t.translate({ type: 'thinking_level_changed', level: 'high' });
+    expect(t.protocolDrift()).toEqual({ unknownEvents: 0, anomalies: 0 });
+  });
+
   it('logs and ignores extension_error without ending the stream', () => {
     const t = new PiJsonlTranslator();
     expect(
@@ -592,6 +604,13 @@ const IGNORED_EVENT_TYPES = new Set([
   'compaction_end',
   'auto_retry_start',
   'auto_retry_end',
+  // Real pi event types not emphasized by json.md's docs table but present in
+  // pi's actual AgentSessionEvent/AgentEvent unions (packages/agent/src/types.ts):
+  // tool_execution_update streams on every partial tool-output chunk (e.g. a
+  // long-running bash command) and would otherwise spam unknown_event drift.
+  'tool_execution_update',
+  'session_info_changed',
+  'thinking_level_changed',
 ]);
 
 const IGNORED_ASSISTANT_MESSAGE_EVENT_TYPES = new Set([
@@ -818,7 +837,7 @@ git commit -m "feat: add PiJsonlTranslator for pi --mode json event stream"
 
 **Files:**
 - Modify: `src/agent/types.ts` (add `accessMode?: AccessMode` to `AgentRunOptions`)
-- Modify: `src/runtime/run-executor.ts:104-106` and `:144-146`
+- Modify: `src/runtime/run-executor.ts:96-107` (the single `runOptions` object built for `agent.run()`)
 
 - [ ] **Step 1: Add the field**
 
@@ -830,11 +849,22 @@ right next to the existing `sandbox?: CodexSandboxMode;` / `permissionMode?: Cla
 
 - [ ] **Step 2: Forward it in `run-executor.ts`**
 
-In `src/runtime/run-executor.ts`, both places building the options object passed to `agent.run()` (lines ~96-107 and a second occurrence around line ~144, per the earlier grep — check both exist, there may be two submission paths e.g. fresh vs. resumed) add:
+`src/runtime/run-executor.ts` builds exactly one `runOptions` object passed to `agent.run()`, at lines 96-107:
 ```ts
-accessMode: input.policy.accessMode,
+const runOptions = {
+  runId,
+  prompt: input.policy.prompt,
+  cwd: input.policy.cwdRealpath,
+  sessionId: input.sessionId,
+  threadId: input.threadId,
+  model: input.model,
+  images: input.images,
+  sandbox: input.policy.sandbox,
+  permissionMode: input.policy.permissionMode,
+  stopGraceMs: input.stopGraceMs,
+};
 ```
-alongside the existing `sandbox: input.policy.sandbox,` / `permissionMode: input.policy.permissionMode,` lines.
+Add `accessMode: input.policy.accessMode,` alongside `sandbox`/`permissionMode` there. (`input.policy.accessMode` already exists and is already read once elsewhere in this same file, in a `log.info` call around line 143 — that's an unrelated logging line, not a second `runOptions` site; don't touch it, it already works.)
 
 - [ ] **Step 3: Typecheck and run the full unit suite**
 
@@ -2249,7 +2279,7 @@ git commit -m "feat: add PI_MODELS (default-only) to the model catalog"
 ### Task 12: `src/config/profile-store.ts` — persist `pi` config, parse `--agent pi`
 
 **Files:**
-- Modify: `src/config/profile-store.ts:9-23` (`StoredProfileConfig`), `~46-60` (`serializeProfileConfig`), `:294-298` (`agentKindFromString`)
+- Modify: `src/config/profile-store.ts:48-62` (`StoredProfileConfig`, a `Pick<ProfileConfig, ...>` union of field-name keys, not a plain string union — it currently picks `'schemaVersion' | 'agentKind' | 'accounts' | 'secrets' | 'preferences' | 'access' | 'workspaces' | 'permissions' | 'codex' | 'attachments' | 'comments' | 'larkCli'`), `:85-96` (`serializeProfileConfig`, where line 95 is `...(profile.codex ? { codex: profile.codex } : {}),`), `:294-298` (`agentKindFromString`)
 - Test: find/extend the existing profile-store test file
 
 - [ ] **Step 1: Read the existing profile-store test file, write a failing test for `agentKindFromString('pi')`**
@@ -2271,9 +2301,9 @@ Expected: FAIL — `agentKindFromString('pi')` throws today.
 
 - [ ] **Step 3: Fix**
 
-`StoredProfileConfig` (line ~9-23), add `| 'pi'` next to `| 'codex'`.
+`StoredProfileConfig` (the `Pick<ProfileConfig, ...>` field list at lines 48-62), add `| 'pi'` next to `| 'codex'` in that key union — this is picking a **property name** off `ProfileConfig` (which already has an optional `pi?: PiConfig` field once Task 1 lands), not adding a new literal type.
 
-`serializeProfileConfig`, add `...(profile.pi ? { pi: profile.pi } : {}),` next to the existing `...(profile.codex ? { codex: profile.codex } : {}),`.
+`serializeProfileConfig` (line 95), add `...(profile.pi ? { pi: profile.pi } : {}),` next to the existing `...(profile.codex ? { codex: profile.codex } : {}),`.
 
 `agentKindFromString` (line ~294-298), change:
 ```ts
@@ -2381,19 +2411,19 @@ git commit -m "feat: bootstrap pi profiles (binary resolution, profile-scoped pi
 
 ---
 
-### Task 14: `src/cli/commands/start.ts` — `createRuntimeAgent` pi branch + fix the two `checkRuntimeAgentAvailability`-style ternaries
+### Task 14: `src/cli/commands/start.ts` — `createRuntimeAgent` pi branch + fix the `checkRuntimeAgentAvailability` ternary
 
 **Files:**
-- Modify: `src/cli/commands/start.ts` — read lines 1-30 (imports) and lines 190-290 and 370-430 in full first (the earlier research read this file in fragments; get the full surrounding context before editing, especially the truncated `createRuntimeAgent` function and its Claude branch which wasn't fully captured)
+- Modify: `src/cli/commands/start.ts` — read lines 1-30 (imports) and the full `createRuntimeAgent`/`checkRuntimeAgentAvailability` functions before editing (earlier research read this file in fragments and one previously-noted "second ternary site" turned out to be an unrelated shutdown-handler line that merely mentions `'codex'`/`'claude'` in a different context — re-verify by reading the whole file section, don't assume there are two sites until you've confirmed it yourself)
 - Test: whatever test covers `createRuntimeAgent`/`checkRuntimeAgentAvailability` (search `tests/unit/cli/start-agent-factory.test.ts` — this name came up in the earlier file listing)
 
 - [ ] **Step 1: Read `tests/unit/cli/start-agent-factory.test.ts` in full**
 
 This is almost certainly the test file exercising `createRuntimeAgent`. Read it to see how it constructs a fake `ProfileConfig` for claude/codex and asserts the returned adapter type/options.
 
-- [ ] **Step 2: Read `src/cli/commands/start.ts` lines 1-30 and 190-430 in full**
+- [ ] **Step 2: Read `src/cli/commands/start.ts`'s full `createRuntimeAgent` and `checkRuntimeAgentAvailability` functions**
 
-You need the complete, un-truncated `createRuntimeAgent` function (the earlier research pass got cut off mid-function at the codex branch's closing brace) and both `agent.id === 'codex' ? 'codex' : 'claude'` ternary sites (~199/201 and ~377/379) with full surrounding context.
+You need the complete, un-truncated `createRuntimeAgent` function (the earlier research pass got cut off mid-function at the codex branch's closing brace) and the one real `agent.id === 'codex' ? 'codex' : 'claude'` ternary site inside `checkRuntimeAgentAvailability`, with full surrounding context. (A prior research pass over-counted this as two sites; confirm the actual count yourself before editing — fix every real occurrence you find, whether that's one or more.)
 
 - [ ] **Step 3: Write failing tests**
 
@@ -2435,9 +2465,9 @@ if (profileConfig.agentKind === 'codex') {
 ```
 (Fit this into the actual surrounding structure you read in Step 2 — the function likely ends with a claude-adapter return after these branches; preserve that.) Add `import { PiAdapter } from '../../agent/pi/adapter';` at the top of the file next to the existing `ClaudeAdapter`/`CodexAdapter` imports.
 
-- [ ] **Step 6: Fix both `checkRuntimeAgentAvailability`-shaped ternaries**
+- [ ] **Step 6: Fix the `checkRuntimeAgentAvailability` ternary**
 
-At both sites (~199-201 and ~377-379), change:
+At its one real site, change:
 ```ts
 agentId: agent.id === 'codex' ? 'codex' as const : 'claude' as const,
 ...
@@ -2456,7 +2486,7 @@ function knownAgentId(id: string): LocalAgentId {
   return 'claude';
 }
 ```
-and use `knownAgentId(agent.id)` at both call sites, `agentName: agent.displayName` stays as-is, `command: knownAgentId(agent.id)` — this preserves today's "unknown → claude" fallback behavior for anything genuinely unrecognized, while correctly routing `'pi'` instead of collapsing it into `'claude'`.)
+and use `knownAgentId(agent.id)` at the ternary's call site (and any others you find during Step 2's read that this plan's earlier research miscounted), `agentName: agent.displayName` stays as-is, `command: knownAgentId(agent.id)` — this preserves today's "unknown → claude" fallback behavior for anything genuinely unrecognized, while correctly routing `'pi'` instead of collapsing it into `'claude'`.)
 
 - [ ] **Step 7: Run to verify tests pass**
 
