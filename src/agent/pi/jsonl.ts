@@ -37,6 +37,10 @@ const IGNORED_ASSISTANT_MESSAGE_EVENT_TYPES = new Set([
   'toolcall_delta',
   'toolcall_end',
   'done',
+  // Cannot actually occur inside message_update in pi's real event stream
+  // (verified against pi-mono's agent-loop.ts); the terminal message_end's
+  // stopReason/errorMessage is the only real error-detection path. Kept here
+  // only so a doc-driven future event never silently counts as drift.
   'error',
 ]);
 
@@ -170,7 +174,7 @@ export class PiJsonlTranslator {
       return [
         {
           type: 'error',
-          message: detail ?? `pi request ${stopReason}`,
+          message: truncate(detail ?? `pi request ${stopReason}`, 4096),
           terminationReason: 'failed',
         },
       ];
