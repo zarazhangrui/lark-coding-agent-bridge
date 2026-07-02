@@ -1,0 +1,16 @@
+package.json
+  h_965db5153ff6bf 3
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "a8c70a35adc6d98b9cf4ba99b163eeac9f59c820",
+  "prompts": {},
+  "humans": {
+    "h_965db5153ff6bf": {
+      "author": "zeno06111-lab <zeno06111@gmail.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
