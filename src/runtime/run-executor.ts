@@ -103,6 +103,7 @@ export class RunExecutor {
       images: input.images,
       sandbox: input.policy.sandbox,
       permissionMode: input.policy.permissionMode,
+      accessMode: input.policy.accessMode,
       stopGraceMs: input.stopGraceMs,
     };
     let run: AgentRun;
