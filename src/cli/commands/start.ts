@@ -4,6 +4,7 @@ import { createInterface } from 'node:readline';
 import pkg from '../../../package.json';
 import { ClaudeAdapter } from '../../agent/claude/adapter';
 import { CodexAdapter } from '../../agent/codex/adapter';
+import { KimiAdapter } from '../../agent/kimi/adapter';
 import {
   AgentPreflightError,
   formatAgentPreflightDiagnostic,
@@ -431,6 +432,19 @@ export function createRuntimeAgent(
       ignoreUserConfig: codex.ignoreUserConfig === true,
       ignoreRules: codex.ignoreRules !== false,
       sandbox: profileConfig.sandbox.defaultMode,
+      larkChannel,
+    });
+  }
+  if (profileConfig.agentKind === 'kimi') {
+    const kimi = profileConfig.kimi;
+    if (!kimi?.binaryPath) {
+      throw new Error('kimi profile requires kimi.binaryPath');
+    }
+    return new KimiAdapter({
+      binary: kimi.binaryPath,
+      profileStateDir: appPaths.profileDir,
+      ...(kimi.kimiHome ? { kimiHome: kimi.kimiHome } : {}),
+      inheritKimiHome: kimi.inheritKimiHome === true,
       larkChannel,
     });
   }
