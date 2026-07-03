@@ -546,6 +546,7 @@ async function handleResume(args: string, ctx: CommandContext): Promise<void> {
     return;
   }
 
+  // pi falls through here too: pi uses sessionId/native history like claude, not a codex thread.
   if (ctx.controls.profileConfig.agentKind === 'codex') {
     const identity = ctx.sessionCatalogIdentity;
     const entry =
@@ -615,7 +616,7 @@ async function applyResume(sessionId: string, ctx: CommandContext): Promise<void
       } else {
         ctx.sessionCatalog.upsertActive({
           scopeId: ctx.sessionCatalogIdentity.scopeId,
-          agentId: 'claude',
+          agentId: ctx.sessionCatalogIdentity.agentId,
           cwdRealpath: ctx.sessionCatalogIdentity.cwdRealpath,
           policyFingerprint: ctx.sessionCatalogIdentity.policyFingerprint,
           sessionId: resolved.sessionId!,
@@ -635,13 +636,17 @@ async function applyResume(sessionId: string, ctx: CommandContext): Promise<void
       return;
     }
     ctx.activeRuns.interrupt(ctx.scope);
-    if (ctx.sessionCatalogIdentity.agentId === 'claude') {
+    if (
+      ctx.sessionCatalogIdentity.agentId === 'claude' ||
+      ctx.sessionCatalogIdentity.agentId === 'pi'
+    ) {
       ctx.sessions.set(ctx.scope, sessionId, ctx.sessionCatalogIdentity.cwdRealpath);
     }
     await reply(ctx, RESUME_APPLIED_REPLY);
     return;
   }
 
+  // pi falls through here too: pi uses sessionId/native history like claude, not a codex thread.
   if (ctx.controls.profileConfig.agentKind === 'codex') {
     await reply(ctx, '当前上下文没有可恢复的 Codex thread，请先在当前工作区完成一次运行。');
     return;
@@ -688,7 +693,7 @@ function consumeResumeCandidate(
     candidate.agentId !== identity.agentId ||
     candidate.cwdRealpath !== identity.cwdRealpath ||
     candidate.policyFingerprint !== identity.policyFingerprint ||
-    (identity.agentId === 'claude' && !candidate.sessionId) ||
+    ((identity.agentId === 'claude' || identity.agentId === 'pi') && !candidate.sessionId) ||
     (identity.agentId === 'codex' && !candidate.threadId)
   ) {
     return undefined;
@@ -759,6 +764,9 @@ function runtimeAccessStatus(
         profileConfig.permissions,
       ),
     };
+  }
+  if (profileConfig.agentKind === 'pi') {
+    return { label: 'access', value: profileConfig.permissions.defaultAccess };
   }
   return {
     label: 'sandbox',
