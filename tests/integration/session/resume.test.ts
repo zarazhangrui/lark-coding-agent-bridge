@@ -1,7 +1,7 @@
 import { realpath } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { claudeCapability, codexCapability } from '../../../src/agent/capability.js';
+import { capabilityForAgentKind, claudeCapability, codexCapability } from '../../../src/agent/capability.js';
 import { ActiveRuns } from '../../../src/bot/active-runs.js';
 import { ProcessPool } from '../../../src/bot/process-pool.js';
 import {
@@ -244,10 +244,7 @@ async function start(h: Awaited<ReturnType<typeof createHarness>>) {
     prompt: 'hello',
     attachments: [],
     access: { ok: true, reason: 'allowed-user' },
-    capability:
-      h.profileConfig.agentKind === 'codex'
-        ? codexCapability(h.profileConfig)
-        : claudeCapability(h.profileConfig),
+    capability: capabilityForAgentKind(h.profileConfig.agentKind, h.profileConfig),
     profileConfig: h.profileConfig,
     sessions: h.sessions,
     sessionCatalog: h.catalog,
