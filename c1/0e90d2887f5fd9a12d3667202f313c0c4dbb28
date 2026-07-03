@@ -1,0 +1,34 @@
+package.json
+  h_965db5153ff6bf 3
+src/bot/channel.ts
+  s_ae40a511d70ccf::t_16c63c8cfe3ddc 64,574-594,598-599,604,607-608,615,657,666,683
+src/bot/thread-id.ts
+  s_ae40a511d70ccf::t_6e294e3233c66d 1-37
+src/card/dispatcher.ts
+  s_ae40a511d70ccf::t_872fafe40f17da 16
+tests/integration/bot/topic-quote.test.ts
+  s_ae40a511d70ccf::t_6b87b90652899c 121-176,239,315,324,354
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.5",
+  "base_commit_sha": "c10e90d2887f5fd9a12d3667202f313c0c4dbb28",
+  "prompts": {},
+  "humans": {
+    "h_965db5153ff6bf": {
+      "author": "zeno06111-lab <zeno06111@gmail.com>"
+    }
+  },
+  "sessions": {
+    "s_ae40a511d70ccf": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "c1a6f87b-ed30-4b33-be8f-3d5f53c693f5",
+        "model": "unknown"
+      },
+      "human_author": "zeno06111-lab <zeno06111@gmail.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
