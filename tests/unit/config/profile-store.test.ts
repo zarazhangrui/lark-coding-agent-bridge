@@ -164,6 +164,42 @@ describe('profile store canonical serialization', () => {
     });
   });
 
+  it('preserves kimi configuration when saving and loading root config', async () => {
+    const root = await tmpRoot();
+    const configPath = join(root, 'config.json');
+    const profile = createDefaultProfileConfig({
+      agentKind: 'kimi',
+      accounts: { app },
+      kimi: {
+        binaryPath: '/usr/local/bin/kimi',
+        kimiHome: '/tmp/kimi-home',
+        inheritKimiHome: false,
+      },
+    });
+
+    await saveRootConfig({
+      schemaVersion: 2,
+      activeProfile: 'kimi',
+      preferences: {},
+      profiles: { kimi: profile },
+    }, configPath);
+
+    const saved = JSON.parse(await readFile(configPath, 'utf8'));
+    expect(saved.profiles.kimi.kimi).toEqual({
+      binaryPath: '/usr/local/bin/kimi',
+      kimiHome: '/tmp/kimi-home',
+      inheritKimiHome: false,
+    });
+
+    const loaded = await loadRootConfig(configPath);
+    expect(loaded?.profiles.kimi?.agentKind).toBe('kimi');
+    expect(loaded?.profiles.kimi?.kimi).toEqual({
+      binaryPath: '/usr/local/bin/kimi',
+      kimiHome: '/tmp/kimi-home',
+      inheritKimiHome: false,
+    });
+  });
+
   it('marks newly created roots as already evaluated for permission default migration', () => {
     const profile = createDefaultProfileConfig({
       agentKind: 'claude',
