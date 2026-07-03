@@ -6,7 +6,12 @@ import {
   createDefaultProfileConfig,
   type RootConfig,
 } from '../../../src/config/profile-schema';
-import { createRootConfig, loadRootConfig, saveRootConfig } from '../../../src/config/profile-store';
+import {
+  agentKindFromString,
+  createRootConfig,
+  loadRootConfig,
+  saveRootConfig,
+} from '../../../src/config/profile-store';
 
 const roots: string[] = [];
 
@@ -173,5 +178,43 @@ describe('profile store canonical serialization', () => {
     const root = createRootConfig('claude', profile);
 
     expect(root.migrations?.permissionDefaultsV1).toEqual(['claude']);
+  });
+
+  it('parses pi as a valid --agent value', () => {
+    expect(agentKindFromString('pi')).toBe('pi');
+  });
+
+  it('still rejects unsupported agent strings', () => {
+    expect(() => agentKindFromString('bogus')).toThrow(/unsupported agent: bogus/);
+  });
+
+  it('saves and reloads a pi profile config, preserving the pi field', async () => {
+    const root = await tmpRoot();
+    const configPath = join(root, 'config.json');
+    const profile = createDefaultProfileConfig({
+      agentKind: 'pi',
+      accounts: { app },
+      pi: { binaryPath: '/usr/local/bin/pi' },
+    });
+
+    await saveRootConfig(
+      {
+        schemaVersion: 2,
+        activeProfile: 'pi',
+        preferences: {},
+        profiles: { pi: profile },
+      },
+      configPath,
+    );
+
+    const saved = JSON.parse(await readFile(configPath, 'utf8'));
+    expect(saved.profiles.pi.pi).toEqual({ binaryPath: '/usr/local/bin/pi', inheritPiHome: false });
+
+    const loaded = await loadRootConfig(configPath);
+    expect(loaded?.profiles.pi?.agentKind).toBe('pi');
+    expect(loaded?.profiles.pi?.pi).toEqual({
+      binaryPath: '/usr/local/bin/pi',
+      inheritPiHome: false,
+    });
   });
 });
