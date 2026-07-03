@@ -320,6 +320,11 @@ export async function handleCommentMention(deps: CommentDeps): Promise<void> {
             policy,
             event: e,
           });
+          // NOTE: recordCommentSessionEvent (called above) already writes this same
+          // sessionId to the same scope via recordRunSessionEvent whenever
+          // agentSessionScopeId === docSessionScopeId — this branch has been
+          // empirically confirmed dead for every agent kind (not just pi) and
+          // should be removed in a follow-up cleanup, not expanded further.
           if (
             (capability.agentId === 'claude' || capability.agentId === 'pi') &&
             e.type === 'system' &&

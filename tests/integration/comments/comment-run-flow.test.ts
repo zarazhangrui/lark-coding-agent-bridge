@@ -84,6 +84,41 @@ describe('comment run flow', () => {
     expect(h.sessions.resumeFor('doc:doc-token', await realpath(h.tmp.workspace))).toBeUndefined();
   });
 
+  it('shares pi sessions across different comment threads in the same document', async () => {
+    const h = await createHarness({
+      agentKind: 'pi',
+      agentTexts: ['first answer', 'second answer', 'third answer'],
+      sessionIds: ['session-one', 'session-two', 'session-three'],
+    });
+
+    await handleCommentMention(h.deps(event({ commentId: 'comment-1', replyId: 'reply-1' })));
+    await handleCommentMention(h.deps(event({ commentId: 'comment-2', replyId: 'reply-2' })));
+    await handleCommentMention(h.deps(event({ commentId: 'comment-1', replyId: 'reply-1' })));
+
+    expect(h.agent.runOptions).toHaveLength(3);
+    expect(h.agent.runOptions[0]?.sessionId).toBeUndefined();
+    expect(h.agent.runOptions[1]?.sessionId).toBe('session-one');
+    expect(h.agent.runOptions[2]?.sessionId).toBe('session-two');
+    expect(h.sessions.resumeFor(docSessionScope('doc-token'), await realpath(h.tmp.workspace))).toBe('session-three');
+    expect(h.sessions.resumeFor('doc:doc-token', await realpath(h.tmp.workspace))).toBeUndefined();
+  });
+
+  it('captures a fresh pi run system-event sessionId into the legacy sessions store', async () => {
+    const h = await createHarness({
+      agentKind: 'pi',
+      agentTexts: ['only answer'],
+      sessionIds: ['fresh-session'],
+    });
+
+    await handleCommentMention(h.deps(event({ commentId: 'comment-1', replyId: 'reply-1' })));
+
+    expect(h.agent.runOptions).toHaveLength(1);
+    expect(h.agent.runOptions[0]?.sessionId).toBeUndefined();
+    expect(h.sessions.resumeFor(docSessionScope('doc-token'), await realpath(h.tmp.workspace))).toBe(
+      'fresh-session',
+    );
+  });
+
   it('shares Codex threads across different comment threads in the same document', async () => {
     const h = await createHarness({
       agentKind: 'codex',
@@ -191,7 +226,7 @@ describe('comment run flow', () => {
 });
 
 async function createHarness(options: {
-  agentKind?: 'claude' | 'codex';
+  agentKind?: 'claude' | 'codex' | 'pi';
   agentTexts?: string[];
   agentEventRuns?: AgentEvent[][];
   sessionIds?: string[];
@@ -518,13 +553,17 @@ async function waitFor(predicate: () => boolean): Promise<void> {
   throw new Error('timed out waiting for condition');
 }
 
-function profile(defaultWorkspace: string, agentKind: 'claude' | 'codex' = 'claude'): ProfileConfig {
+function profile(
+  defaultWorkspace: string,
+  agentKind: 'claude' | 'codex' | 'pi' = 'claude',
+): ProfileConfig {
   const config = createDefaultProfileConfig({
     agentKind,
     accounts: { app: { id: 'cli_test', secret: '${APP_SECRET}', tenant: 'feishu' } },
     access: { allowedUsers: ['ou-user'] },
     sandbox: { defaultMode: 'read-only', maxMode: 'workspace-write' },
     ...(agentKind === 'codex' ? { codex: { binaryPath: 'codex' } } : {}),
+    ...(agentKind === 'pi' ? { pi: { binaryPath: 'pi' } } : {}),
   });
   config.workspaces.default = defaultWorkspace;
   return config;
