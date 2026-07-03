@@ -235,7 +235,7 @@ export async function handleCommentMention(deps: CommentDeps): Promise<void> {
           })
         : undefined;
       const sessionId =
-        canResumeAgentSession && capability.agentId === 'claude'
+        canResumeAgentSession && (capability.agentId === 'claude' || capability.agentId === 'pi')
           ? sessions.resumeFor(docSessionScopeId, cwdRealpath) ??
             sessions.resumeFor(legacyDocSessionScopeId, cwdRealpath)
           : undefined;
@@ -320,7 +320,11 @@ export async function handleCommentMention(deps: CommentDeps): Promise<void> {
             policy,
             event: e,
           });
-          if (capability.agentId === 'claude' && e.type === 'system' && e.sessionId) {
+          if (
+            (capability.agentId === 'claude' || capability.agentId === 'pi') &&
+            e.type === 'system' &&
+            e.sessionId
+          ) {
             sessions.set(docSessionScopeId, e.sessionId, policy.cwdRealpath);
           }
           switch (e.type) {
