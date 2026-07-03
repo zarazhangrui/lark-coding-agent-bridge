@@ -51,6 +51,10 @@ export async function createBootstrapProfileConfig(
   if (input.profileDir && profile.codex?.inheritCodexHome === false) {
     await mkdir(join(input.profileDir, 'codex-home'), { recursive: true });
   }
+  // inheritPiHome defaults to false (opt-out), the opposite of inheritCodexHome
+  // above (defaults to true, opt-in) — so despite the identical `=== false`
+  // shape, this branch fires by default, isolating pi's home per profile
+  // unless the caller explicitly sets inheritPiHome: true.
   if (input.profileDir && profile.pi?.inheritPiHome === false) {
     await mkdir(join(input.profileDir, 'pi-home'), { recursive: true });
   }
