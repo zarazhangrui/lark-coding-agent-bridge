@@ -43,9 +43,19 @@ const CODEX_MODELS: ModelOption[] = [
   { value: 'o3', label: 'o3' },
 ];
 
+/** Pi spans multiple providers/models via --provider/--model; not curated yet. */
+const PI_MODELS: ModelOption[] = [{ value: DEFAULT_MODEL, label: '跟随默认（不指定）' }];
+
 /** The model picker options for a profile's agent kind. */
 export function supportedModels(agentKind: AgentKind): ModelOption[] {
-  return agentKind === 'codex' ? CODEX_MODELS : CLAUDE_MODELS;
+  switch (agentKind) {
+    case 'codex':
+      return CODEX_MODELS;
+    case 'pi':
+      return PI_MODELS;
+    case 'claude':
+      return CLAUDE_MODELS;
+  }
 }
 
 /** True when the selection means "use the agent default" (no `--model`). */
