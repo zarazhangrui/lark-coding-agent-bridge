@@ -128,7 +128,7 @@ export async function startRunFlow(input: StartRunFlowInput): Promise<StartRunFl
       resumeFrom = threadId;
     }
   }
-  if (!resumeFrom && (input.capability.agentId === 'claude' || input.capability.agentId === 'kimi')) {
+  if (!resumeFrom && input.capability.agentId === 'claude') {
     resumeFrom = input.sessions.resumeFor(input.scopeId, workspace.cwdRealpath);
     sessionId = resumeFrom;
     const stale = input.sessions.getRaw(input.scopeId);
