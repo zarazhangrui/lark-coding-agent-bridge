@@ -4,10 +4,12 @@ import { createInterface } from 'node:readline';
 import pkg from '../../../package.json';
 import { ClaudeAdapter } from '../../agent/claude/adapter';
 import { CodexAdapter } from '../../agent/codex/adapter';
+import { PiAdapter } from '../../agent/pi/adapter';
 import {
   AgentPreflightError,
   formatAgentPreflightDiagnostic,
   type AgentAvailability,
+  type LocalAgentId,
 } from '../../agent/preflight';
 import type { AgentAdapter } from '../../agent/types';
 import { startChannel, type BridgeChannel } from '../../bot/channel';
@@ -368,21 +370,32 @@ export async function runStart(opts: StartOptions): Promise<void> {
   }
 }
 
-async function checkRuntimeAgentAvailability(agent: AgentAdapter): Promise<AgentAvailability> {
+export async function checkRuntimeAgentAvailability(agent: AgentAdapter): Promise<AgentAvailability> {
   if (agent.checkAvailability) return agent.checkAvailability();
   const ok = await agent.isAvailable();
   if (ok) return { ok: true };
+  const knownAgentId = toLocalAgentId(agent.id);
   const diagnostic = {
     code: 'agent-binary-not-found' as const,
-    agentId: agent.id === 'codex' ? 'codex' as const : 'claude' as const,
+    agentId: knownAgentId,
     agentName: agent.displayName,
-    command: agent.id === 'codex' ? 'codex' : 'claude',
+    command: knownAgentId,
   };
   return {
     ok: false,
     diagnostic,
     error: new AgentPreflightError(diagnostic),
   };
+}
+
+// AgentAdapter.id is typed as `string` (adapters live outside this module), but
+// in practice it is always one of 'claude' | 'codex' | 'pi'. Narrow explicitly
+// rather than casting so a genuinely unrecognized id still falls back to
+// 'claude' (today's behavior for anything unknown) instead of misreporting a
+// non-claude adapter (e.g. 'pi') as claude, which used to happen here.
+function toLocalAgentId(id: string): LocalAgentId {
+  if (id === 'codex' || id === 'pi') return id;
+  return 'claude';
 }
 
 export function assertReconnectAgentKindUnchanged(
@@ -431,6 +444,18 @@ export function createRuntimeAgent(
       ignoreUserConfig: codex.ignoreUserConfig === true,
       ignoreRules: codex.ignoreRules !== false,
       sandbox: profileConfig.sandbox.defaultMode,
+      larkChannel,
+    });
+  } else if (profileConfig.agentKind === 'pi') {
+    const pi = profileConfig.pi;
+    if (!pi?.binaryPath) {
+      throw new Error('pi profile requires pi.binaryPath');
+    }
+    return new PiAdapter({
+      binary: pi.binaryPath,
+      profileStateDir: appPaths.profileDir,
+      ...(pi.piHome ? { piHome: pi.piHome } : {}),
+      inheritPiHome: pi.inheritPiHome === true,
       larkChannel,
     });
   }
