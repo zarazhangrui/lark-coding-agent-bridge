@@ -13,6 +13,7 @@ import type { SessionCatalog } from '../session/catalog';
 import type { SessionStore } from '../session/store';
 import type { WorkspaceStore } from '../workspace/store';
 import { commandSessionCatalogIdentity } from '../bot/session-catalog-identity';
+import { lookupMessageThreadId } from '../bot/thread-id';
 
 /** Marker key on a button's value object that flags the cardAction as
  * a callback that should be forwarded back to the agent instead
@@ -157,27 +158,6 @@ async function resolveScope(
     return { scope: chatId, threadId: undefined, mode };
   }
   return { scope: `${chatId}:${threadId}`, threadId, mode };
-}
-
-async function lookupMessageThreadId(
-  channel: LarkChannel,
-  messageId: string,
-): Promise<string | undefined> {
-  try {
-    // fetchRawMessage returns the raw `im.v1.message.get` items, which carry
-    // `thread_id`. We intentionally avoid channel.fetchMessage() here: its
-    // NormalizedMessage path rebuilds a synthetic raw event without
-    // `thread_id`, so threadId always comes back undefined and topic-group
-    // card clicks would fall back to the plain chatId scope (wrong session).
-    const [parent] = await channel.fetchRawMessage(messageId);
-    return (parent as { thread_id?: string } | undefined)?.thread_id;
-  } catch (err) {
-    log.warn('cardAction', 'thread-id-lookup-failed', {
-      messageId,
-      err: err instanceof Error ? err.message : String(err),
-    });
-    return undefined;
-  }
 }
 
 function forwardToAgent(

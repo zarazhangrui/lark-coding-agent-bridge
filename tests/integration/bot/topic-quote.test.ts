@@ -118,6 +118,62 @@ describe('topic message quote handling', () => {
     });
   });
 
+  it('backfills a missing threadId in topic groups so the reply threads into the topic', async () => {
+    // Feishu drops thread_id on a chunk of topic-group events (notably the
+    // message that opens a topic). getChatMode still reports 'topic', so we
+    // recover the thread_id from the raw message instead of letting the reply
+    // escape into a brand-new topic.
+    const h = await createHarness({
+      chatMode: 'topic',
+      rawThreadIds: { om_topic_start: 'omt_backfilled' },
+    });
+
+    await startTestBridge(h);
+
+    await h.channel.handlers.message?.(
+      message({
+        messageId: 'om_topic_start',
+        rootId: 'om_topic_start',
+        parentId: 'om_topic_start',
+        // no threadId on the event
+        content: '@Bridge 开个新话题',
+      }),
+    );
+    await waitFor(() => h.agent.runOptions.length === 1);
+
+    expect(h.channel.fetchRawMessage).toHaveBeenCalledWith('om_topic_start');
+    const prompt = h.agent.runOptions[0]?.prompt ?? '';
+    expect(prompt).toContain('"threadId":"omt_backfilled"');
+
+    await waitFor(() => h.channel.streams.length === 1);
+    expect(h.channel.streams[0]?.options).toMatchObject({
+      replyTo: 'om_topic_start',
+      replyInThread: true,
+    });
+  });
+
+  it('does not thread the reply when a topic-group event has no recoverable threadId', async () => {
+    // Backfill lookup returns nothing → degrade gracefully to chat-level
+    // routing rather than crashing or blocking the run.
+    const h = await createHarness({ chatMode: 'topic' });
+
+    await startTestBridge(h);
+
+    await h.channel.handlers.message?.(
+      message({
+        messageId: 'om_no_thread',
+        rootId: 'om_no_thread',
+        parentId: 'om_no_thread',
+        content: '@Bridge 无线程',
+      }),
+    );
+    await waitFor(() => h.agent.runOptions.length === 1);
+
+    expect(h.channel.fetchRawMessage).toHaveBeenCalledWith('om_no_thread');
+    await waitFor(() => h.channel.streams.length === 1);
+    expect(h.channel.streams[0]?.options).not.toMatchObject({ replyInThread: true });
+  });
+
   it('keeps regular group reply quotes as quoted context', async () => {
     const h = await createHarness({
       chatMode: 'group',
@@ -180,6 +236,7 @@ describe('topic message quote handling', () => {
 async function createHarness(options: {
   chatMode?: 'group' | 'topic';
   quotedMessages?: Record<string, string>;
+  rawThreadIds?: Record<string, string>;
 } = {}): Promise<{
   tmp: TmpProfile;
   channel: FakeLarkChannel & { handlers: MessageHandlerMap };
@@ -255,6 +312,7 @@ async function startTestBridge(h: {
 function createFakeLarkChannel(options: {
   chatMode?: 'group' | 'topic';
   quotedMessages?: Record<string, string>;
+  rawThreadIds?: Record<string, string>;
 } = {}): FakeLarkChannel & { handlers: MessageHandlerMap } {
   const handlers: MessageHandlerMap = {};
   const sent: Array<{ chatId: string; content: unknown; options: unknown }> = [];
@@ -263,6 +321,7 @@ function createFakeLarkChannel(options: {
   const quotedMessages = options.quotedMessages ?? {
     om_topic_root: 'topic root content',
   };
+  const rawThreadIds = options.rawThreadIds ?? {};
   return {
     handlers,
     sent,
@@ -292,6 +351,7 @@ function createFakeLarkChannel(options: {
         },
         create_time: '1760000000000',
         sender: { id: 'ou_quote_sender' },
+        ...(rawThreadIds[messageId] ? { thread_id: rawThreadIds[messageId] } : {}),
       },
     ]),
     on(nextHandlers) {

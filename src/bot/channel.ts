@@ -61,6 +61,7 @@ import { startKeepalive } from './keepalive';
 import { PendingQueue } from './pending-queue';
 import { ProcessPool } from './process-pool';
 import { fetchQuotedContext, type QuotedContext } from './quote';
+import { lookupMessageThreadId } from './thread-id';
 import { addWorkingReaction, removeReaction } from './reaction';
 import { fetchKnownChats } from './lark-info';
 import type { AppPaths } from '../config/app-paths';
@@ -570,27 +571,48 @@ async function intakeMessage(deps: IntakeDeps): Promise<void> {
   // Resolve scope (and underlying chat mode) once at intake — every
   // downstream consumer keys off these.
   const resolvedMode = await chatModeCache.resolve(channel, msg.chatId);
+  // Feishu delivers a sizable fraction of topic-group message events without a
+  // `thread_id` (notably the message that opens a new topic). We route topic
+  // replies (`replyInThread`) and isolate per-topic session scope off it, so a
+  // missing one makes the reply escape into a brand-new topic AND collapses the
+  // scope to the chat level. When getChatMode says this is a topic group but
+  // the event dropped `thread_id`, backfill it from the raw message — the same
+  // recovery the card-click path uses.
+  let threadId = msg.threadId;
+  if (!threadId && resolvedMode === 'topic') {
+    threadId = await lookupMessageThreadId(channel, msg.messageId);
+    if (threadId) {
+      log.info('intake', 'thread-id-backfilled', {
+        chatId: msg.chatId,
+        msgId: msg.messageId,
+        threadId,
+      });
+    }
+  }
+  // Carry the (possibly backfilled) threadId on the message so the batched
+  // flush — which reads `firstMsg.threadId` for reply routing and CoT — sees it.
+  const emsg: NormalizedMessage = threadId === msg.threadId ? msg : { ...msg, threadId };
   // Some groups are converted into topic groups after creation. In that state
   // getChatMode can lag behind the message event shape, so threadId is the
   // stronger signal for topic-scoped sessions and reply routing.
-  const chatMode = msg.threadId ? 'topic' : resolvedMode;
-  if (msg.threadId && resolvedMode !== 'topic') {
+  const chatMode = threadId ? 'topic' : resolvedMode;
+  if (threadId && resolvedMode !== 'topic') {
     chatModeCache.invalidate(msg.chatId);
     logThreadModeOverride({
       chatId: msg.chatId,
       resolvedMode,
-      threadId: msg.threadId,
+      threadId,
     });
   }
-  const scope = chatMode === 'topic' && msg.threadId
-    ? `${msg.chatId}:${msg.threadId}`
+  const scope = chatMode === 'topic' && threadId
+    ? `${msg.chatId}:${threadId}`
     : msg.chatId;
   log.info('intake', 'enter', {
     scope,
     chatType: msg.chatType,
     chatMode,
     resolvedMode,
-    threadId: msg.threadId,
+    threadId,
     msgId: msg.messageId,
     sender: msg.senderId,
     preview,
@@ -632,7 +654,7 @@ async function intakeMessage(deps: IntakeDeps): Promise<void> {
 
   const handled = await tryHandleCommand({
     channel,
-    msg,
+    msg: emsg,
     scope,
     chatMode,
     sessions,
@@ -641,7 +663,7 @@ async function intakeMessage(deps: IntakeDeps): Promise<void> {
     activeRuns,
     sessionCatalog,
     sessionCatalogIdentity: await commandSessionCatalogIdentity({
-      msg,
+      msg: emsg,
       scope,
       mode: chatMode,
       workspaces,
@@ -658,7 +680,7 @@ async function intakeMessage(deps: IntakeDeps): Promise<void> {
     return;
   }
 
-  const size = pending.push(scope, msg);
+  const size = pending.push(scope, emsg);
   log.info('intake', 'queued', { scope, queueSize: size, debounceMs: DEBOUNCE_MS });
 }
 
