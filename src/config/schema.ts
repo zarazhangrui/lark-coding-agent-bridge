@@ -84,6 +84,10 @@ export interface AppAccess {
    * (/account, /config, /exit, /reconnect, /doctor, /cd, /ws, /doc,
    * /invite, /remove). */
   admins?: string[];
+  /** chat_id list of groups exempt from the group-mention requirement:
+   * messages in these groups are processed even without an @bot mention,
+   * while requireMentionInGroup still applies to every other group. */
+  mentionExemptChats?: string[];
 }
 
 export interface AppPreferences {
@@ -248,6 +252,19 @@ export function getRequireMentionInGroup(cfg: AppConfig): boolean {
     return profileAccess.requireMentionInGroup;
   }
   return true;
+}
+
+/**
+ * Chat_ids exempt from the group-mention requirement. Messages in these groups
+ * are processed even without an @bot mention (used for dedicated single-topic
+ * groups bound to one session). Empty by default.
+ */
+export function getMentionExemptChats(cfg: AppConfig): string[] {
+  const access = (cfg as AppConfig & {
+    access?: { mentionExemptChats?: string[] };
+  }).access;
+  const list = access?.mentionExemptChats;
+  return Array.isArray(list) ? list : [];
 }
 
 /**
