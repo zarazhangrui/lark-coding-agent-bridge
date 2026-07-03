@@ -9,7 +9,7 @@ import {
   type ProfileConfig,
 } from '../config/profile-schema';
 import {
-  loadRootConfig,
+  loadRootConfigForProfile,
   saveRootConfig,
   withConfigFileLock,
 } from '../config/profile-store';
@@ -522,7 +522,7 @@ async function persistLarkCliConfig(
   let saveSucceeded = false;
   try {
     await withConfigFileLock(appPaths.configFile, async () => {
-      const root = await loadRootConfig(appPaths.configFile);
+      const root = await loadRootConfigForProfile(appPaths.configFile, appPaths.profile);
       if (!root) return;
       const profile = root.profiles[appPaths.profile];
       if (!profile) return;

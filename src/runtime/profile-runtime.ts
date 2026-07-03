@@ -22,6 +22,7 @@ import {
   createRootConfig,
   hasPermissionDefaultsMigration,
   loadRootConfig,
+  loadRootConfigForProfile,
   markPermissionDefaultsMigration,
   readActiveProfile,
   runtimeProfileConfig,
@@ -140,7 +141,7 @@ export async function resolveProfileRuntime(
       : {}),
   }, opts.handleActiveBridgeMigrationConflict);
 
-  let rootConfig = await loadRootConfig(configPath);
+  let rootConfig = await loadRootConfigForProfile(configPath, profile);
   if (rootConfig) {
     if (!explicitProfile && !activeProfile) {
       profile = rootConfig.activeProfile;
