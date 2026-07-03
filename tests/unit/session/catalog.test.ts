@@ -117,6 +117,81 @@ describe('agent-aware session catalog', () => {
     await catalog.flush();
   });
 
+  it('accepts a pi entry with sessionId and no threadId, same shape as claude', async () => {
+    const catalog = new SessionCatalog(await path());
+
+    expect(() =>
+      catalog.upsertActive({
+        scopeId: 'scope-1',
+        agentId: 'pi',
+        cwdRealpath: '/repo',
+        policyFingerprint: 'fp',
+        sessionId: 'pi-sess-1',
+      }),
+    ).not.toThrow();
+
+    expect(
+      catalog.activeFor({
+        scopeId: 'scope-1',
+        agentId: 'pi',
+        cwdRealpath: '/repo',
+        policyFingerprint: 'fp',
+      }),
+    ).toMatchObject({ sessionId: 'pi-sess-1', agentId: 'pi' });
+    await catalog.flush();
+  });
+
+  it('rejects a pi entry that supplies threadId instead of sessionId', async () => {
+    const catalog = new SessionCatalog(await path());
+
+    expect(() =>
+      catalog.upsertActive({
+        scopeId: 'scope-1',
+        agentId: 'pi',
+        cwdRealpath: '/repo',
+        policyFingerprint: 'fp',
+        threadId: 'not-valid-for-pi',
+      }),
+    ).toThrow(/sessionId/);
+    await catalog.flush();
+  });
+
+  it('loads a pi entry from disk instead of dropping it', async () => {
+    const filePath = await path();
+    const catalog = new SessionCatalog(filePath);
+    await catalog.replaceForTest([
+      {
+        key: sessionCatalogKey({
+          scopeId: 'scope-1',
+          agentId: 'pi',
+          cwdRealpath: '/repo',
+          policyFingerprint: 'fp',
+        }),
+        scopeId: 'scope-1',
+        agentId: 'pi',
+        cwdRealpath: '/repo',
+        policyFingerprint: 'fp',
+        sessionId: 'pi-sess-loaded',
+        status: 'active',
+        updatedAt: 1000,
+      },
+    ]);
+
+    const reloaded = new SessionCatalog(filePath);
+    await reloaded.load();
+
+    expect(
+      reloaded.activeFor({
+        scopeId: 'scope-1',
+        agentId: 'pi',
+        cwdRealpath: '/repo',
+        policyFingerprint: 'fp',
+      }),
+    ).toMatchObject({ sessionId: 'pi-sess-loaded', agentId: 'pi' });
+    await catalog.flush();
+    await reloaded.flush();
+  });
+
   it('archives only the current agent/cwd/fingerprint entry for a new conversation', async () => {
     const catalog = new SessionCatalog(await path());
     const base = {

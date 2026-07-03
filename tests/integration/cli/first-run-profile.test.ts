@@ -51,6 +51,55 @@ describe('first-run profile bootstrap', () => {
     await expect(stat(join(profileDir, 'codex-home'))).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
+  it('creates a Pi profile with a default workspace and a profile-scoped pi-home', async () => {
+    const root = await makeRoot();
+    const workspace = join(root, 'workspace');
+    const profileDir = join(root, 'profiles', 'pi-dev');
+    await mkdir(workspace, { recursive: true });
+    const pi = await writeVersionExecutable(root, 'pi', 'pi 1.2.3');
+
+    const profile = await createBootstrapProfileConfig({
+      agentKind: 'pi',
+      accounts: { app: { id: 'cli_pi', secret: '${APP_SECRET}', tenant: 'feishu' } },
+      workspace,
+      piBinaryPath: pi,
+      profileDir,
+    });
+
+    const workspaceRealpath = await realpath(workspace);
+    expect(profile.agentKind).toBe('pi');
+    expect(profile.workspaces).toEqual({ default: workspaceRealpath });
+    expect(profile.pi).toMatchObject({
+      binaryPath: pi,
+      inheritPiHome: false,
+    });
+    expect(profile.pi?.realpath).toBeUndefined();
+    expect(profile.pi?.version).toBeUndefined();
+    expect(profile.pi?.sha256).toBeUndefined();
+    await expect(stat(join(profileDir, 'pi-home'))).resolves.toBeTruthy();
+  });
+
+  it('reports missing Pi bootstrap binaries as agent preflight diagnostics', async () => {
+    const root = await makeRoot();
+    const missing = join(root, 'missing-pi');
+
+    await expect(
+      createBootstrapProfileConfig({
+        agentKind: 'pi',
+        accounts: { app: { id: 'cli_pi', secret: '${APP_SECRET}', tenant: 'feishu' } },
+        piBinaryPath: missing,
+      }),
+    ).rejects.toMatchObject({
+      diagnostic: {
+        code: 'agent-binary-not-found',
+        agentId: 'pi',
+        agentName: 'Pi',
+        command: missing,
+        binaryPath: missing,
+      },
+    });
+  });
+
   it('creates a profile without requiring a user workspace', async () => {
     const root = await makeRoot();
     const defaultWorkspace = join(root, 'managed-workspaces', 'codex-dev', 'default');

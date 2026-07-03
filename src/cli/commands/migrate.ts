@@ -1,6 +1,6 @@
 import { mkdir, readFile, readdir, rename, rm, stat } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
-import { createBootstrapCodexConfig } from '../profile-bootstrap';
+import { createBootstrapCodexConfig, createBootstrapPiConfig } from '../profile-bootstrap';
 import { promptLine } from '../prompt';
 import { stopProcessEntry } from './ps';
 import {
@@ -52,6 +52,9 @@ export async function runMigrate(opts: MigrateOptions): Promise<void> {
     ...(agentKind ? { agentKind } : {}),
     ...(needsV2Migration && agentKind === 'codex'
       ? { codex: await createBootstrapCodexConfig(undefined) }
+      : {}),
+    ...(needsV2Migration && agentKind === 'pi'
+      ? { pi: await createBootstrapPiConfig(undefined) }
       : {}),
   }, opts);
   if (!result) return;

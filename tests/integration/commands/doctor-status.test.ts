@@ -119,12 +119,26 @@ describe('/status and /doctor diagnostics', () => {
     expect(h.agent.runOptions).toHaveLength(0);
     expect(lastMarkdownOrText(h.channel)).toContain('pool-full');
   });
+
+  it('reports policy check as access=<AccessMode> for pi profiles, not a Claude permission mode', async () => {
+    const h = await createHarness({ configuredWorkspace: true, agentKind: 'pi' });
+
+    await expect(h.run('/doctor')).resolves.toBe(true);
+
+    expect(h.agent.runOptions).toHaveLength(1);
+    const output = lastStreamCardJson(h.channel);
+    expect(output).toContain('policy check: ok access=workspace');
+    expect(output).not.toContain('policy check: ok access=acceptEdits');
+    expect(output).not.toContain('policy check: ok access=plan');
+    expect(output).not.toContain('policy check: ok access=bypassPermissions');
+  });
 });
 
 async function createHarness(options: {
   configuredWorkspace: boolean;
   bindWorkspace?: boolean;
   defaultWorkspace?: boolean;
+  agentKind?: 'claude' | 'codex' | 'pi';
 }): Promise<Harness> {
   const tmp = await createTmpProfile('doctor-status-');
   const channel = createFakeChannel();
@@ -135,12 +149,13 @@ async function createHarness(options: {
   const agent = new FakeAgentAdapter({
     events: [[{ type: 'text', delta: 'OK' }, { type: 'done', terminationReason: 'normal' }]],
   });
-  const profileConfig = appConfig(options.configuredWorkspace ? tmp.workspace : undefined);
+  const agentKind = options.agentKind ?? 'claude';
+  const profileConfig = appConfig(options.configuredWorkspace ? tmp.workspace : undefined, agentKind);
   if (options.defaultWorkspace) {
     profileConfig.workspaces.default = tmp.workspace;
   }
   const controls = {
-    profile: 'claude',
+    profile: agentKind,
     profileConfig,
     botOwnerId: 'ou-owner',
     ownerRefreshState: 'ok',
@@ -188,12 +203,19 @@ async function createHarness(options: {
   return { tmp, channel, sessions, workspaces, activeRuns, pool, agent, controls, run };
 }
 
-function appConfig(defaultWorkspace: string | undefined): ProfileConfig {
+function appConfig(
+  defaultWorkspace: string | undefined,
+  agentKind: 'claude' | 'codex' | 'pi' = 'claude',
+): ProfileConfig {
   const config = createDefaultProfileConfig({
-    agentKind: 'claude',
+    agentKind,
     accounts: { app: { id: 'app-id', secret: 'secret', tenant: 'feishu' } },
     access: { admins: ['ou-admin'] },
-    sandbox: { defaultMode: 'read-only', maxMode: 'workspace-write' },
+    sandbox:
+      agentKind === 'pi'
+        ? { defaultMode: 'workspace-write', maxMode: 'workspace-write' }
+        : { defaultMode: 'read-only', maxMode: 'workspace-write' },
+    ...(agentKind === 'pi' ? { pi: { binaryPath: 'pi' } } : {}),
   });
   if (defaultWorkspace) config.workspaces.default = defaultWorkspace;
   return config;

@@ -14,6 +14,7 @@ export interface BootstrapProfileInput {
   workspace?: string;
   defaultWorkspace?: string;
   codexBinaryPath?: string;
+  piBinaryPath?: string;
   profileDir?: string;
 }
 
@@ -29,12 +30,17 @@ export async function createBootstrapProfileConfig(
     input.agentKind === 'codex'
       ? await createBootstrapCodexConfig(input.codexBinaryPath)
       : undefined;
+  const pi =
+    input.agentKind === 'pi'
+      ? await createBootstrapPiConfig(input.piBinaryPath)
+      : undefined;
   const profile = createDefaultProfileConfig({
     agentKind: input.agentKind,
     accounts: input.accounts,
     preferences: input.preferences,
     secrets: input.secrets,
     ...(codex ? { codex } : {}),
+    ...(pi ? { pi } : {}),
   });
   if (workspace) {
     profile.workspaces = {
@@ -44,6 +50,13 @@ export async function createBootstrapProfileConfig(
   }
   if (input.profileDir && profile.codex?.inheritCodexHome === false) {
     await mkdir(join(input.profileDir, 'codex-home'), { recursive: true });
+  }
+  // inheritPiHome defaults to false (opt-out), the opposite of inheritCodexHome
+  // above (defaults to true, opt-in) — so despite the identical `=== false`
+  // shape, this branch fires by default, isolating pi's home per profile
+  // unless the caller explicitly sets inheritPiHome: true.
+  if (input.profileDir && profile.pi?.inheritPiHome === false) {
+    await mkdir(join(input.profileDir, 'pi-home'), { recursive: true });
   }
   return profile;
 }
@@ -70,6 +83,25 @@ export async function createBootstrapCodexConfig(binaryPath: string | undefined)
       code: codexBootstrapBinaryErrorCode(errno),
       agentId: 'codex',
       agentName: 'Codex CLI',
+      command,
+      binaryPath: command,
+      errno,
+    });
+  }
+  return { binaryPath: resolvedBinary };
+}
+
+export async function createBootstrapPiConfig(binaryPath: string | undefined) {
+  const command = binaryPath ?? process.env.LARK_CHANNEL_PI_BIN ?? 'pi';
+  let resolvedBinary: string;
+  try {
+    resolvedBinary = await resolveExecutablePath(command);
+  } catch (err) {
+    const errno = (err as NodeJS.ErrnoException).code;
+    throw new AgentPreflightError({
+      code: codexBootstrapBinaryErrorCode(errno),
+      agentId: 'pi',
+      agentName: 'Pi',
       command,
       binaryPath: command,
       errno,

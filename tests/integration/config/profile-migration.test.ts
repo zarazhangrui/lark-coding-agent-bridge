@@ -417,6 +417,53 @@ describe('profile v2 migration', () => {
     });
     expect(next.profiles.codex).not.toHaveProperty('sandbox');
   });
+
+  it('carries pi config through migrateV1ToV2', async () => {
+    const root = await makeRoot();
+    await writeJson(join(root, 'config.json'), legacyConfigFixture());
+
+    const result = await migrateV1ToV2({
+      rootDir: root,
+      profile: 'pi',
+      agentKind: 'pi',
+      pi: { binaryPath: '/x/pi' },
+    });
+
+    expect(result).toEqual({ migrated: true, profile: 'pi' });
+    const next = (await readJson(join(root, 'config.json'))) as RootConfig;
+    expect(next.profiles.pi?.agentKind).toBe('pi');
+    expect(next.profiles.pi?.pi).toMatchObject({ binaryPath: '/x/pi' });
+  });
+
+  it('keeps agentKind: pi on active bridge process entries during migration conflicts', async () => {
+    const root = await makeRoot();
+    await writeJson(join(root, 'config.json'), legacyConfigFixture());
+    await writeJson(join(root, 'processes.json'), {
+      entries: [
+        {
+          id: 'self',
+          pid: spawnLiveProcess(),
+          appId: 'cli_test',
+          tenant: 'feishu',
+          profileName: 'pi',
+          agentKind: 'pi',
+          configPath: join(root, 'config.json'),
+          startedAt: new Date().toISOString(),
+          version: '0.2.2',
+        },
+      ],
+    });
+
+    await expect(migrateV1ToV2({ rootDir: root, profile: 'pi' })).rejects.toMatchObject({
+      name: 'ActiveBridgeMigrationConflictError',
+      processes: [
+        expect.objectContaining({
+          id: 'self',
+          agentKind: 'pi',
+        }),
+      ],
+    });
+  });
 });
 
 function legacyConfigFixture(): unknown {

@@ -235,12 +235,15 @@ describe('profile runtime resolver', () => {
     const bin = join(root, 'bin');
     const claude = await writeExecutable(bin, 'claude');
     const codex = await writeExecutable(bin, 'codex');
+    const pi = await writeExecutable(bin, 'pi');
     const oldPath = process.env.PATH;
     const oldClaude = process.env.LARK_CHANNEL_CLAUDE_BIN;
     const oldCodex = process.env.LARK_CHANNEL_CODEX_BIN;
+    const oldPi = process.env.LARK_CHANNEL_PI_BIN;
     process.env.PATH = bin;
     delete process.env.LARK_CHANNEL_CLAUDE_BIN;
     delete process.env.LARK_CHANNEL_CODEX_BIN;
+    delete process.env.LARK_CHANNEL_PI_BIN;
 
     try {
       let error: Error | undefined;
@@ -262,7 +265,9 @@ describe('profile runtime resolver', () => {
       expect(message).toContain(claude);
       expect(message).toContain('codex');
       expect(message).toContain(codex);
-      expect(message).toContain('--agent <claude|codex>');
+      expect(message).toContain('pi');
+      expect(message).toContain(pi);
+      expect(message).toContain('--agent <claude|codex|pi>');
     } finally {
       process.env.PATH = oldPath;
       if (oldClaude === undefined) {
@@ -275,6 +280,11 @@ describe('profile runtime resolver', () => {
       } else {
         process.env.LARK_CHANNEL_CODEX_BIN = oldCodex;
       }
+      if (oldPi === undefined) {
+        delete process.env.LARK_CHANNEL_PI_BIN;
+      } else {
+        process.env.LARK_CHANNEL_PI_BIN = oldPi;
+      }
     }
   });
 
@@ -283,12 +293,15 @@ describe('profile runtime resolver', () => {
     const bin = join(root, 'bin');
     const codex = await writeExecutable(bin, 'codex');
     await writeExecutable(bin, 'claude');
+    await writeExecutable(bin, 'pi');
     const oldPath = process.env.PATH;
     const oldClaude = process.env.LARK_CHANNEL_CLAUDE_BIN;
     const oldCodex = process.env.LARK_CHANNEL_CODEX_BIN;
+    const oldPi = process.env.LARK_CHANNEL_PI_BIN;
     process.env.PATH = bin;
     delete process.env.LARK_CHANNEL_CLAUDE_BIN;
     delete process.env.LARK_CHANNEL_CODEX_BIN;
+    delete process.env.LARK_CHANNEL_PI_BIN;
 
     try {
       const runtime = await withTty(true, true, () =>
@@ -296,7 +309,7 @@ describe('profile runtime resolver', () => {
           config: join(root, 'config.json'),
           allowBootstrap: true,
           selectAgent: (detected) => {
-            expect(detected.map((agent) => agent.kind)).toEqual(['claude', 'codex']);
+            expect(detected.map((agent) => agent.kind)).toEqual(['claude', 'codex', 'pi']);
             return 'codex';
           },
         }),
@@ -316,6 +329,61 @@ describe('profile runtime resolver', () => {
         delete process.env.LARK_CHANNEL_CODEX_BIN;
       } else {
         process.env.LARK_CHANNEL_CODEX_BIN = oldCodex;
+      }
+      if (oldPi === undefined) {
+        delete process.env.LARK_CHANNEL_PI_BIN;
+      } else {
+        process.env.LARK_CHANNEL_PI_BIN = oldPi;
+      }
+    }
+  });
+
+  it('continues first-run bootstrap with pi selected when multiple agents are detected', async () => {
+    const root = await tmpRoot();
+    const bin = join(root, 'bin');
+    await writeExecutable(bin, 'codex');
+    await writeExecutable(bin, 'claude');
+    const pi = await writeExecutable(bin, 'pi');
+    const oldPath = process.env.PATH;
+    const oldClaude = process.env.LARK_CHANNEL_CLAUDE_BIN;
+    const oldCodex = process.env.LARK_CHANNEL_CODEX_BIN;
+    const oldPi = process.env.LARK_CHANNEL_PI_BIN;
+    process.env.PATH = bin;
+    delete process.env.LARK_CHANNEL_CLAUDE_BIN;
+    delete process.env.LARK_CHANNEL_CODEX_BIN;
+    delete process.env.LARK_CHANNEL_PI_BIN;
+
+    try {
+      const runtime = await withTty(true, true, () =>
+        resolveProfileRuntime({
+          config: join(root, 'config.json'),
+          allowBootstrap: true,
+          selectAgent: (detected) => {
+            expect(detected.map((agent) => agent.kind)).toEqual(['claude', 'codex', 'pi']);
+            return 'pi';
+          },
+        }),
+      );
+
+      expect(runtime.profile).toBe('pi');
+      expect(runtime.profileConfig.agentKind).toBe('pi');
+      expect(runtime.profileConfig.pi?.binaryPath).toBe(pi);
+    } finally {
+      process.env.PATH = oldPath;
+      if (oldClaude === undefined) {
+        delete process.env.LARK_CHANNEL_CLAUDE_BIN;
+      } else {
+        process.env.LARK_CHANNEL_CLAUDE_BIN = oldClaude;
+      }
+      if (oldCodex === undefined) {
+        delete process.env.LARK_CHANNEL_CODEX_BIN;
+      } else {
+        process.env.LARK_CHANNEL_CODEX_BIN = oldCodex;
+      }
+      if (oldPi === undefined) {
+        delete process.env.LARK_CHANNEL_PI_BIN;
+      } else {
+        process.env.LARK_CHANNEL_PI_BIN = oldPi;
       }
     }
   });

@@ -45,4 +45,14 @@ describe('agent model catalog', () => {
     expect(modelLabel('claude', 'claude-opus-4-8')).toBe('Opus 4.8（最新）');
     expect(modelLabel('claude', DEFAULT_MODEL)).toContain('跟随默认');
   });
+
+  it('offers pi only the default-model sentinel, since pi spans multiple providers', () => {
+    const pi = supportedModels('pi');
+    expect(pi).toEqual([{ value: DEFAULT_MODEL, label: '跟随默认（不指定）' }]);
+  });
+
+  it('coerces any non-default pi selection back to default', () => {
+    expect(normalizeModelSelection('pi', 'gpt-5')).toBe(DEFAULT_MODEL);
+    expect(resolveModelArg('pi', 'anthropic/claude-sonnet-4-5')).toBeUndefined();
+  });
 });

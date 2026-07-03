@@ -90,6 +90,9 @@ export function createRuntimeProfileConfig(
     ...(input.agentKind === 'codex'
       ? { codex: input.codex ?? { binaryPath: process.env.LARK_CHANNEL_CODEX_BIN ?? 'codex' } }
       : {}),
+    ...(input.agentKind === 'pi'
+      ? { pi: input.pi ?? { binaryPath: process.env.LARK_CHANNEL_PI_BIN ?? 'pi' } }
+      : {}),
   });
 }
 
@@ -391,11 +394,20 @@ async function resolveConvertedLegacyDefaultWorkspace(
   return realpath(appPaths.defaultWorkspaceDir);
 }
 
+// Unlike migrate.ts's legacy profile-name heuristic (which guesses agentKind
+// for pre-existing v1 configs and deliberately has no 'pi' case, since pi has
+// no legacy installations to guess about), `profile` here is often the value
+// this same bootstrap flow just set moments earlier from agent
+// auto-detection/wizard selection — so decoding 'pi' back out of it is not a
+// guess, it's required for a freshly-selected pi profile to bootstrap as pi
+// instead of silently falling back to claude.
 function resolveBootstrapAgent(
   requestedAgent: AgentKind | undefined,
   profile: string | undefined,
 ): AgentKind | undefined {
-  return requestedAgent ?? (profile === 'codex' ? 'codex' : undefined);
+  if (requestedAgent) return requestedAgent;
+  if (profile === 'codex' || profile === 'pi') return profile;
+  return undefined;
 }
 
 async function hasLegacyConfig(configPath: string): Promise<boolean> {
@@ -568,7 +580,7 @@ function formatAmbiguousAgentSelectionError(
 ): string {
   const lines = detected.map((agent) => `  - ${agent.kind}: ${agent.binaryPath}`);
   return [
-    '检测到多个本地 agent，请使用 --agent <claude|codex> 指定要初始化哪一个。',
+    '检测到多个本地 agent，请使用 --agent <claude|codex|pi> 指定要初始化哪一个。',
     '已检测到：',
     ...lines,
   ].join('\n');
@@ -613,7 +625,9 @@ class UserCancelledError extends Error {
 }
 
 function displayAgentKind(kind: AgentKind): string {
-  return kind === 'claude' ? 'Claude Code' : 'Codex CLI';
+  if (kind === 'codex') return 'Codex CLI';
+  if (kind === 'pi') return 'Pi';
+  return 'Claude Code';
 }
 
 async function maybeMigrateRootPlaintextSecret(

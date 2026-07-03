@@ -58,7 +58,9 @@ vi.mock('../../../src/cli/preflight', () => ({
   preFlightChecks: mocks.preFlightChecks,
 }));
 
-const { runServiceStart, runServiceStatus, runServiceUnregister } = await import('../../../src/cli/commands/service');
+const { agentDisplay, runServiceStart, runServiceStatus, runServiceUnregister } = await import(
+  '../../../src/cli/commands/service'
+);
 
 describe('profile-aware service commands', () => {
   beforeEach(() => {
@@ -503,6 +505,12 @@ describe('profile-aware service commands', () => {
     expect(mocks.adapter.deleteFile).toHaveBeenCalled();
     expect(lines).toContain('✓ 已清除后台运行注册');
     expect(lines).toContain('  (配置 / 日志 / 会话保留在 /tmp/lark-channel-home)');
+  });
+
+  it('displays pi processes with their own id and display name', () => {
+    expect(agentDisplay('pi')).toEqual({ id: 'pi', displayName: 'Pi' });
+    expect(agentDisplay('codex')).toEqual({ id: 'codex', displayName: 'Codex CLI' });
+    expect(agentDisplay('claude')).toEqual({ id: 'claude', displayName: 'Claude Code' });
   });
 });
 

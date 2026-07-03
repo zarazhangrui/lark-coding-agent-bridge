@@ -1,7 +1,7 @@
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { CardActionEvent, NormalizedMessage } from '@larksuite/channel';
-import { claudeCapability, codexCapability } from '../../../src/agent/capability.js';
+import { capabilityForAgentKind } from '../../../src/agent/capability.js';
 import { ActiveRuns } from '../../../src/bot/active-runs.js';
 import type { ChatModeCache } from '../../../src/bot/chat-mode-cache.js';
 import { PendingQueue } from '../../../src/bot/pending-queue.js';
@@ -106,6 +106,40 @@ describe('agent-aware resume commands', () => {
     expect(h.catalog.activeFor(h.identity)).toMatchObject({
       sessionId: 'sess-target',
     });
+    expect(lastMarkdown(h.channel)).toContain('已完成');
+  });
+
+  it('resumes the selected Pi history entry from the card button callback, tagging the catalog entry as pi not claude', async () => {
+    const h = await createHarness('pi');
+    h.sessions.set('chat-1', 'pi-sess-current', h.identity.cwdRealpath);
+    h.catalog.upsertActive({ ...h.identity, sessionId: 'pi-sess-current', now: 1000 });
+    h.claudeHistory.push(
+      claudeSession('pi-sess-current', 'current prompt', 1_700_000_100_000),
+      claudeSession('pi-sess-target', 'target prompt', 1_700_000_000_000),
+    );
+
+    await expect(h.run('/resume')).resolves.toBe(true);
+
+    const card = lastContent(h.channel);
+    const nonces = resumeArgsFromCard(card);
+    expect(nonces).toHaveLength(2);
+    await h.dispatchResumeArg(nonces[1]!);
+
+    expect(h.sessions.resumeFor('chat-1', h.identity.cwdRealpath)).toBe('pi-sess-target');
+    expect(h.catalog.activeFor(h.identity)).toMatchObject({
+      agentId: 'pi',
+      sessionId: 'pi-sess-target',
+    });
+    expect(lastMarkdown(h.channel)).toContain('已完成');
+  });
+
+  it('writes to the legacy SessionStore when directly resuming a Pi session that already matches the catalog entry', async () => {
+    const h = await createHarness('pi');
+    h.catalog.upsertActive({ ...h.identity, sessionId: 'pi-sess-current', now: 1000 });
+
+    await expect(h.run('/resume use pi-sess-current')).resolves.toBe(true);
+
+    expect(h.sessions.resumeFor('chat-1', h.identity.cwdRealpath)).toBe('pi-sess-current');
     expect(lastMarkdown(h.channel)).toContain('已完成');
   });
 
@@ -257,6 +291,21 @@ describe('agent-aware resume commands', () => {
     expect(status).not.toContain('未建立');
   });
 
+  it('labels Pi status as session (like Claude) and shows access instead of permission/sandbox', async () => {
+    const h = await createHarness('pi');
+    h.sessions.set('chat-1', 'pi-sess-current', h.identity.cwdRealpath);
+
+    await expect(h.run('/status')).resolves.toBe(true);
+
+    const status = JSON.stringify(lastContent(h.channel));
+    expect(status).toContain('**session**');
+    expect(status).not.toContain('**thread**');
+    expect(status).toContain('pi-sess-');
+    expect(status).toContain('**access**');
+    expect(status).not.toContain('**permission**');
+    expect(status).not.toContain('**sandbox**');
+  });
+
   it('does not list local history from home when no workspace is bound', async () => {
     const h = await createHarness('claude', { bindWorkspace: false, defaultWorkspace: false });
 
@@ -382,7 +431,7 @@ async function commandIdentity(
 ): Promise<SessionCatalogIdentity> {
   const workspace = await resolveWorkingDirectory(cwd);
   if (!workspace.ok) throw new Error(workspace.userVisible);
-  const capability = agentKind === 'codex' ? codexCapability(profileConfig) : claudeCapability(profileConfig);
+  const capability = capabilityForAgentKind(agentKind, profileConfig);
   const access = canUseDm(profileConfig, controls, 'ou-user');
   const policy = evaluateRunPolicy({
     scope: {
@@ -416,6 +465,7 @@ function appConfig(agentKind: AgentKind): ProfileConfig {
     accounts: { app: { id: 'app-id', secret: 'secret', tenant: 'feishu' } },
     access: { admins: ['ou-user'] },
     ...(agentKind === 'codex' ? { codex: { binaryPath: '/usr/local/bin/codex' } } : {}),
+    ...(agentKind === 'pi' ? { pi: { binaryPath: '/usr/local/bin/pi' } } : {}),
   });
 }
 

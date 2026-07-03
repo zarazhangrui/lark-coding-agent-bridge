@@ -23,14 +23,15 @@ For a product walkthrough, see the [Feishu document](https://larkcommunity.feish
 - At least one local agent installed and logged in:
   - Claude Code: `claude`, see https://docs.anthropic.com/en/docs/claude-code/quickstart
   - Codex CLI: `codex`, see https://developers.openai.com/codex/cli
+  - Pi: `pi`, see https://pi.dev
 - A Feishu / Lark **PersonalAgent** app. The first-run QR wizard can create and bind one for you.
 
 ## Install
 
 ```bash
-npm i -g lark-channel-bridge
+npm i -g @alexlikevibe/lark-channel-bridge
 # or
-pnpm add -g lark-channel-bridge
+pnpm add -g @alexlikevibe/lark-channel-bridge
 ```
 
 ## First run
@@ -88,13 +89,14 @@ Platform mapping:
 
 Daemon logs are under `~/.lark-channel/profiles/<profile>/logs/daemon/`.
 
-### Multiple profiles: Claude and Codex
+### Multiple profiles: Claude, Codex, and Pi
 
-By default, the bridge starts with the currently selected profile. Use `profile use <name>` to change it. Each profile keeps its own app credentials, sessions, working directories, and logs. Create multiple profiles only when you need to connect multiple PersonalAgent apps, or run Claude and Codex as separate bots:
+By default, the bridge starts with the currently selected profile. Use `profile use <name>` to change it. Each profile keeps its own app credentials, sessions, working directories, and logs. Create multiple profiles only when you need to connect multiple PersonalAgent apps, or run Claude, Codex, and Pi as separate bots:
 
 ```bash
 lark-channel-bridge start --profile claude --agent claude
 lark-channel-bridge start --profile codex --agent codex
+lark-channel-bridge start --profile pi --agent pi
 ```
 
 For example, to restart only the Codex bot:
@@ -109,8 +111,8 @@ lark-channel-bridge status --profile codex
 ### Host CLI
 
 ```text
-lark-channel-bridge run [--profile <name>] [--agent claude|codex] [--workspace <path>] [-c <config>]
-lark-channel-bridge migrate [--profile <name>] [--agent claude|codex]
+lark-channel-bridge run [--profile <name>] [--agent claude|codex|pi] [--workspace <path>] [-c <config>]
+lark-channel-bridge migrate [--profile <name>] [--agent claude|codex|pi]
 lark-channel-bridge ps
 lark-channel-bridge kill <id|#>
 lark-channel-bridge --help
@@ -121,6 +123,7 @@ lark-channel-bridge --help
 ```bash
 lark-channel-bridge profile create claude --agent claude
 lark-channel-bridge profile create codex --agent codex
+lark-channel-bridge profile create pi --agent pi
 lark-channel-bridge profile list
 lark-channel-bridge profile use <name>
 lark-channel-bridge profile remove <name>
@@ -210,11 +213,13 @@ This is a profile-field snippet. Do not replace the whole `config.json` with it;
 
 Mode mapping:
 
-| Bridge access | Claude permission mode | Codex mode |
-|---|---|---|
-| `full` | `bypassPermissions` | `danger-full-access` |
-| `workspace` | `acceptEdits` | `workspace-write` |
-| `read-only` | `plan` | `read-only` |
+| Bridge access | Claude permission mode | Codex mode | Pi mode |
+|---|---|---|---|
+| `full` | `bypassPermissions` | `danger-full-access` | unrestricted |
+| `workspace` | `acceptEdits` | `workspace-write` | unrestricted |
+| `read-only` | `plan` | `read-only` | `--tools read,grep,find,ls` |
+
+Pi has no built-in workspace-scoped sandbox: `workspace` and `full` behave identically for Pi (no `--tools` restriction). Users wanting filesystem/network confinement for Pi should containerize it themselves — see https://pi.dev for Pi's own documentation.
 
 The legacy `sandbox` field is still readable for old configs. After the bridge saves the profile, it migrates that setting to canonical `permissions`.
 
@@ -305,7 +310,7 @@ Cloud-doc comments do not need a separate workspace binding or document allowlis
 
 ## FAQ
 
-**The bot stays silent or the local CLI never replies.** Usually the local `claude` or `codex` CLI is not logged in, or the current session points to a working directory that no longer exists. Send `/status` to inspect; `/new` often fixes it by starting a fresh session.
+**The bot stays silent or the local CLI never replies.** Usually the local `claude`, `codex`, or `pi` CLI is not logged in, or the current session points to a working directory that no longer exists. Send `/status` to inspect; `/new` often fixes it by starting a fresh session.
 
 **The agent subprocess looks frozen (card stuck on the last frame).** The bridge supports an idle watchdog: if the agent emits nothing for N minutes, the process is killed and the card is annotated with the auto-termination reason. Disabled by default. Enable with `/config` globally, or `/timeout 10` for the current session; `/timeout off` disables it for the session; `/timeout default` clears the session override.
 

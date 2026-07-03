@@ -1,7 +1,12 @@
 import { realpath } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { claudeCapability, codexCapability } from '../../../src/agent/capability.js';
+import {
+  capabilityForAgentKind,
+  claudeCapability,
+  codexCapability,
+  piCapability,
+} from '../../../src/agent/capability.js';
 import { ActiveRuns } from '../../../src/bot/active-runs.js';
 import { ProcessPool } from '../../../src/bot/process-pool.js';
 import {
@@ -51,6 +56,33 @@ describe('agent-aware run-flow resume', () => {
     });
   });
 
+  it('resumes Pi only when scope, agent, cwd, and policy fingerprint match', async () => {
+    const h = await createHarness('pi');
+    const first = await start(h);
+    expect(first.ok).toBe(true);
+    if (!first.ok) throw new Error('expected initial run');
+    await collect(first.execution.subscribe());
+
+    h.catalog.upsertActive({
+      scopeId: 'chat-1',
+      agentId: 'pi',
+      cwdRealpath: first.cwdRealpath,
+      policyFingerprint: first.policy.policyFingerprint,
+      sessionId: 'pi-sess-catalog',
+      now: 1000,
+    });
+
+    const second = await start(h);
+
+    expect(second.ok).toBe(true);
+    if (!second.ok) throw new Error('expected resumed run');
+    expect(second.resumeFrom).toBe('pi-sess-catalog');
+    expect(h.agent.runOptions[1]).toMatchObject({
+      sessionId: 'pi-sess-catalog',
+      threadId: undefined,
+    });
+  });
+
   it('falls back to legacy Claude sessions when the agent-aware catalog has no match', async () => {
     const h = await createHarness('claude');
     const cwdRealpath = await realpath(h.tmp.workspace);
@@ -63,6 +95,22 @@ describe('agent-aware run-flow resume', () => {
     expect(run.resumeFrom).toBe('legacy-session');
     expect(h.agent.runOptions[0]).toMatchObject({
       sessionId: 'legacy-session',
+      threadId: undefined,
+    });
+  });
+
+  it('falls back to legacy sessions for Pi when the agent-aware catalog has no match', async () => {
+    const h = await createHarness('pi');
+    const cwdRealpath = await realpath(h.tmp.workspace);
+    h.sessions.set('chat-1', 'legacy-pi-session', cwdRealpath);
+
+    const run = await start(h);
+
+    expect(run.ok).toBe(true);
+    if (!run.ok) throw new Error('expected resumed legacy run');
+    expect(run.resumeFrom).toBe('legacy-pi-session');
+    expect(h.agent.runOptions[0]).toMatchObject({
+      sessionId: 'legacy-pi-session',
       threadId: undefined,
     });
   });
@@ -172,9 +220,36 @@ describe('agent-aware run-flow resume', () => {
     ).toMatchObject({ threadId: 'thread-recorded' });
     expect(codex.sessions.getRaw('chat-1')).toBeUndefined();
   });
+
+  it('records a pi session event in the catalog tagged as pi, not claude', async () => {
+    const pi = await createHarness('pi');
+    const piRun = await start(pi);
+    expect(piRun.ok).toBe(true);
+    if (!piRun.ok) throw new Error('expected pi run');
+    await collect(piRun.execution.subscribe());
+
+    recordRunSessionEvent({
+      scopeId: 'chat-1',
+      sessions: pi.sessions,
+      sessionCatalog: pi.catalog,
+      capability: piCapability(pi.profileConfig),
+      policy: piRun.policy,
+      event: { type: 'system', sessionId: 'pi-sess-9', cwd: piRun.cwdRealpath },
+    });
+
+    expect(
+      pi.catalog.activeFor({
+        scopeId: 'chat-1',
+        agentId: 'pi',
+        cwdRealpath: piRun.cwdRealpath,
+        policyFingerprint: piRun.policy.policyFingerprint,
+      }),
+    ).toMatchObject({ agentId: 'pi', sessionId: 'pi-sess-9' });
+    expect(pi.sessions.resumeFor('chat-1', piRun.cwdRealpath)).toBe('pi-sess-9');
+  });
 });
 
-async function createHarness(agentKind: 'claude' | 'codex'): Promise<{
+async function createHarness(agentKind: 'claude' | 'codex' | 'pi'): Promise<{
   tmp: TmpProfile;
   agent: FakeAgentAdapter;
   executor: RunExecutor;
@@ -199,6 +274,7 @@ async function createHarness(agentKind: 'claude' | 'codex'): Promise<{
       },
     },
     ...(agentKind === 'codex' ? { codex: { binaryPath: '/usr/local/bin/codex' } } : {}),
+    ...(agentKind === 'pi' ? { pi: { binaryPath: '/usr/local/bin/pi' } } : {}),
   });
   const workspaces = new WorkspaceStore(join(tmp.profile, 'workspaces.json'));
   workspaces.setCwd('chat-1', tmp.workspace);
@@ -244,10 +320,7 @@ async function start(h: Awaited<ReturnType<typeof createHarness>>) {
     prompt: 'hello',
     attachments: [],
     access: { ok: true, reason: 'allowed-user' },
-    capability:
-      h.profileConfig.agentKind === 'codex'
-        ? codexCapability(h.profileConfig)
-        : claudeCapability(h.profileConfig),
+    capability: capabilityForAgentKind(h.profileConfig.agentKind, h.profileConfig),
     profileConfig: h.profileConfig,
     sessions: h.sessions,
     sessionCatalog: h.catalog,

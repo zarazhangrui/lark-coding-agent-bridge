@@ -1,5 +1,5 @@
 import type { AgentAvailability } from './preflight';
-import type { ClaudePermissionMode, CodexSandboxMode } from '../config/permissions';
+import type { AccessMode, ClaudePermissionMode, CodexSandboxMode } from '../config/permissions';
 
 export type { ClaudePermissionMode } from '../config/permissions';
 
@@ -37,6 +37,7 @@ export interface AgentRunOptions {
   images?: readonly string[];
   sandbox?: CodexSandboxMode;
   permissionMode?: ClaudePermissionMode;
+  accessMode?: AccessMode;
   /**
    * Grace period (ms) between SIGTERM and SIGKILL when stop() is called on
    * the returned run. Lets the agent (and any subprocess it spawned, e.g.

@@ -60,6 +60,48 @@ describe('profile schema', () => {
     ).toThrow(/codex/i);
   });
 
+  it('rejects an unknown agentKind', () => {
+    expect(() =>
+      normalizeProfileConfig({
+        schemaVersion: 2,
+        agentKind: 'bogus',
+        accounts: { app },
+      } as unknown as Parameters<typeof normalizeProfileConfig>[0]),
+    ).toThrow(/agentKind must be claude, codex, or pi/);
+  });
+
+  it('requires pi configuration for a pi profile', () => {
+    expect(() =>
+      normalizeProfileConfig({
+        schemaVersion: 2,
+        agentKind: 'pi',
+        accounts: { app },
+      } as unknown as Parameters<typeof normalizeProfileConfig>[0]),
+    ).toThrow(/pi profile requires pi configuration/);
+  });
+
+  it('round-trips a pi profile config, defaulting inheritPiHome to false', () => {
+    const profile = createDefaultProfileConfig({
+      agentKind: 'pi',
+      accounts: { app },
+      pi: { binaryPath: '/usr/local/bin/pi' },
+    } as unknown as Parameters<typeof createDefaultProfileConfig>[0]);
+    expect(profile.agentKind).toBe('pi');
+    expect(profile.pi).toEqual({
+      binaryPath: '/usr/local/bin/pi',
+      inheritPiHome: false,
+    });
+  });
+
+  it('honors an explicit inheritPiHome: true', () => {
+    const profile = createDefaultProfileConfig({
+      agentKind: 'pi',
+      accounts: { app },
+      pi: { binaryPath: '/usr/local/bin/pi', inheritPiHome: true },
+    } as unknown as Parameters<typeof createDefaultProfileConfig>[0]);
+    expect(profile.pi?.inheritPiHome).toBe(true);
+  });
+
   it('rejects sandbox defaults that exceed max capability as a permission error', () => {
     expect(() =>
       normalizeProfileConfig({
