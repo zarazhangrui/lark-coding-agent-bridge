@@ -3,7 +3,11 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { resolveAppPaths } from '../../../src/config/app-paths';
-import { runtimeLockMetaFile, withProfileAndAppLocks } from '../../../src/runtime/locks';
+import {
+  readRuntimeLockMeta,
+  runtimeLockMetaFile,
+  withProfileAndAppLocks,
+} from '../../../src/runtime/locks';
 import {
   readAndPrune,
   register,
@@ -56,6 +60,29 @@ describe('registry and runtime lock integration', () => {
       profileName: 'codex-dev',
       agentKind: 'codex',
       pid: process.pid,
+    });
+  });
+
+  it('keeps pi process entries when reading the registry', async () => {
+    const root = await makeRoot();
+    const registryFile = join(root, 'registry', 'processes.json');
+    await writeJson(registryFile, {
+      entries: [entry({ id: 'pi-live', profileName: 'pi-dev', agentKind: 'pi' })],
+    });
+
+    expect(readAndPrune(registryFile).map((item) => item.id)).toEqual(['pi-live']);
+  });
+
+  it('reads pi runtime lock metadata', async () => {
+    const root = await makeRoot();
+    const lockedPaths = resolveAppPaths({ rootDir: root, profile: 'pi-dev' });
+
+    await withProfileAndAppLocks(lockedPaths, 'cli_pi', 'pi', async () => {
+      await expect(readRuntimeLockMeta(lockedPaths.profileLockFile)).resolves.toMatchObject({
+        profile: 'pi-dev',
+        agentKind: 'pi',
+        pid: process.pid,
+      });
     });
   });
 
