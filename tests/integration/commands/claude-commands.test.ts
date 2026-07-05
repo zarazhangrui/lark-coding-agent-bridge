@@ -78,6 +78,35 @@ describe('Claude slash command visible behavior', () => {
     expect(h.sessions.getRaw('chat-1')).toBeUndefined();
   });
 
+  it('creates an independent project task thread without changing the chat scope', async () => {
+    const h = await createHarness();
+    const workspaceRealpath = await realpath(h.tmp.workspace);
+    h.sessions.set('chat-1', 'root-session', workspaceRealpath);
+
+    await expect(h.run(`/task ${h.tmp.workspace}`)).resolves.toBe(true);
+
+    expect(h.channel.sent).toHaveLength(1);
+    expect(h.channel.sent[0]?.options).toEqual({
+      replyTo: expect.any(String),
+      replyInThread: true,
+    });
+    expect(JSON.stringify(h.channel.sent[0]?.content)).toContain('项目任务');
+    expect(JSON.stringify(h.channel.sent[0]?.content)).toContain('Fake Agent');
+    expect(JSON.stringify(h.channel.sent[0]?.content)).toContain('发送任务');
+    expect(JSON.stringify(h.channel.sent[0]?.content)).toContain('@当前机器人');
+    expect(h.workspaces.cwdFor('chat-1:omt_fake_1')).toBe(workspaceRealpath);
+    expect(h.sessions.resumeFor('chat-1', workspaceRealpath)).toBe('root-session');
+  });
+
+  it('rejects a relative /task path before creating a card', async () => {
+    const h = await createHarness();
+
+    await expect(h.run('/task relative')).resolves.toBe(true);
+
+    expect(lastMarkdown(h.channel)).toContain('请使用绝对路径');
+    expect(h.workspaces.listCwds('chat-1:')).toEqual({});
+  });
+
   it('handles /ws list, save, use, and remove', async () => {
     const h = await createHarness();
     h.workspaces.setCwd('chat-1', h.tmp.workspace);

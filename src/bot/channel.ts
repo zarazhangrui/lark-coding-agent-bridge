@@ -60,8 +60,10 @@ import { PendingQueue } from './pending-queue';
 import { ProcessPool } from './process-pool';
 import { fetchQuotedContext, type QuotedContext } from './quote';
 import { addWorkingReaction, removeReaction } from './reaction';
+import { isThreadedScope, scopeForMessage } from './scope';
 import { fetchKnownChats } from './lark-info';
 import type { AppPaths } from '../config/app-paths';
+import { TopicContextStore, type TopicContextEntry } from './topic-context';
 
 const DEBOUNCE_MS = 600;
 const STREAM_TERMINAL_GRACE_MS = 3000;
@@ -165,12 +167,13 @@ export interface StartChannelDeps {
   sessions: SessionStore;
   sessionCatalog?: SessionCatalog;
   workspaces: WorkspaceStore;
+  topicContext?: TopicContextStore;
   controls: Controls;
   appPaths?: Pick<AppPaths, 'secretsFile' | 'keystoreSaltFile' | 'mediaDir'>;
 }
 
 export async function startChannel(deps: StartChannelDeps): Promise<BridgeChannel> {
-  const { cfg, agent, sessions, sessionCatalog, workspaces, controls } = deps;
+  const { cfg, agent, sessions, sessionCatalog, workspaces, topicContext, controls } = deps;
   const activeRuns = new ActiveRuns();
   // ChatModeCache stays per-bridge-instance — invalidated on restart along
   // with everything else. Topic-mode chats only need one chat.get() call ever.
@@ -260,13 +263,13 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
           sessions,
           sessionCatalog,
           workspaces,
+          topicContext,
           media,
           batch,
           controls,
           callbackAuth,
           activePolicyFingerprints,
           scope,
-          mode,
         });
       } catch (err) {
         log.fail('flush', err);
@@ -289,6 +292,7 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
           sessions,
           sessionCatalog,
           workspaces,
+          topicContext,
           activeRuns,
           pending,
           msg,
@@ -485,6 +489,7 @@ interface IntakeDeps {
   sessions: SessionStore;
   sessionCatalog?: SessionCatalog;
   workspaces: WorkspaceStore;
+  topicContext?: TopicContextStore;
   activeRuns: ActiveRuns;
   pending: PendingQueue;
   msg: NormalizedMessage;
@@ -501,6 +506,7 @@ async function intakeMessage(deps: IntakeDeps): Promise<void> {
     sessions,
     sessionCatalog,
     workspaces,
+    topicContext,
     activeRuns,
     pending,
     msg,
@@ -513,30 +519,30 @@ async function intakeMessage(deps: IntakeDeps): Promise<void> {
   // Resolve scope (and underlying chat mode) once at intake — every
   // downstream consumer keys off these.
   const chatMode = await chatModeCache.resolve(channel, msg.chatId);
-  const scope = chatMode === 'topic' && msg.threadId
-    ? `${msg.chatId}:${msg.threadId}`
-    : msg.chatId;
+  const threadId = await resolveInboundThreadId(channel, msg);
+  const scopedMsg = threadId === msg.threadId ? msg : { ...msg, threadId };
+  const scope = scopeForMessage(scopedMsg);
   log.info('intake', 'enter', {
     scope,
-    chatType: msg.chatType,
+    chatType: scopedMsg.chatType,
     chatMode,
-    sender: msg.senderId,
+    sender: scopedMsg.senderId,
     preview,
-    resources: msg.resources.length,
+    resources: scopedMsg.resources.length,
   });
 
   const accessDecision =
-    msg.chatType === 'p2p'
-      ? canUseDm(controls.profileConfig, controls, msg.senderId)
-      : canUseGroup(controls.profileConfig, controls, msg.chatId, msg.senderId);
+    scopedMsg.chatType === 'p2p'
+      ? canUseDm(controls.profileConfig, controls, scopedMsg.senderId)
+      : canUseGroup(controls.profileConfig, controls, scopedMsg.chatId, scopedMsg.senderId);
   if (!accessDecision.ok) {
     log.info('intake', 'skip-not-allowed-user', {
       scope,
-      sender: msg.senderId.slice(-6),
+      sender: scopedMsg.senderId.slice(-6),
       reason: accessDecision.reason,
     });
-    if (msg.chatType !== 'p2p' && accessDecision.reason === 'denied-chat' && msg.mentionedBot) {
-      void sendNonAllowedGroupHint(channel, msg.chatId, msg.messageId).catch((err) =>
+    if (scopedMsg.chatType !== 'p2p' && accessDecision.reason === 'denied-chat' && scopedMsg.mentionedBot) {
+      void sendNonAllowedGroupHint(channel, scopedMsg.chatId, scopedMsg.messageId).catch((err) =>
         log.warn('intake', 'non-allowed-hint-failed', { err: String(err) }),
       );
     }
@@ -550,17 +556,17 @@ async function intakeMessage(deps: IntakeDeps): Promise<void> {
   // @全员 is already filtered by SDK (`respondToMentionAll: false`), so any
   // event reaching here is either targeted or undirected chatter.
   if (
-    msg.chatType !== 'p2p' &&
+    scopedMsg.chatType !== 'p2p' &&
     getRequireMentionInGroup(controls.cfg) &&
-    !msg.mentionedBot
+    !scopedMsg.mentionedBot
   ) {
-    log.info('intake', 'skip-no-mention', { scope, chatType: msg.chatType });
+    log.info('intake', 'skip-no-mention', { scope, chatType: scopedMsg.chatType });
     return;
   }
 
   const handled = await tryHandleCommand({
     channel,
-    msg,
+    msg: scopedMsg,
     scope,
     chatMode,
     sessions,
@@ -569,9 +575,8 @@ async function intakeMessage(deps: IntakeDeps): Promise<void> {
     activeRuns,
     sessionCatalog,
     sessionCatalogIdentity: await commandSessionCatalogIdentity({
-      msg,
+      msg: scopedMsg,
       scope,
-      mode: chatMode,
       workspaces,
       controls,
       access: accessDecision,
@@ -586,8 +591,35 @@ async function intakeMessage(deps: IntakeDeps): Promise<void> {
     return;
   }
 
-  const size = pending.push(scope, msg);
+  if (isThreadedScope(threadId)) {
+    await topicContext?.append(scope, {
+      id: scopedMsg.messageId,
+      role: 'user',
+      speaker: scopedMsg.senderName ?? scopedMsg.senderId,
+      text: scopedMsg.content,
+    });
+  }
+
+  const size = pending.push(scope, scopedMsg);
   log.info('intake', 'queued', { scope, queueSize: size, debounceMs: DEBOUNCE_MS });
+}
+
+async function resolveInboundThreadId(
+  channel: LarkChannel,
+  msg: NormalizedMessage,
+): Promise<string | undefined> {
+  if (msg.threadId || msg.chatType === 'p2p') return msg.threadId;
+  if (!msg.rootId && !msg.replyToMessageId) return undefined;
+  try {
+    const [raw] = await channel.fetchRawMessage(msg.messageId, { cardContentType: null });
+    return (raw as { thread_id?: string } | undefined)?.thread_id;
+  } catch (err) {
+    log.warn('intake', 'thread-id-lookup-failed', {
+      messageId: msg.messageId,
+      err: err instanceof Error ? err.message : String(err),
+    });
+    return undefined;
+  }
 }
 
 interface RunBatchDeps {
@@ -596,13 +628,13 @@ interface RunBatchDeps {
   sessions: SessionStore;
   sessionCatalog?: SessionCatalog;
   workspaces: WorkspaceStore;
+  topicContext?: TopicContextStore;
   media: MediaCache;
   batch: NormalizedMessage[];
   controls: Controls;
   callbackAuth?: CallbackAuth;
   activePolicyFingerprints: Map<string, string>;
   scope: string;
-  mode: ChatMode;
 }
 
 async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
@@ -612,13 +644,13 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
     sessions,
     sessionCatalog,
     workspaces,
+    topicContext,
     media,
     batch,
     controls,
     callbackAuth,
     activePolicyFingerprints,
     scope,
-    mode,
   } = deps;
   if (batch.length === 0) return;
   const firstMsg = batch[0];
@@ -653,7 +685,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
   const quoteTargets = [
     ...new Set(
       batch
-        .map((m) => replyQuoteTargetForMessage(m, mode))
+        .map(replyQuoteTargetForMessage)
         .filter((id): id is string => Boolean(id) && !batchIds.has(id!)),
     ),
   ];
@@ -670,15 +702,22 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
     }
   }
 
-  const prompt = buildPrompt(batch, attachments, quotes, channel.botIdentity);
+  const sharedTopicContext = isThreadedScope(threadId)
+    ? await topicContext?.read(scope, { excludeIds: batch.map((message) => message.messageId) })
+    : undefined;
+  const prompt = buildPrompt(
+    batch,
+    attachments,
+    quotes,
+    channel.botIdentity,
+    sharedTopicContext,
+  );
   log.info('prompt', 'built', { promptChars: prompt.length, quotes: quotes.length });
 
-  // For topic groups: thread the reply so it lands in the same topic as the
-  // user's message. Otherwise the SDK posts at top level and the user's
-  // topic discussion breaks visually.
+  // Thread replies back into Feishu topics / converted threads when present.
   const sendOpts = {
     replyTo: lastMsg.messageId,
-    ...(mode === 'topic' && threadId ? { replyInThread: true } : {}),
+    ...(isThreadedScope(threadId) ? { replyInThread: true } : {}),
   };
 
   const accessDecision =
@@ -763,8 +802,16 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
     log.info('flush', 'idle-watchdog', { idleTimeoutMs });
   }
 
-  const replyMode = getMessageReplyMode(controls.cfg);
-  log.info('flush', 'reply-mode', { mode: replyMode });
+  const configuredReplyMode = getMessageReplyMode(controls.cfg);
+  // Feishu threads need an immediately visible run surface. A streaming card
+  // is created at run start and keeps tool calls/results in the same thread;
+  // markdown streams can remain invisible there until the run has finished.
+  const replyMode = isThreadedScope(threadId) ? 'card' : configuredReplyMode;
+  log.info('flush', 'reply-mode', {
+    mode: replyMode,
+    configuredMode: configuredReplyMode,
+    threaded: isThreadedScope(threadId),
+  });
 
   // Re-read prefs on every flush so toggling /config mid-stream takes
   // effect immediately. Cheap object lookups, no allocation when on.
@@ -794,6 +841,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
   const reactionPromise =
     replyMode === 'card' ? undefined : addWorkingReaction(channel, lastMsg.messageId);
 
+  let finalState: RunState | undefined;
   try {
     if (replyMode === 'card') {
       let latestState: RunState = initialState;
@@ -842,6 +890,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
           );
         },
       });
+      finalState = await renderDone;
     } else if (replyMode === 'markdown') {
       let latestState: RunState = initialState;
       let producerStarted = false;
@@ -883,11 +932,12 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
           }
         },
       });
+      finalState = await renderDone;
     } else {
       // text mode: drain the agent stream without sending anything during
       // the run, then post the final rendered text once as a plain markdown
       // (msg_type=post) message — no card, no streaming, no typewriter.
-      const finalState = await processAgentStream(
+      finalState = await processAgentStream(
         handle,
         eventStream,
         scope,
@@ -899,6 +949,16 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
       if (body.trim()) {
         await channel.send(chatId, { markdown: body }, sendOpts);
       }
+    }
+    const sharedReply = finalState ? sharedReplyText(finalState) : '';
+    if (sharedReply && isThreadedScope(threadId)) {
+      await topicContext?.append(scope, {
+        id: execution.runId,
+        role: 'assistant',
+        speaker: channel.botIdentity?.name ?? capability.agentId,
+        agent: capability.agentId,
+        text: sharedReply,
+      });
     }
   } catch (err) {
     log.fail('stream', err);
@@ -1146,6 +1206,7 @@ function buildPrompt(
   attachments: LocalAttachment[],
   quotes: QuotedContext[] = [],
   botIdentity?: { openId: string; name?: string },
+  sharedTopicContext?: TopicContextEntry[],
 ): string {
   const first = batch[0];
   if (!first) return '';
@@ -1189,8 +1250,21 @@ function buildPrompt(
     userInput: userPart,
     quotedMessages: quotes.map(toPromptQuote),
     interactiveCards: batch.map(toPromptInteractiveCard).filter(isDefined),
+    ...(sharedTopicContext && sharedTopicContext.length > 0 ? { sharedTopicContext } : {}),
     attachments: attachments.map(toPromptAttachment),
   });
+}
+
+function sharedReplyText(state: RunState): string {
+  const text = state.blocks
+    .filter((block): block is Extract<RunState['blocks'][number], { kind: 'text' }> =>
+      block.kind === 'text',
+    )
+    .map((block) => block.content.trim())
+    .filter(Boolean)
+    .join('\n\n');
+  if (text) return text;
+  return state.terminal === 'error' && state.errorMsg ? `执行失败：${state.errorMsg}` : '';
 }
 
 /**
@@ -1231,16 +1305,13 @@ function mergeMentions(batch: NormalizedMessage[]): BridgePromptMention[] {
   return out;
 }
 
-function replyQuoteTargetForMessage(
-  msg: NormalizedMessage,
-  mode: ChatMode,
-): string | undefined {
+function replyQuoteTargetForMessage(msg: NormalizedMessage): string | undefined {
   const replyTo = msg.replyToMessageId;
   if (!replyTo) return undefined;
 
-  // Feishu topic messages use root_id/parent_id as the topic root anchor even
-  // for ordinary in-topic messages. Treat that as structure, not a quote.
-  if (mode === 'topic' && msg.threadId && msg.rootId && replyTo === msg.rootId) {
+  // Feishu threaded messages use root_id/parent_id as the thread anchor even
+  // for ordinary in-thread messages. Treat that as structure, not a quote.
+  if (isThreadedScope(msg.threadId) && msg.rootId && replyTo === msg.rootId) {
     return undefined;
   }
   return replyTo;

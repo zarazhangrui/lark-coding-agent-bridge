@@ -13,8 +13,8 @@ export type ChatMode = 'p2p' | 'group' | 'topic';
  * at most one round-trip after which it's all in-memory.
  *
  * On lookup failure (network / permission / unknown chatId) we **fall back
- * to 'group'** — that's the conservative default since it means "treat as
- * a normal chat, one session per chatId, no thread split". Doesn't crash.
+ * to 'group'** — that's the conservative default for access / command UI.
+ * Thread scope itself comes from message.threadId.
  */
 export class ChatModeCache {
   private readonly cache = new Map<string, ChatMode>();

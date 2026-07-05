@@ -62,6 +62,13 @@ export interface BuildAgentPromptInput {
   userInput: string;
   quotedMessages?: BridgePromptQuotedMessage[];
   interactiveCards?: BridgePromptInteractiveCard[];
+  sharedTopicContext?: Array<{
+    role: 'user' | 'assistant';
+    speaker: string;
+    agent?: string;
+    text: string;
+    ts?: string;
+  }>;
   comment?: BridgePromptComment;
   attachments?: BridgePromptAttachment[];
 }
@@ -77,6 +84,9 @@ export function buildAgentPrompt(input: BuildAgentPromptInput): string {
       : undefined,
     input.interactiveCards && input.interactiveCards.length > 0
       ? promptSection('interactive_cards', input.interactiveCards)
+      : undefined,
+    input.sharedTopicContext && input.sharedTopicContext.length > 0
+      ? promptSection('shared_topic_context', input.sharedTopicContext)
       : undefined,
     input.comment ? promptSection('comment_context', input.comment) : undefined,
     promptSection('user_input', {

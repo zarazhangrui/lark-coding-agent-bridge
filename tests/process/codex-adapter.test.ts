@@ -318,6 +318,33 @@ describe('CodexAdapter process contract', () => {
     ]);
   });
 
+  it.skipIf(process.platform === 'win32')(
+    'includes the signal and stderr when Codex crashes before a terminal event',
+    async () => {
+      const fake = await createFakeCodex({
+        lines: [{ type: 'agent_message', message: 'before crash' }],
+        stderr: 'tls handshake eof\n',
+        signal: 'SIGTRAP',
+      });
+      cleanup.push(fake.dir);
+
+      const run = new CodexAdapter({ binary: fake.path, profileStateDir: fake.dir }).run({
+        runId: 'run-signal',
+        prompt: 'crash',
+        cwd: await realpath(fake.dir),
+      });
+
+      expect(await collect(run.events)).toEqual([
+        { type: 'text', delta: 'before crash' },
+        {
+          type: 'error',
+          message: 'codex exited with signal SIGTRAP: tls handshake eof',
+          terminationReason: 'failed',
+        },
+      ]);
+    },
+  );
+
   it('continues after retryable raw error events and waits for the terminal turn event', async () => {
     const fake = await createFakeCodex({
       lines: [
@@ -429,6 +456,7 @@ async function createFakeCodex(options: {
   stderr?: string;
   exitCode?: number;
   exitDelayMs?: number;
+  signal?: NodeJS.Signals;
 }): Promise<FakeBinary> {
   const dir = await mkdtemp(join(tmpdir(), 'codex-adapter-test-'));
   const path = join(dir, 'fake-codex.mjs');
@@ -460,7 +488,9 @@ async function createFakeCodex(options: {
       `  const lines = ${JSON.stringify(options.lines)};`,
       '  for (const line of lines) console.log(JSON.stringify(line));',
       options.stderr ? `  process.stderr.write(${JSON.stringify(options.stderr)});` : '',
-      `  setTimeout(() => process.exit(${options.exitCode ?? 0}), ${options.exitDelayMs ?? 0});`,
+      options.signal
+        ? `  setTimeout(() => process.kill(process.pid, ${JSON.stringify(options.signal)}), ${options.exitDelayMs ?? 0});`
+        : `  setTimeout(() => process.exit(${options.exitCode ?? 0}), ${options.exitDelayMs ?? 0});`,
       '});',
     ].filter(Boolean).join('\n'),
     'utf8',

@@ -58,8 +58,8 @@ describe('Claude IM regression boundaries', () => {
 
     expect(source).toContain('respondToMentionAll: false');
     expect(source).toContain('getRequireMentionInGroup(controls.cfg)');
-    expect(source).toContain('!msg.mentionedBot');
-    expect(source).toContain('msg.chatType !== \'p2p\'');
+    expect(source).toContain('!scopedMsg.mentionedBot');
+    expect(source).toContain('scopedMsg.chatType !== \'p2p\'');
   });
 });
 

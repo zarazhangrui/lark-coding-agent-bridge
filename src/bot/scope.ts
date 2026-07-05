@@ -1,37 +1,25 @@
-import type { LarkChannel, NormalizedMessage } from '@larksuite/channel';
-import type { ChatModeCache } from './chat-mode-cache';
+import type { NormalizedMessage } from '@larksuite/channel';
 
 /**
  * Compute the **session scope** for a message.
  *
- *  - **p2p / group**: scope = `chatId`. Replies in regular groups thread the
- *    UI but share the chat's session (matches user expectation).
- *  - **topic group**: scope = `${chatId}:${threadId}` — each topic is an
- *    independent conversation with its own session / cwd / pending queue.
- *    Topic-group top-level messages (no threadId, rare) fall back to chatId.
+ *  - **p2p / group**: scope = `chatId`.
+ *  - **threaded messages**: scope = `${chatId}:${threadId}` — each Feishu
+ *    topic / converted thread gets its own session / cwd / pending queue.
  *
- * Async because chat mode requires an API lookup (cached after first hit).
- * Callers typically await this once at intake/cardAction entry and pass
+ * Callers typically compute this once at intake/cardAction entry and pass
  * the resolved scope through.
  */
-export async function scopeFor(
-  channel: LarkChannel,
-  chatId: string,
-  threadId: string | undefined,
-  cache: ChatModeCache,
-): Promise<string> {
-  const mode = await cache.resolve(channel, chatId);
-  if (mode === 'topic' && threadId) {
-    return `${chatId}:${threadId}`;
-  }
+export function scopeFor(chatId: string, threadId: string | undefined): string {
+  if (isThreadedScope(threadId)) return `${chatId}:${threadId}`;
   return chatId;
 }
 
+export function isThreadedScope(threadId: string | undefined): threadId is string {
+  return Boolean(threadId);
+}
+
 /** Convenience overload from a NormalizedMessage. */
-export async function scopeForMessage(
-  channel: LarkChannel,
-  msg: NormalizedMessage,
-  cache: ChatModeCache,
-): Promise<string> {
-  return scopeFor(channel, msg.chatId, msg.threadId, cache);
+export function scopeForMessage(msg: NormalizedMessage): string {
+  return scopeFor(msg.chatId, msg.threadId);
 }

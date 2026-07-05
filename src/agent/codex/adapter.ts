@@ -252,7 +252,7 @@ async function* createEventStream(
     return;
   }
 
-  const exitCode = await waitForExitCode(child);
+  const exit = await waitForExit(child);
   const stopReason = getStopReason();
   if (stopReason) {
     yield* translator.finish(stopReason);
@@ -260,11 +260,19 @@ async function* createEventStream(
   }
 
   const runtimeError = getError();
-  if (exitCode !== 0 && exitCode !== null) {
+  if (exit.signal) {
     if (!translator.terminalEmitted()) {
       const stderr = Buffer.concat(stderrChunks).toString('utf8').trim();
       const detail = stderr ? `: ${stderr.slice(0, 500)}` : '';
-      yield terminalError(`codex exited with code ${exitCode}${detail}`);
+      yield terminalError(`codex exited with signal ${exit.signal}${detail}`);
+    }
+    return;
+  }
+  if (exit.code !== 0 && exit.code !== null) {
+    if (!translator.terminalEmitted()) {
+      const stderr = Buffer.concat(stderrChunks).toString('utf8').trim();
+      const detail = stderr ? `: ${stderr.slice(0, 500)}` : '';
+      yield terminalError(`codex exited with code ${exit.code}${detail}`);
     }
     return;
   }
@@ -284,12 +292,14 @@ function terminalError(message: string): AgentEvent {
   };
 }
 
-async function waitForExitCode(child: CodexChild): Promise<number | null> {
+async function waitForExit(
+  child: CodexChild,
+): Promise<{ code: number | null; signal: NodeJS.Signals | null }> {
   if (child.exitCode !== null || child.signalCode !== null) {
-    return child.exitCode;
+    return { code: child.exitCode, signal: child.signalCode };
   }
-  return new Promise<number | null>((resolve) => {
-    child.once('exit', (code) => resolve(code));
+  return new Promise((resolve) => {
+    child.once('exit', (code, signal) => resolve({ code, signal }));
   });
 }
 

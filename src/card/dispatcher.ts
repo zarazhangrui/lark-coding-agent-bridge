@@ -13,6 +13,7 @@ import type { SessionCatalog } from '../session/catalog';
 import type { SessionStore } from '../session/store';
 import type { WorkspaceStore } from '../workspace/store';
 import { commandSessionCatalogIdentity } from '../bot/session-catalog-identity';
+import { isThreadedScope } from '../bot/scope';
 
 /** Marker key on a button's value object that flags the cardAction as
  * a callback that should be forwarded back to the agent instead
@@ -57,9 +58,8 @@ export async function handleCardAction(deps: CardDispatchDeps): Promise<void> {
     | undefined;
   const formValue = raw?.action?.form_value;
 
-  // Resolve the click's session scope. For topic groups we need to know
-  // the message's thread_id so the action targets the right topic's
-  // session — look up the carrier message (the card lives on it) once.
+  // Resolve the click's session scope. Threaded messages carry thread_id on
+  // the card's carrier message, so look it up once before routing commands.
   // Done before the access check so we know the chat mode (p2p vs group)
   // and can skip the chat allowlist for DMs.
   const { scope, threadId, mode } = await resolveScope(deps);
@@ -99,7 +99,6 @@ export async function handleCardAction(deps: CardDispatchDeps): Promise<void> {
       sessionCatalogIdentity: await commandSessionCatalogIdentity({
         msg,
         scope,
-        mode,
         workspaces: deps.workspaces,
         controls: deps.controls,
         access: accessDecision,
@@ -145,13 +144,12 @@ async function resolveScope(
 ): Promise<{ scope: string; threadId: string | undefined; mode: 'p2p' | 'group' | 'topic' }> {
   const chatId = deps.evt.chatId;
   const mode = await deps.chatModeCache.resolve(deps.channel, chatId);
-  if (mode !== 'topic') {
+  if (mode === 'p2p') {
     return { scope: chatId, threadId: undefined, mode };
   }
-  // Topic group — need the carrier message's thread_id to compose scope.
-  // One API call per click; could cache by messageId if it ever becomes hot.
+  // One API call per group click; could cache by messageId if it ever becomes hot.
   const threadId = await lookupMessageThreadId(deps.channel, deps.evt.messageId);
-  if (!threadId) {
+  if (!isThreadedScope(threadId)) {
     // Fall back to plain chatId. Better to land in the chat's "default"
     // scope than fail the click silently.
     return { scope: chatId, threadId: undefined, mode };

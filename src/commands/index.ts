@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { dirname, isAbsolute } from 'node:path';
+import { basename, dirname, isAbsolute } from 'node:path';
 import type { LarkChannel, NormalizedMessage } from '@larksuite/channel';
 import { capabilityForProfile } from '../agent/capability';
 import type { AgentAdapter } from '../agent/types';
@@ -14,7 +14,7 @@ import {
 } from '../card/account-cards';
 import { configCancelledCard, configFailedCard, configFormCard, configSavedCard } from '../card/config-card';
 import { forgetManagedCard, sendManagedCard, updateManagedCard } from '../card/managed';
-import { helpCard, resumeCard, statusCard, workspacesCard } from '../card/templates';
+import { helpCard, resumeCard, statusCard, taskCard, workspacesCard } from '../card/templates';
 import type { AppConfig, AppPreferences, MessageReplyMode, TenantBrand } from '../config/schema';
 import {
   getAgentStopGraceMs,
@@ -105,15 +105,14 @@ export interface CommandContext {
   channel: LarkChannel;
   msg: NormalizedMessage;
   /**
-   * Session scope string. For p2p / regular group it equals `msg.chatId`;
-   * for topic groups it's `${chatId}:${threadId}` (so each topic gets its
-   * own session / cwd / active-run). All handlers should read/write
+   * Session scope string. For p2p / unthreaded group it equals `msg.chatId`;
+   * for threaded messages it's `${chatId}:${threadId}` (so each thread gets
+   * its own session / cwd / active-run). All handlers should read/write
    * session / workspace / activeRuns through this — never through
    * `msg.chatId` directly.
    */
   scope: string;
-  /** Resolved chat mode for `msg.chatId`. Used by /status to surface the
-   * scope semantic to the user (`topic` shows "话题独立 session"). */
+  /** Resolved chat mode for `msg.chatId`. */
   chatMode: 'p2p' | 'group' | 'topic';
   sessions: SessionStore;
   sessionCatalog?: SessionCatalog;
@@ -160,6 +159,7 @@ const handlers: Record<string, Handler> = {
   '/new': handleNew,
   '/reset': handleNew,
   '/cd': handleCd,
+  '/task': handleTask,
   '/ws': handleWs,
   '/resume': handleResume,
   '/status': handleStatus,
@@ -190,6 +190,7 @@ const ADMIN_COMMANDS = new Set([
   '/reconnect',
   '/doctor',
   '/cd',
+  '/task',
   '/ws',
   '/invite',
   '/remove',
@@ -380,6 +381,75 @@ async function handleCd(args: string, ctx: CommandContext): Promise<void> {
   ctx.workspaces.setCwd(ctx.scope, workspace.cwdRealpath);
   ctx.sessions.clear(ctx.scope);
   await reply(ctx, `✓ 已切换 cwd 到 \`${workspace.cwdRealpath}\`\n（session 已重置）`);
+}
+
+async function handleTask(args: string, ctx: CommandContext): Promise<void> {
+  const input = args.trim();
+  const requested = input ? expandTilde(input) : effectiveWorkspaceCwd(ctx);
+  if (!requested) {
+    await reply(ctx, '用法：`/task <绝对路径>` 或先用 `/cd` 设置当前项目。');
+    return;
+  }
+  if (input && !isAbsoluteOrTilde(input)) {
+    await reply(ctx, '请使用绝对路径，或 `~/xxx` 表示 home 下的子路径。');
+    return;
+  }
+
+  const workspace = await resolveWorkingDirectory(requested);
+  if (!workspace.ok) {
+    await reply(ctx, workspace.userVisible);
+    return;
+  }
+
+  const card = taskCard({
+    name: basename(workspace.cwdRealpath) || workspace.cwdRealpath,
+    cwd: workspace.cwdRealpath,
+    agentName: ctx.agent.displayName,
+    botName: ctx.channel.botIdentity?.name,
+    profileName: ctx.controls.profile,
+  });
+  const { messageId } = await ctx.channel.send(
+    ctx.msg.chatId,
+    { card },
+    { replyTo: ctx.msg.messageId, replyInThread: true },
+  );
+  const threadId = ctx.msg.threadId ?? await resolveCreatedThreadId(ctx.channel, messageId);
+  if (!threadId) {
+    await reply(ctx, '任务卡已发送，但未能读取飞书 thread_id；请在群里把消息“转为话题”后重试。');
+    return;
+  }
+
+  const taskScope = `${ctx.msg.chatId}:${threadId}`;
+  ctx.activeRuns.interrupt(taskScope);
+  ctx.workspaces.setCwd(taskScope, workspace.cwdRealpath);
+  ctx.sessions.clear(taskScope);
+  log.info('command', 'task-created', {
+    scope: taskScope,
+    cwd: workspace.cwdRealpath,
+    agent: ctx.agent.id,
+  });
+}
+
+async function resolveCreatedThreadId(
+  channel: LarkChannel,
+  messageId: string,
+): Promise<string | undefined> {
+  for (let attempt = 0; attempt < 4; attempt++) {
+    try {
+      const [raw] = await channel.fetchRawMessage(messageId, { cardContentType: null });
+      const threadId = (raw as { thread_id?: string } | undefined)?.thread_id;
+      if (threadId) return threadId;
+    } catch (err) {
+      if (attempt === 3) {
+        log.warn('command', 'task-thread-id-lookup-failed', {
+          messageId,
+          err: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+    await new Promise<void>((resolve) => setTimeout(resolve, 50 * (attempt + 1)));
+  }
+  return undefined;
 }
 
 async function handleWs(args: string, ctx: CommandContext): Promise<void> {

@@ -1,5 +1,5 @@
 import type { NormalizedMessage } from '@larksuite/channel';
-import { realpath } from 'node:fs/promises';
+import { mkdir, realpath } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createDefaultProfileConfig } from '../../../src/config/profile-schema.js';
@@ -25,6 +25,7 @@ vi.mock('@larksuite/channel', async (importOriginal) => {
 });
 
 import { startChannel } from '../../../src/bot/channel.js';
+import { TopicContextStore } from '../../../src/bot/topic-context.js';
 
 interface MessageHandlerMap {
   message?: (msg: NormalizedMessage) => Promise<void> | void;
@@ -46,6 +47,7 @@ interface FakeLarkChannel {
   getAppInfo: ReturnType<typeof vi.fn>;
   listChats: ReturnType<typeof vi.fn>;
   fetchRawMessage: ReturnType<typeof vi.fn>;
+  streamCalls: Array<{ input: unknown; options?: unknown }>;
   on(handlers: MessageHandlerMap): void;
   connect(): Promise<void>;
   disconnect(): Promise<void>;
@@ -146,17 +148,85 @@ describe('topic message quote handling', () => {
       expect.objectContaining({ cardContentType: 'user_card_content' }),
     );
   });
+
+  it('treats plain-group converted threads as their own scope', async () => {
+    const h = await createHarness({
+      chatMode: 'group',
+      rawThreadIds: { om_plain_thread: 'omt_plain_thread' },
+    });
+    const threadWorkspace = join(h.tmp.root, 'thread-workspace');
+    await mkdir(threadWorkspace, { recursive: true });
+    h.workspaces.setCwd('oc_topic_chat:omt_plain_thread', await realpath(threadWorkspace));
+
+    await startTestBridge(h);
+
+    await h.channel.handlers.message?.(
+      message({
+        messageId: 'om_plain_thread',
+        rootId: 'om_topic_root',
+        parentId: 'om_topic_root',
+        content: '@Bridge 这里按话题隔离',
+      }),
+    );
+    await waitFor(() => h.agent.runOptions.length === 1);
+
+    const run = h.agent.runOptions[0];
+    expect(run?.cwd).toBe(await realpath(threadWorkspace));
+    expect(run?.prompt).toContain('"threadId":"omt_plain_thread"');
+    expect(run?.prompt).not.toContain('<quoted_messages>');
+    expect(h.channel.fetchRawMessage).toHaveBeenCalledTimes(1);
+    expect(h.channel.fetchRawMessage).toHaveBeenCalledWith(
+      'om_plain_thread',
+      expect.objectContaining({ cardContentType: null }),
+    );
+    await waitFor(() => h.channel.streamCalls.length === 1);
+    expect(h.channel.streamCalls[0]?.input).toHaveProperty('card');
+    expect(h.channel.streamCalls[0]?.options).toEqual({
+      replyTo: 'om_plain_thread',
+      replyInThread: true,
+    });
+  });
+
+  it('injects prior replies from another agent as shared topic context', async () => {
+    const h = await createHarness();
+    await h.topicContext.append('oc_topic_chat:omt_topic', {
+      id: 'run_claude',
+      role: 'assistant',
+      speaker: 'lark-claudecode',
+      agent: 'claude',
+      text: 'Claude 已确认入口在 src/main.ts',
+    });
+    await startTestBridge(h);
+
+    await h.channel.handlers.message?.(
+      message({
+        messageId: 'om_for_codex',
+        rootId: 'om_topic_root',
+        parentId: 'om_topic_root',
+        threadId: 'omt_topic',
+        content: '@Bridge 继续检查',
+      }),
+    );
+    await waitFor(() => h.agent.runOptions.length === 1);
+
+    const prompt = h.agent.runOptions[0]?.prompt ?? '';
+    expect(prompt).toContain('<shared_topic_context>');
+    expect(prompt).toContain('Claude 已确认入口在 src/main.ts');
+    expect(prompt).toContain('lark-claudecode');
+  });
 });
 
 async function createHarness(options: {
   chatMode?: 'group' | 'topic';
   quotedMessages?: Record<string, string>;
+  rawThreadIds?: Record<string, string>;
 } = {}): Promise<{
   tmp: TmpProfile;
   channel: FakeLarkChannel & { handlers: MessageHandlerMap };
   agent: FakeAgentAdapter;
   sessions: SessionStore;
   workspaces: WorkspaceStore;
+  topicContext: TopicContextStore;
   profileConfig: ReturnType<typeof createDefaultProfileConfig>;
   controls: ReturnType<typeof createControls>;
 }> {
@@ -185,6 +255,7 @@ async function createHarness(options: {
   };
   const sessions = new SessionStore(join(tmp.profile, 'sessions.json'));
   const workspaces = new WorkspaceStore(join(tmp.profile, 'workspaces.json'));
+  const topicContext = new TopicContextStore(join(tmp.profile, 'topic-context'));
   const agent = new FakeAgentAdapter({
     events: [{ type: 'done', terminationReason: 'normal' }],
   });
@@ -201,6 +272,7 @@ async function createHarness(options: {
     agent,
     sessions,
     workspaces,
+    topicContext,
     profileConfig,
     controls,
   };
@@ -211,6 +283,7 @@ async function startTestBridge(h: {
   agent: FakeAgentAdapter;
   sessions: SessionStore;
   workspaces: WorkspaceStore;
+  topicContext: TopicContextStore;
   controls: ReturnType<typeof createControls>;
 }): Promise<void> {
   const bridge = await startChannel({
@@ -218,6 +291,7 @@ async function startTestBridge(h: {
     agent: h.agent,
     sessions: h.sessions,
     workspaces: h.workspaces,
+    topicContext: h.topicContext,
     controls: h.controls,
   });
   cleanups.push(() => bridge.disconnect());
@@ -226,14 +300,18 @@ async function startTestBridge(h: {
 function createFakeLarkChannel(options: {
   chatMode?: 'group' | 'topic';
   quotedMessages?: Record<string, string>;
+  rawThreadIds?: Record<string, string>;
 } = {}): FakeLarkChannel & { handlers: MessageHandlerMap } {
   const handlers: MessageHandlerMap = {};
   const chatMode = options.chatMode ?? 'topic';
   const quotedMessages = options.quotedMessages ?? {
     om_topic_root: 'topic root content',
   };
+  const rawThreadIds = options.rawThreadIds ?? {};
+  const streamCalls: Array<{ input: unknown; options?: unknown }> = [];
   return {
     handlers,
+    streamCalls,
     botIdentity: { openId: 'ou_bot', name: 'Bridge' },
     rawClient: {
       request: vi.fn(async () => ({ data: { items: [] } })),
@@ -250,6 +328,7 @@ function createFakeLarkChannel(options: {
     listChats: vi.fn(async () => []),
     fetchRawMessage: vi.fn(async (messageId: string) => [
       {
+        ...(rawThreadIds[messageId] ? { thread_id: rawThreadIds[messageId] } : {}),
         message_id: messageId,
         msg_type: 'text',
         body: {
@@ -273,7 +352,12 @@ function createFakeLarkChannel(options: {
       return { state: 'connected', reconnectAttempts: 0 };
     },
     async send() {},
-    async stream(_chatId, input) {
+    async stream(_chatId, input, options) {
+      streamCalls.push({ input, options });
+      if (isCardStreamInput(input)) {
+        await input.card.producer({ update: async () => {} });
+        return;
+      }
       if (isMarkdownStreamInput(input)) {
         await input.markdown({ setContent: async () => {} });
       }
@@ -326,8 +410,18 @@ interface MarkdownStreamInput {
   markdown(ctrl: { setContent(markdown: string): Promise<void> }): Promise<void> | void;
 }
 
+interface CardStreamInput {
+  card: {
+    producer(ctrl: { update(card: unknown): Promise<void> }): Promise<void> | void;
+  };
+}
+
 function isMarkdownStreamInput(input: unknown): input is MarkdownStreamInput {
   return Boolean(input && typeof input === 'object' && 'markdown' in input);
+}
+
+function isCardStreamInput(input: unknown): input is CardStreamInput {
+  return Boolean(input && typeof input === 'object' && 'card' in input);
 }
 
 async function waitFor(predicate: () => boolean, timeoutMs = 1500): Promise<void> {

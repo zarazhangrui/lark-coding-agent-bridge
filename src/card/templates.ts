@@ -61,6 +61,34 @@ export function workspacesCard(current: string | undefined, named: Record<string
   return shell('📂 工作目录', elements);
 }
 
+export interface TaskCardInfo {
+  name: string;
+  cwd: string;
+  agentName: string;
+  botName?: string;
+  profileName: string;
+}
+
+export function taskCard(info: TaskCardInfo): object {
+  return shell(`项目任务 · ${info.name}`, [
+    divMd(
+      [
+        `🤖 **agent**: ${escapeMd(info.agentName)}`,
+        `🧩 **profile**: ${escapeMd(info.profileName)}`,
+        `📁 **cwd**: \`${escapeCode(info.cwd)}\``,
+        '● **状态**: 就绪',
+        `💬 **发送任务**: 在线程里 @${escapeMd(info.botName ?? '当前机器人')} 后输入内容`,
+      ].join('\n'),
+    ),
+    HR,
+    actions([
+      { text: '📊 状态', value: { cmd: 'status' }, style: 'primary' },
+      { text: '🆕 新会话', value: { cmd: 'new' } },
+      { text: '⏹ 停止', value: { cmd: 'stop' }, style: 'danger' },
+    ]),
+  ]);
+}
+
 export interface StatusInfo {
   profileName: string;
   cwd?: string;
@@ -77,7 +105,7 @@ export interface StatusInfo {
   activeCommentScopes?: string[];
   queue?: { active: number; waiting: number; cap: number };
   ownerState: string;
-  /** Session scope (= chatId or chatId:threadId in topic groups). */
+  /** Session scope (= chatId or chatId:threadId for threaded messages). */
   scope: string;
   /** Chat mode — used to label scope. */
   chatMode: 'p2p' | 'group' | 'topic';
@@ -87,11 +115,10 @@ export function statusCard(info: StatusInfo): object {
   const sessionLine = info.sessionId
     ? `\`${info.sessionId.slice(0, 8)}…\`${info.sessionStale ? ' ⚠️ 旧 cwd，下一条会新建' : ''}`
     : (info.emptySessionText ?? '(无)');
-  // For topic groups, surface that the scope is per-topic so the user
-  // knows /cd / /new only affect this topic.
+  // Surface threaded scopes so the user knows /cd / /new only affect this thread.
   const scopeLine =
-    info.chatMode === 'topic'
-      ? `\`${escapeCode(info.scope)}\` _（话题独立 session）_`
+    info.scope.includes(':')
+      ? `\`${escapeCode(info.scope)}\` _（线程独立 session）_`
       : `\`${escapeCode(info.scope)}\``;
   const cwdLine = info.cwd ? `\`${escapeCode(info.cwd)}\`` : '(未设置)';
   const queueLine = info.queue
@@ -180,6 +207,7 @@ export function helpCard(agentName = 'Agent'): object {
         '',
         '- `/new` `/reset` — 清空当前 chat 的会话',
         '- `/new chat [name]` — 新建群+新会话，自动拉你进群',
+        '- `/task [绝对路径]` — 创建绑定项目目录的独立任务线程',
         '- `/resume [N]` — 列出并恢复历史会话（最多 N 条）',
         '- `/cd <path>` — 切换工作目录（会重置 session）',
         '- `/ws list|save <name>|use <name>|remove <name>` — 工作目录',

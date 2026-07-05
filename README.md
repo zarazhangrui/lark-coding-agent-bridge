@@ -10,9 +10,10 @@ For a product walkthrough, see the [Feishu document](https://larkcommunity.feish
 
 - Forwards Feishu / Lark messages to local Claude Code, Codex CLI, or agy CLI. Send a DM directly, or `@bot` in a group.
 - **Streaming card**: text replies and tool calls update on one Lark card in real time.
-- **Session continuity**: each chat, topic, or document comment thread keeps its own session.
+- **Session continuity**: each chat, message thread/topic, or document comment thread keeps its own session.
 - **Queueing and batching**: messages sent in quick succession are handled together; messages sent during a run are queued for the next turn, while commands like `/new`, `/cd`, `/ws use`, and `/stop` can interrupt the current task.
-- **Multiple workspaces**: use `/cd` to switch the current project, and `/ws` to save and reuse common project directories.
+- **Parallel project tasks**: use `/task <path>` to create a project card in its own message thread. Each thread has an independent cwd, session, queue, and CLI run; mention the bot inside the thread to get a live card with intermediate tool output.
+- **Multiple agents in one chat**: add Claude, Codex, and agy bot profiles to the same group, then `@` the bot you want. Agents in one thread share its project path and recent transcript while keeping their native sessions isolated.
 - **Images and files**: send them to the bot directly, and the bridge downloads them locally for the agent.
 - **Interactive cards**: `/help`, `/ws list`, and `/status` return cards with clickable buttons.
 
@@ -142,13 +143,14 @@ If a profile was created with the wrong agent kind, stop or unregister any match
 | Command | Effect |
 |---|---|
 | `/new`, `/reset` | Clear the current session |
-| `/cd <path>` | Switch working directory and reset the session |
+| `/task [path]` | Create an independent project-task card/thread, using the given path or current cwd |
+| `/cd <path>` | Switch the current chat/thread working directory and reset that session |
 | `/ws list` | List named workspaces |
 | `/ws save <name>` | Save the current working directory as a named workspace |
 | `/ws use <name>` | Switch to a named workspace |
 | `/ws remove <name>` | Delete a named workspace |
 | `/resume` | Resume compatible history for the same agent, working directory, and permission mode |
-| `/status` | Show profile, agent, working directory, session, lark-cli identity, and run state |
+| `/status` | Show profile, agent, current chat/thread working directory, session, lark-cli identity, and run state |
 | `/config` | Adjust presentation preferences, access settings, and lark-cli identity policy |
 | `/invite user @name` | Allow a user to use the bot in DMs |
 | `/invite admin @name` | Add an access-control admin |
@@ -163,7 +165,7 @@ If a profile was created with the wrong agent kind, stop or unregister any match
 | `/doctor [description]` | Run low-sensitive diagnostics |
 | `/help` | Help card |
 
-DMs do not require an @ mention. Groups and topic groups require `@bot` by default; `@all` is ignored. Cloud-doc comments in supported document types run when the bot is mentioned.
+DMs do not require an @ mention. Groups and topic groups require `@bot` by default; `@all` is ignored. At the group top level, send `@bot /task /absolute/project/path`; continue the conversation inside the created thread. Switching between Claude, Codex, and agy in that thread preserves the shared cwd and recent user/agent transcript while each CLI keeps its own native session. Cloud-doc comments in supported document types run when the bot is mentioned.
 
 ## lark-cli identity policy
 

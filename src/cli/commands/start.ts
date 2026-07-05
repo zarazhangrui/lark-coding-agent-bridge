@@ -1,5 +1,6 @@
 import dns from 'node:dns';
 import os from 'node:os';
+import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 import pkg from '../../../package.json';
 import { AntigravityAdapter } from '../../agent/antigravity/adapter';
@@ -46,6 +47,7 @@ import { refreshOwnerControls } from '../../policy/owner';
 import { SessionStore } from '../../session/store';
 import { SessionCatalog } from '../../session/catalog';
 import { WorkspaceStore } from '../../workspace/store';
+import { TopicContextStore } from '../../bot/topic-context';
 
 // Prefer IPv4 — Node 20+ defaults to "verbatim" which respects whatever
 // the resolver returns first; in IPv6-broken networks (WSL2, certain VPNs,
@@ -142,8 +144,14 @@ export async function runStart(opts: StartOptions): Promise<void> {
           await sessions.load();
           const sessionCatalog = new SessionCatalog(`${appPaths.sessionsFile}.catalog.json`);
           await sessionCatalog.load();
-          const workspaces = new WorkspaceStore(appPaths.workspacesFile);
+          const workspaces = new WorkspaceStore(
+            appPaths.workspacesFile,
+            join(appPaths.rootDir, 'shared', 'workspaces'),
+          );
           await workspaces.load();
+          const topicContext = new TopicContextStore(
+            join(appPaths.rootDir, 'shared', 'topic-context'),
+          );
 
         await gcMediaCache(MEDIA_GC_MAX_AGE_MS, appPaths.mediaDir);
         await gcOldLogs();
@@ -273,6 +281,7 @@ export async function runStart(opts: StartOptions): Promise<void> {
                   sessions,
                   sessionCatalog,
                   workspaces,
+                  topicContext,
                   controls: nextControls,
                   appPaths: nextRuntime.appPaths,
                 });
@@ -329,6 +338,7 @@ export async function runStart(opts: StartOptions): Promise<void> {
           sessions,
           sessionCatalog,
           workspaces,
+          topicContext,
           controls,
           appPaths,
         });

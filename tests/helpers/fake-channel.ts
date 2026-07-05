@@ -138,7 +138,11 @@ export function createFakeChannel(): FakeChannel {
           ? { card: cardById.get(cardId) }
           : content;
       sent.push({ chatId, content: resolved, options });
-      return { messageId: `om_fake_${nextMessage++}` };
+      const messageId = `om_fake_${nextMessage++}`;
+      if ((options as { replyInThread?: unknown } | undefined)?.replyInThread === true) {
+        rawThreadIds.set(messageId, `omt_fake_${nextMessage - 1}`);
+      }
+      return { messageId };
     },
     async stream(chatId: string, input: unknown, options?: unknown): Promise<void> {
       const record: FakeChannelStream = {

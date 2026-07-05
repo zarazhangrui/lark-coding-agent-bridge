@@ -10,9 +10,10 @@
 
 - 在飞书私聊直接发消息，或在群里 `@bot`，把任务转给本机 Claude Code / Codex CLI / agy CLI。
 - **流式卡片**：文本回复和工具调用实时更新在同一张卡片上。
-- **会话延续**：每个聊天、话题或文档评论有自己的会话，不会互相串。
+- **会话延续**：每个聊天、消息线程 / 话题或文档评论有自己的会话，不会互相串。
 - **排队与消息合并**：短时间连续发送的消息会合并处理；任务运行中收到的普通消息会排队到下一轮，`/new`、`/cd`、`/ws use`、`/stop` 这类命令可以中断当前任务。
-- **多工作空间**：用 `/cd` 切换当前项目，用 `/ws` 保存和复用常用项目目录。
+- **并行项目任务**：用 `/task <路径>` 创建一张独立线程的项目卡；每个线程有自己的 cwd、session、队列和 CLI run，在线程里 `@bot` 后会用流式卡片持续显示工具调用等中间输出。
+- **同群多 Agent**：把 Claude、Codex、AGY 三个 profile 对应的 bot 加进同一个群，`@` 哪个 bot 就由哪个 Agent 接单；同一话题共享项目路径和最近对话，各 Agent 的原生 session 仍相互独立。
 - **图片 / 文件**：直接发给 bot，bridge 下载到本地后交给本机 agent 处理。
 - **卡片按钮**：`/help`、`/ws list`、`/status` 返回可点击的交互卡片。
 
@@ -142,13 +143,14 @@ lark-channel-bridge profile export <name> --include-secrets --yes
 | 命令 | 作用 |
 |---|---|
 | `/new`, `/reset` | 清空当前会话 |
-| `/cd <path>` | 切换工作目录并重置会话 |
+| `/task [path]` | 用指定路径或当前 cwd 创建独立的项目任务卡 / 线程 |
+| `/cd <path>` | 切换当前聊天 / 线程的工作目录并重置这个会话 |
 | `/ws list` | 列出命名工作空间 |
 | `/ws save <name>` | 把当前工作目录保存为命名工作空间 |
 | `/ws use <name>` | 切换到命名工作空间 |
 | `/ws remove <name>` | 删除命名工作空间 |
 | `/resume` | 恢复同 agent、工作目录、权限模式兼容的历史会话 |
-| `/status` | 查看 profile、agent、工作目录、会话、lark-cli 身份和运行状态 |
+| `/status` | 查看 profile、agent、当前聊天 / 线程的工作目录、会话、lark-cli 身份和运行状态 |
 | `/config` | 调整展示偏好、访问控制和 lark-cli 身份策略 |
 | `/invite user @某人` | 允许用户私聊使用 bot |
 | `/invite admin @某人` | 添加访问控制管理员 |
@@ -163,7 +165,7 @@ lark-channel-bridge profile export <name> --include-secrets --yes
 | `/doctor [描述]` | 执行低敏诊断 |
 | `/help` | 帮助卡片 |
 
-私聊不需要 @。群和话题群默认必须 `@bot`；`@all` 会被忽略。支持的云文档评论里 @bot 就会触发回复。
+私聊不需要 @。群和话题群默认必须 `@bot`；`@all` 会被忽略。在群聊顶层发送 `@bot /task /绝对/项目路径`，然后进入创建出的线程继续对话。线程里的命令和任务只影响该任务；切换 `@Claude`、`@Codex`、`@AGY` 时会继续使用相同 cwd，并携带该话题最近的用户消息和 Agent 最终回复。支持的云文档评论里 @bot 就会触发回复。
 
 ## lark-cli 身份策略
 
