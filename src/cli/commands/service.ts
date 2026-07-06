@@ -409,6 +409,7 @@ export async function runServiceStatus(opts: ServiceProfileOptions = {}): Promis
     console.log('✓ bot 正在后台运行');
   }
   if (pid) console.log(`  进程 ID: ${pid}`);
+  console.log(`  服务文件: ${adapter.servicePath()}`);
   console.log('  日志:');
   console.log(`    ${daemonStdoutPath(profile)}`);
   console.log(`    ${daemonStderrPath(profile)}`);

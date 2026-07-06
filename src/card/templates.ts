@@ -82,6 +82,8 @@ export interface StatusInfo {
   scope: string;
   /** Chat mode — used to label scope. */
   chatMode: 'p2p' | 'group' | 'topic';
+    /** Account balance string. */
+    balance?: string;
 }
 
 export function statusCard(info: StatusInfo): object {
@@ -119,6 +121,7 @@ export function statusCard(info: StatusInfo): object {
       : []),
     `🚦 **queue**: ${queueLine}`,
     `👤 **owner API**: ${escapeMd(info.ownerState)}`,
+    `💰 **可用余额**: ${info.balance ?? '-'}`,
   ];
   return shell('📊 当前状态', [
     divMd(lines.join('\n')),
