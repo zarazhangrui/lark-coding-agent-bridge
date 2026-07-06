@@ -1,0 +1,34 @@
+package.json
+  h_965db5153ff6bf 3
+src/agent/prompt.ts
+  s_ae40a511d70ccf::t_9959920d26d3f2 39-54,79,92-94
+src/bot/channel.ts
+  s_ae40a511d70ccf::t_6c4c61057bb2aa 15,64,772-793,815-822,826,1480,1527,1615-1626
+src/bot/quote.ts
+  s_ae40a511d70ccf::t_6775837d1f4a66 14-16,101-122,154,165,172-243
+tests/integration/bot/topic-quote.test.ts
+  s_ae40a511d70ccf::t_043aedbe971394 41-43,180-273,337-338,414-415,424,434-436
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.5",
+  "base_commit_sha": "2a5545d56732192536c9c60b5bc6bf8680080545",
+  "prompts": {},
+  "humans": {
+    "h_965db5153ff6bf": {
+      "author": "zeno06111-lab <zeno06111@gmail.com>"
+    }
+  },
+  "sessions": {
+    "s_ae40a511d70ccf": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "c1a6f87b-ed30-4b33-be8f-3d5f53c693f5",
+        "model": "unknown"
+      },
+      "human_author": "zeno06111-lab <zeno06111@gmail.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
