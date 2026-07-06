@@ -46,7 +46,7 @@ export function buildLauncherCmd(inputs: LauncherInputs): string {
   ].join('\r\n');
 }
 
-async function writeLauncherCmd(profile: string): Promise<void> {
+export async function writeLauncherCmd(profile: string, channelHome?: string): Promise<void> {
   const bridgeEntryPath = process.argv[1];
   if (!bridgeEntryPath) {
     throw new Error('cannot determine bridge entry path (process.argv[1] is empty)');
@@ -56,7 +56,7 @@ async function writeLauncherCmd(profile: string): Promise<void> {
     bridgeEntryPath,
     envPath: process.env.PATH ?? '',
     profile,
-    channelHome: paths.rootDir,
+    channelHome: channelHome ?? paths.rootDir,
   });
   const cmdPath = windowsLauncherCmdPath(profile);
   await mkdir(dirname(cmdPath), { recursive: true });

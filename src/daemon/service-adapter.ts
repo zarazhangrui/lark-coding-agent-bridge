@@ -73,7 +73,10 @@ function makeLaunchdAdapter(profile: string): ServiceAdapter {
     // launchd has no separate "disable" — bootout already removes the
     // service from launchd, which also nukes KeepAlive / RunAtLoad.
     stopAndDisableAutostart: () => launchd.bootout(profile),
-    restart: () => launchd.kickstart(profile),
+    restart: async () => {
+      await launchd.writePlist(profile);
+      return launchd.kickstart(profile);
+    },
     waitUntilStopped: (timeoutMs) => launchd.waitUntilUnloaded(profile, timeoutMs),
     deleteFile: () => launchd.deletePlist(profile),
     describeStatus: () => launchd.describeService(profile),
@@ -98,7 +101,11 @@ function makeSystemdAdapter(profile: string): ServiceAdapter {
     start: () => systemd.enableAndStart(profile),
     stop: () => systemd.stop(profile),
     stopAndDisableAutostart: () => systemd.disableAndStop(profile),
-    restart: () => systemd.restart(profile),
+    restart: async () => {
+      await systemd.writeUnit(profile);
+      systemd.daemonReload();
+      return systemd.restart(profile);
+    },
     waitUntilStopped: (timeoutMs) => systemd.waitUntilInactive(profile, timeoutMs),
     deleteFile: async () => {
       await systemd.deleteUnit(profile);
@@ -133,7 +140,11 @@ function makeSchtasksAdapter(profile: string): ServiceAdapter {
     stop: () => schtasks.endTask(profile),
     stopAndDisableAutostart: () => schtasks.endAndDisable(profile),
     // schtasks has no native /Restart — adapter awaits end+wait+run.
-    restart: () => schtasks.restartTask(profile),
+    // Rewrite the launcher .cmd first so current node/PATH/env are captured.
+    restart: async () => {
+      await schtasks.writeLauncherCmd(profile);
+      return schtasks.restartTask(profile);
+    },
     waitUntilStopped: (timeoutMs) => schtasks.waitUntilStopped(profile, timeoutMs),
     deleteFile: async () => {
       await schtasks.deleteTask(profile);

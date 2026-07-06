@@ -19,6 +19,7 @@ import {
 } from '../../config/profile-schema';
 import type { AppConfig } from '../../config/schema';
 import { isComplete } from '../../config/schema';
+import { writeUnit } from '../../daemon/systemd';
 import { configureLogger, gcOldLogs, log, reportError } from '../../core/logger';
 import { loadTelemetryAdapter, telemetry } from '../../core/telemetry';
 import { gcMediaCache } from '../../media/cache';
@@ -98,6 +99,14 @@ export async function runStart(opts: StartOptions): Promise<void> {
   const appPaths = runtime.appPaths;
   let profileConfig = runtime.profileConfig;
   configureLogger({ logsDir: appPaths.logsDir });
+
+  // On every run/start/restart, pre-read the systemd unit file. Inside
+  // writeUnit, check whether rootDir/bot.<profile>.service exists; if so,
+  // copy it to the user-level systemd unit path; otherwise create a
+  // template from buildUnit first.
+  try {
+    await writeUnit(appPaths.profile, appPaths.rootDir);
+  } catch {}
 
   await preFlightChecks({
     skipCheckLarkCli: opts.skipCheckLarkCli,

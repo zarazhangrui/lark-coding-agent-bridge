@@ -68,7 +68,7 @@ export function buildPlist(inputs: PlistInputs): string {
 `;
 }
 
-export async function writePlist(profile: string): Promise<void> {
+export async function writePlist(profile: string, channelHome?: string): Promise<void> {
   const bridgeEntryPath = process.argv[1];
   if (!bridgeEntryPath) {
     throw new Error('cannot determine bridge entry path (process.argv[1] is empty)');
@@ -78,7 +78,7 @@ export async function writePlist(profile: string): Promise<void> {
     bridgeEntryPath,
     envPath: process.env.PATH ?? '',
     profile,
-    channelHome: paths.rootDir,
+    channelHome: channelHome ?? paths.rootDir,
   });
   const plistPath = launchAgentPlistPath(profile);
   await mkdir(dirname(plistPath), { recursive: true });

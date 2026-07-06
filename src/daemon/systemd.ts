@@ -1,8 +1,9 @@
 import { spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import {
+  channelUnitPath,
   daemonLogDir,
   daemonStderrPath,
   daemonStdoutPath,
@@ -42,7 +43,7 @@ export interface UnitInputs {
 export function buildUnit(inputs: UnitInputs): string {
   const escape = (s: string): string => s.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
   return `[Unit]
-Description=Lark Channel Bridge bot
+Description=Lark Channel Bridge bot ${inputs.profile}
 After=network-online.target
 Wants=network-online.target
 
@@ -61,19 +62,31 @@ WantedBy=default.target
 `;
 }
 
-export async function writeUnit(profile: string): Promise<void> {
-  const bridgeEntryPath = process.argv[1];
-  if (!bridgeEntryPath) {
-    throw new Error('cannot determine bridge entry path (process.argv[1] is empty)');
-  }
-  const content = buildUnit({
-    nodePath: process.execPath,
-    bridgeEntryPath,
-    envPath: process.env.PATH ?? '',
-    profile,
-    channelHome: paths.rootDir,
-  });
+export async function writeUnit(profile: string, channelHome?: string): Promise<void> {
   const unitPath = systemdUnitPath(profile);
+  const persistedPath = channelUnitPath(profile, channelHome);
+
+  if (!existsSync(persistedPath)) {
+    const bridgeEntryPath = process.argv[1];
+    if (!bridgeEntryPath) {
+      throw new Error('cannot determine bridge entry path (process.argv[1] is empty)');
+    }
+    await mkdir(dirname(persistedPath), { recursive: true });
+    await writeFile(
+      persistedPath,
+      buildUnit({
+        nodePath: process.execPath,
+        bridgeEntryPath,
+        envPath: process.env.PATH ?? '',
+        profile,
+        channelHome: channelHome ?? paths.rootDir,
+      }),
+      'utf8',
+    );
+  }
+
+  const content = await readFile(persistedPath, 'utf8');
+
   await mkdir(dirname(unitPath), { recursive: true });
   await mkdir(daemonLogDir(profile), { recursive: true });
   await writeFile(unitPath, content, 'utf8');
