@@ -77,6 +77,7 @@ import type { ProcessPool } from '../bot/process-pool';
 import type { RunExecutor } from '../runtime/run-executor';
 import { RunRejected } from '../runtime/errors';
 import { validateAppCredentials } from '../utils/feishu-auth';
+import { resolveModelProvider, fetchModelBalance } from '../utils/model-balance';
 import type { WorkspaceStore } from '../workspace/store';
 import { createBoundChat, defaultChatName } from '../bot/group';
 import { fetchKnownChats, type KnownChat } from '../bot/lark-info';
@@ -806,6 +807,8 @@ async function handleStatus(_args: string, ctx: CommandContext): Promise<void> {
     isCodex && ctx.sessionCatalog && ctx.sessionCatalogIdentity
       ? ctx.sessionCatalog.activeFor(ctx.sessionCatalogIdentity)
       : undefined;
+  const provider = await resolveModelProvider(ctx.controls.profile);
+  const balance = provider ? (await fetchModelBalance(provider)) ?? '-' : '-';
   const card = statusCard({
     profileName: ctx.controls.profile,
     cwd,
@@ -822,6 +825,7 @@ async function handleStatus(_args: string, ctx: CommandContext): Promise<void> {
     ownerState: formatOwnerState(ctx),
     scope: ctx.scope,
     chatMode: ctx.chatMode,
+    balance,
   });
   await ctx.channel.send(ctx.msg.chatId, { card }, commandReplyOptions(ctx));
 }
