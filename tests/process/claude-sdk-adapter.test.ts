@@ -150,4 +150,73 @@ describe('ClaudeSdkAdapter interactive approval', () => {
     // The parked promise resolved to deny (not hung); stream terminates.
     expect(rest.some((t) => t === 'text' || t === 'error' || t === 'done')).toBe(true);
   });
+
+  it('force-denies a NEW canUseTool call made after the run is already aborted, without parking it', async () => {
+    // Fake query that: 1) parks a first permission (tu-1), 2) waits for that
+    // promise to settle (via stop()'s abort), then 3) issues a SECOND
+    // canUseTool call (tu-2) for a different tool -- this happens AFTER
+    // controller.signal.aborted is already true, reproducing the finding.
+    let secondCallPromise:
+      | Promise<{ behavior: 'allow' | 'deny'; message?: string }>
+      | undefined;
+
+    const adapter = new ClaudeSdkAdapter({
+      // Deliberately large so a pass proves the abort-check resolved it,
+      // not the timeout.
+      permissionTimeoutMs: 5 * 60 * 1000,
+      queryFn: ((params: { options?: Record<string, unknown> }) => {
+        const canUseTool = params.options?.canUseTool as
+          | ((n: string, i: unknown, o: { signal: AbortSignal; toolUseID: string }) => Promise<{
+              behavior: 'allow' | 'deny';
+              message?: string;
+            }>)
+          | undefined;
+        const controller = params.options?.abortController as AbortController;
+        const iterable = (async function* () {
+          const firstPromise = canUseTool!('Bash', { command: 'echo one' }, {
+            signal: controller.signal,
+            toolUseID: 'tu-1',
+          });
+          yield {
+            type: 'assistant',
+            session_id: 's',
+            message: { content: [{ type: 'text', text: 'first-parked' }] },
+          };
+          await firstPromise; // resolved by stop()'s abort listener (existing behavior)
+          // At this point controller.signal.aborted is true. A brand-new
+          // permission prompt arrives for a different tool.
+          secondCallPromise = canUseTool!('Bash', { command: 'echo two' }, {
+            signal: controller.signal,
+            toolUseID: 'tu-2',
+          });
+          const secondDecision = await secondCallPromise;
+          yield {
+            type: 'assistant',
+            session_id: 's',
+            message: { content: [{ type: 'text', text: JSON.stringify(secondDecision) }] },
+          };
+          yield { type: 'result', subtype: 'success', session_id: 's' };
+        })();
+        return Object.assign(iterable, { interrupt: async () => {} });
+      }) as never,
+    });
+
+    const run = adapter.run({ runId: 'r', prompt: 'p', cwd: '/w', permissionMode: 'default' });
+    const it = run.events[Symbol.asyncIterator]();
+    const first = await it.next();
+    expect(first.value).toMatchObject({ type: 'permission_request', id: 'tu-1' });
+
+    await run.stop();
+
+    expect(secondCallPromise).toBeDefined();
+    // Race against a short real-timer window: if the fix is missing, the
+    // second permission is parked behind a dead abort listener and only the
+    // 5-minute timeout would resolve it, so this race loses deterministically
+    // and quickly instead of hanging for the real test suite duration.
+    const race = await Promise.race([
+      secondCallPromise!.then((value) => ({ kind: 'resolved' as const, value })),
+      new Promise<{ kind: 'timeout' }>((resolve) => setTimeout(() => resolve({ kind: 'timeout' }), 200)),
+    ]);
+    expect(race).toEqual({ kind: 'resolved', value: { behavior: 'deny', message: 'run stopped' } });
+  });
 });

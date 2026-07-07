@@ -126,6 +126,7 @@ export class ClaudeSdkAdapter implements AgentAdapter {
       onAbort: () => void;
     }
     const pending = new Map<string, Pending>();
+    let permCounter = 0;
     const settle = (
       id: string,
       result: { behavior: 'allow' | 'deny'; updatedInput?: Record<string, unknown>; message?: string },
@@ -147,7 +148,8 @@ export class ClaudeSdkAdapter implements AgentAdapter {
             ctx: { signal: AbortSignal; title?: string; displayName?: string; description?: string; toolUseID?: string },
           ): Promise<{ behavior: 'allow' | 'deny'; updatedInput?: Record<string, unknown>; message?: string }> => {
             if (classifyTool(toolName) === 'auto-allow') return { behavior: 'allow' };
-            const id = ctx.toolUseID ?? `perm-${pending.size + 1}`;
+            if (controller.signal.aborted) return { behavior: 'deny', message: 'run stopped' };
+            const id = ctx.toolUseID ?? `perm-${++permCounter}`;
             pushEvent({
               type: 'permission_request',
               id,
