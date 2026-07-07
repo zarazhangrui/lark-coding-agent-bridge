@@ -164,6 +164,31 @@ describe('profile store canonical serialization', () => {
     });
   });
 
+  it('retains the claude config section across a save/load round-trip', async () => {
+    const root = await tmpRoot();
+    const configPath = join(root, 'config.json');
+    const profile = {
+      ...createDefaultProfileConfig({
+        agentKind: 'claude',
+        accounts: { app },
+      }),
+      claude: { env: { A: 'b' }, approvalTimeoutMinutes: 3 },
+    };
+
+    await saveRootConfig({
+      schemaVersion: 2,
+      activeProfile: 'claude',
+      preferences: {},
+      profiles: { claude: profile },
+    }, configPath);
+
+    const saved = JSON.parse(await readFile(configPath, 'utf8'));
+    expect(saved.profiles.claude.claude).toEqual({ env: { A: 'b' }, approvalTimeoutMinutes: 3 });
+
+    const loaded = await loadRootConfig(configPath);
+    expect(loaded?.profiles.claude?.claude).toEqual({ env: { A: 'b' }, approvalTimeoutMinutes: 3 });
+  });
+
   it('marks newly created roots as already evaluated for permission default migration', () => {
     const profile = createDefaultProfileConfig({
       agentKind: 'claude',

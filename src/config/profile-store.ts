@@ -56,6 +56,7 @@ type StoredProfileConfig = Pick<
   | 'workspaces'
   | 'permissions'
   | 'codex'
+  | 'claude'
   | 'attachments'
   | 'comments'
   | 'larkCli'
@@ -93,6 +94,7 @@ function serializeProfileConfig(profile: ProfileConfig): StoredProfileConfig {
     workspaces: profile.workspaces,
     permissions: profile.permissions,
     ...(profile.codex ? { codex: profile.codex } : {}),
+    ...(profile.claude ? { claude: profile.claude } : {}),
     attachments: profile.attachments,
     comments: {},
     larkCli: profile.larkCli,
