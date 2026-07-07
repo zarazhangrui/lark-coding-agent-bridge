@@ -176,6 +176,7 @@ const handlers: Record<string, Handler> = {
   '/doc': handleDoc,
   '/invite': handleInvite,
   '/remove': handleRemove,
+  '/perm': handlePerm,
 };
 
 /**
@@ -848,6 +849,31 @@ async function handleStop(args: string, ctx: CommandContext): Promise<void> {
   }
   // No reply for the current IM scope: if there was a run, its in-flight
   // render loop will mark the card as interrupted and re-render.
+}
+
+/**
+ * Approval-card button callback. Card-click ONLY: a typed `/perm allow <id>`
+ * would bypass the bridge_token signature the dispatcher verifies for card
+ * clicks, so text invocations are rejected outright. No card update here —
+ * the adapter's permission_resolved event drives the card to its outcome.
+ */
+async function handlePerm(args: string, ctx: CommandContext): Promise<void> {
+  if (!ctx.fromCardAction) {
+    await reply(ctx, '❌ 该操作仅支持通过审批卡片按钮进行。');
+    return;
+  }
+  const [decision, id] = args.trim().split(/\s+/);
+  if ((decision !== 'allow' && decision !== 'deny') || !id) {
+    log.warn('perm', 'bad-args', { args: args.slice(0, 80) });
+    return;
+  }
+  const active = ctx.activeRuns.get(ctx.scope);
+  if (!active) {
+    log.info('perm', 'no-active-run', { scope: ctx.scope });
+    return;
+  }
+  active.run.respondPermission?.(id, decision);
+  log.info('perm', 'responded', { scope: ctx.scope, id, decision });
 }
 
 async function handleTimeout(args: string, ctx: CommandContext): Promise<void> {
