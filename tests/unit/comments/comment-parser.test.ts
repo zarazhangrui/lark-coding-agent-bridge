@@ -38,6 +38,32 @@ describe('comment parser', () => {
     expect(result).toEqual({ question: 'second', targetReplyId: 'reply-2' });
   });
 
+  it('renders the prior thread replies before the question', () => {
+    const prompt = buildCommentPrompt(
+      { fileToken: 'doc-token', fileType: 'docx' },
+      {
+        question: '说说你的思考',
+        isWhole: false,
+        priorReplies: ['这段方案有个风险', '我觉得可以拆成两步'],
+      },
+    );
+
+    expect(prompt).toContain('这条评论 thread 里此前的讨论');
+    expect(prompt).toContain('1. 这段方案有个风险');
+    expect(prompt).toContain('2. 我觉得可以拆成两步');
+    // the prior discussion must come before the question so the agent reads it as context
+    expect(prompt.indexOf('这段方案有个风险')).toBeLessThan(prompt.indexOf('用户的问题：说说你的思考'));
+  });
+
+  it('omits the prior-discussion block when the thread has no earlier replies', () => {
+    const prompt = buildCommentPrompt(
+      { fileToken: 'doc-token', fileType: 'docx' },
+      { question: '第一个问题', isWhole: false, priorReplies: [] },
+    );
+
+    expect(prompt).not.toContain('此前的讨论');
+  });
+
   it('strips common markdown before writing back to comments', () => {
     expect(stripMarkdown('**bold** _italic_ `code`\n- item\n> quote')).toBe(
       'bold italic code\nitem\nquote',
@@ -47,7 +73,7 @@ describe('comment parser', () => {
   it('recommends the current docs fetch form without hard-binding one local CLI build', () => {
     const prompt = buildCommentPrompt(
       { fileToken: 'doc-token', fileType: 'docx' },
-      { question: '@bot read this', isWhole: false },
+      { question: '@bot read this', isWhole: false, priorReplies: [] },
     );
 
     expect(prompt).toContain(
@@ -67,7 +93,7 @@ describe('comment parser', () => {
   it('does not recommend docs fetch for non-document comment targets', () => {
     const prompt = buildCommentPrompt(
       { fileToken: 'sheet-token', fileType: 'sheet' },
-      { question: '@bot read this sheet', isWhole: true },
+      { question: '@bot read this sheet', isWhole: true, priorReplies: [] },
     );
 
     expect(prompt).toContain('这是 sheet 类型');

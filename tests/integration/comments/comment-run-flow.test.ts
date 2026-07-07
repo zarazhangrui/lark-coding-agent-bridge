@@ -66,6 +66,29 @@ describe('comment run flow', () => {
     expect(h.inThreadReplies).toEqual(['answer one']);
   });
 
+  it('includes the prior thread replies as context when @-ed on a later reply', async () => {
+    const h = await createHarness({
+      commentReplies: [
+        { reply_id: 'reply-a', text: '这段方案有个风险' },
+        { reply_id: 'reply-b', text: '我觉得可以拆成两步' },
+        { reply_id: 'reply-1', text: '@bot 说说你的思考' },
+      ],
+    });
+
+    await handleCommentMention(h.deps(event({ commentId: 'comment-1', replyId: 'reply-1' })));
+
+    expect(h.agent.runOptions).toHaveLength(1);
+    const prompt = h.agent.runOptions[0]!.prompt;
+    // the two replies before the @bot reply are surfaced as context
+    expect(prompt).toContain('此前的讨论');
+    expect(prompt).toContain('这段方案有个风险');
+    expect(prompt).toContain('我觉得可以拆成两步');
+    // the @bot reply is the question, not duplicated into the prior-discussion list
+    expect(prompt).toContain('用户的问题：@bot 说说你的思考');
+    const priorBlock = prompt.slice(prompt.indexOf('此前的讨论'), prompt.indexOf('用户的问题'));
+    expect(priorBlock).not.toContain('说说你的思考');
+  });
+
   it('shares Claude sessions across different comment threads in the same document', async () => {
     const h = await createHarness({
       agentTexts: ['first answer', 'second answer', 'third answer'],
@@ -197,6 +220,9 @@ async function createHarness(options: {
   sessionIds?: string[];
   threadIds?: string[];
   reactionFails?: boolean;
+  /** Full reply_list (chronological) returned by fileComment.get for comment-1.
+   * Lets a test model a thread with replies preceding the @bot reply. */
+  commentReplies?: Array<{ reply_id: string; text: string }>;
 } = {}): Promise<{
   tmp: TmpProfile;
   agent: FakeAgentAdapter;
@@ -258,6 +284,18 @@ async function createHarness(options: {
           async get(input) {
             const commentId = input.path.comment_id;
             const replyId = commentId === 'comment-2' ? 'reply-2' : 'reply-1';
+            if (options.commentReplies && commentId === 'comment-1') {
+              return {
+                data: {
+                  reply_list: {
+                    replies: options.commentReplies.map((r) => ({
+                      reply_id: r.reply_id,
+                      content: { elements: [{ type: 'text_run', text_run: { text: r.text } }] },
+                    })),
+                  },
+                },
+              };
+            }
             return commentGet(replyId, '@bot question');
           },
           async list() {
