@@ -1,0 +1,32 @@
+package.json
+  h_965db5153ff6bf 3
+src/bot/comments.ts
+  s_ae40a511d70ccf::t_cd40f9116bdfa0 67-71,420-429,435,439-452,463,484-490
+tests/integration/comments/comment-run-flow.test.ts
+  s_ae40a511d70ccf::t_458b4cb8273037 69-91,223-225,287-298
+tests/unit/comments/comment-parser.test.ts
+  s_ae40a511d70ccf::t_8d2321449b4a09 41-66,76,96
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "57549a083ac2681abeef369d88df4e9c5e9cbbf4",
+  "prompts": {},
+  "humans": {
+    "h_965db5153ff6bf": {
+      "author": "zeno06111-lab <zeno06111@gmail.com>"
+    }
+  },
+  "sessions": {
+    "s_ae40a511d70ccf": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "c1a6f87b-ed30-4b33-be8f-3d5f53c693f5",
+        "model": "unknown"
+      },
+      "human_author": "zeno06111-lab <zeno06111@gmail.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
