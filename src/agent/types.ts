@@ -65,11 +65,10 @@ export interface AgentRun {
    * Resolves true if it exited within the window, false if the timer
    * fired first (caller usually wants to fall back to stop()).
    *
-   * Use this after a terminal stream event (`done` / `error`): the
-   * stream-json `result` line arrives before claude has actually closed
-   * stdout — there's a brief telemetry/cleanup tail in between. Calling
-   * stop() in that window forces a SIGTERM and the run exits with code
-   * 143 instead of 0; waiting it out lets it exit cleanly.
+   * Use this after a terminal stream event (`done` / `error`): the SDK
+   * query's async iteration finishing is what resolves this, and that can
+   * lag slightly behind the terminal event while the SDK tears down —
+   * waiting it out avoids forcing stop() during that brief window.
    */
   waitForExit(timeoutMs: number): Promise<boolean>;
   /**

@@ -65,7 +65,7 @@ export function translateSdkMessage(raw: unknown): AgentEvent[] {
     for (const block of msg.message?.content ?? []) {
       if (block.type === 'tool_result' && block.tool_use_id) {
         const output =
-          typeof block.content === 'string' ? block.content : JSON.stringify(block.content);
+          typeof block.content === 'string' ? block.content : (JSON.stringify(block.content) ?? '');
         out.push({
           type: 'tool_result',
           id: block.tool_use_id,

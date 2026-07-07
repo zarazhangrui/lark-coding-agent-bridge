@@ -180,7 +180,7 @@ describe('ClaudeSdkAdapter interactive approval', () => {
   }
 
   it('emits permission_request and honors an allow response', async () => {
-    const adapter = new ClaudeSdkAdapter({ queryFn: approvalQuery() });
+    const adapter = new ClaudeSdkAdapter({ queryFn: approvalQuery(), approvalEnabled: true });
     const run = adapter.run({ runId: 'r', prompt: 'p', cwd: '/w', permissionMode: 'default' });
     const it = run.events[Symbol.asyncIterator]();
     const first = await it.next();
@@ -192,7 +192,7 @@ describe('ClaudeSdkAdapter interactive approval', () => {
   });
 
   it('auto-denies a parked permission when the run is stopped', async () => {
-    const adapter = new ClaudeSdkAdapter({ queryFn: approvalQuery() });
+    const adapter = new ClaudeSdkAdapter({ queryFn: approvalQuery(), approvalEnabled: true });
     const run = adapter.run({ runId: 'r', prompt: 'p', cwd: '/w', permissionMode: 'default' });
     const it = run.events[Symbol.asyncIterator]();
     await it.next(); // permission_request
@@ -216,6 +216,7 @@ describe('ClaudeSdkAdapter interactive approval', () => {
       // Deliberately large so a pass proves the abort-check resolved it,
       // not the timeout.
       permissionTimeoutMs: 5 * 60 * 1000,
+      approvalEnabled: true,
       queryFn: ((params: { options?: Record<string, unknown> }) => {
         const canUseTool = params.options?.canUseTool as
           | ((n: string, i: unknown, o: { signal: AbortSignal; toolUseID: string }) => Promise<{
@@ -270,5 +271,44 @@ describe('ClaudeSdkAdapter interactive approval', () => {
       new Promise<{ kind: 'timeout' }>((resolve) => setTimeout(() => resolve({ kind: 'timeout' }), 200)),
     ]);
     expect(race).toEqual({ kind: 'resolved', value: { behavior: 'deny', message: 'run stopped' } });
+  });
+
+  it('denies prompted tools immediately when approvalEnabled is not set (no permission_request, no park)', async () => {
+    // Fake query that: 1) checks an auto-allow tool still allows, then
+    // 2) calls canUseTool for a prompted tool (Bash) and captures the
+    // resolution promptly -- this must resolve to deny WITHOUT emitting a
+    // permission_request and without waiting on the (huge) permission timer.
+    let readDecision: unknown;
+    let bashDecision: unknown;
+    const adapter = new ClaudeSdkAdapter({
+      // Deliberately large: if the fix regresses to parking, this test
+      // would hang for the suite duration instead of just failing fast.
+      permissionTimeoutMs: 5 * 60 * 1000,
+      queryFn: ((params: { options?: Record<string, unknown> }) => {
+        const canUseTool = params.options?.canUseTool as
+          | ((n: string, i: unknown, o: { signal: AbortSignal; toolUseID: string }) => Promise<unknown>)
+          | undefined;
+        const controller = params.options?.abortController as AbortController;
+        const iterable = (async function* () {
+          readDecision = await canUseTool!('Read', { file_path: '/w/a.txt' }, {
+            signal: controller.signal,
+            toolUseID: 'tu-read',
+          });
+          bashDecision = await canUseTool!('Bash', { command: 'echo hi' }, {
+            signal: controller.signal,
+            toolUseID: 'tu-bash',
+          });
+          yield { type: 'result', subtype: 'success', session_id: 's' };
+        })();
+        return Object.assign(iterable, { interrupt: async () => {} });
+      }) as never,
+    });
+
+    const run = adapter.run({ runId: 'r', prompt: 'p', cwd: '/w', permissionMode: 'default' });
+    const events = await collect(run.events);
+
+    expect(readDecision).toEqual({ behavior: 'allow' });
+    expect(bashDecision).toEqual({ behavior: 'deny', message: 'interactive approval not available' });
+    expect(events.some((e) => e.type === 'permission_request')).toBe(false);
   });
 });

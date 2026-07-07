@@ -31,6 +31,14 @@ export interface ClaudeSdkAdapterOptions {
   queryFn?: QueryFn;
   /** Grace before a parked permission request auto-denies. */
   permissionTimeoutMs?: number;
+  /**
+   * Opt into interactive approval: parks prompted tools and emits
+   * `permission_request` events pending a `respondPermission` call. Off by
+   * default, in which case prompted tools are denied immediately (matching
+   * the old headless CLI adapter's behavior for non-bypass permission
+   * modes) since Phase 1a has no consumer to answer the prompt.
+   */
+  approvalEnabled?: boolean;
 }
 
 const DEFAULT_PERMISSION_TIMEOUT_MS = 5 * 60 * 1000;
@@ -44,6 +52,7 @@ export class ClaudeSdkAdapter implements AgentAdapter {
   private readonly env: NodeJS.ProcessEnv;
   private readonly queryFn: QueryFn;
   private readonly permissionTimeoutMs: number;
+  private readonly approvalEnabled: boolean;
   private botIdentity: AgentBotIdentity | undefined;
 
   constructor(opts: ClaudeSdkAdapterOptions = {}) {
@@ -52,6 +61,7 @@ export class ClaudeSdkAdapter implements AgentAdapter {
     this.env = opts.env ?? {};
     this.queryFn = opts.queryFn ?? (sdkQuery as unknown as QueryFn);
     this.permissionTimeoutMs = opts.permissionTimeoutMs ?? DEFAULT_PERMISSION_TIMEOUT_MS;
+    this.approvalEnabled = opts.approvalEnabled ?? false;
   }
 
   setBotIdentity(identity: AgentBotIdentity): void {
@@ -139,6 +149,13 @@ export class ClaudeSdkAdapter implements AgentAdapter {
       p.resolve(result);
     };
 
+    // Bypass mode never prompts (allowDangerouslySkipPermissions is set above),
+    // so no canUseTool is attached there, same as before this fix. For every
+    // other permission mode we always attach one: when approval isn't opted
+    // into (Phase 1a has no consumer for permission_request yet), prompted
+    // tools are denied immediately -- matching the old headless CLI adapter's
+    // behavior -- instead of parking for up to permissionTimeoutMs with
+    // nobody able to answer.
     const canUseTool =
       permissionMode === 'bypassPermissions'
         ? undefined
@@ -148,6 +165,9 @@ export class ClaudeSdkAdapter implements AgentAdapter {
             ctx: { signal: AbortSignal; title?: string; displayName?: string; description?: string; toolUseID?: string },
           ): Promise<{ behavior: 'allow' | 'deny'; updatedInput?: Record<string, unknown>; message?: string }> => {
             if (classifyTool(toolName) === 'auto-allow') return { behavior: 'allow' };
+            if (!this.approvalEnabled) {
+              return { behavior: 'deny', message: 'interactive approval not available' };
+            }
             if (controller.signal.aborted) return { behavior: 'deny', message: 'run stopped' };
             const id = ctx.toolUseID ?? `perm-${++permCounter}`;
             pushEvent({

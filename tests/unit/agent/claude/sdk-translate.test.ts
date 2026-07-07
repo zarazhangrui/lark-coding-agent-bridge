@@ -37,6 +37,15 @@ describe('translateSdkMessage', () => {
     ).toEqual([{ type: 'tool_result', id: 't1', output: 'ok', isError: false }]);
   });
 
+  it('maps user tool_result blocks with undefined content to an empty-string output', () => {
+    expect(
+      translateSdkMessage({
+        type: 'user',
+        message: { content: [{ type: 'tool_result', tool_use_id: 't1', content: undefined, is_error: false }] },
+      }),
+    ).toEqual([{ type: 'tool_result', id: 't1', output: '', isError: false }]);
+  });
+
   it('maps a successful result to usage + done', () => {
     expect(
       translateSdkMessage({
