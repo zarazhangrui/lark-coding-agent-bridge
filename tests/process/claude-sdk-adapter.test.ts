@@ -44,6 +44,38 @@ describe('ClaudeSdkAdapter driver parity', () => {
     expect(env?.LARK_CHANNEL).toBe('1');
   });
 
+  it('passes profile-scoped larkChannel env vars to the spawned process', async () => {
+    let captured: Record<string, unknown> | undefined;
+    const queryFn = ((params: { options?: Record<string, unknown> }) => {
+      captured = params.options;
+      return fakeQuery([{ type: 'result', subtype: 'success', session_id: 'sess-1' }])(params);
+    }) as never;
+
+    const adapter = new ClaudeSdkAdapter({
+      larkChannel: {
+        profile: 'proj',
+        rootDir: '/root/dir',
+        larkCliConfigDir: '/cfg/dir',
+        larkCliSourceConfigFile: '/cfg/source.json',
+      },
+      queryFn,
+    });
+    const run = adapter.run({ runId: 'r1', prompt: 'hello', cwd: '/w' });
+    await collect(run.events);
+
+    const env = captured?.env as NodeJS.ProcessEnv | undefined;
+    expect(env).toBeDefined();
+    // Derived by buildLarkChannelEnv (src/agent/lark-channel-env.ts):
+    // - LARK_CHANNEL_PROFILE <- context.profile
+    // - LARK_CHANNEL_HOME <- context.rootDir
+    // - LARK_CHANNEL_CONFIG <- context.larkCliSourceConfigFile (takes priority over rootDir-derived default)
+    // - LARKSUITE_CLI_CONFIG_DIR <- context.larkCliConfigDir
+    expect(env?.LARK_CHANNEL_PROFILE).toBe('proj');
+    expect(env?.LARK_CHANNEL_HOME).toBe('/root/dir');
+    expect(env?.LARK_CHANNEL_CONFIG).toBe('/cfg/source.json');
+    expect(env?.LARKSUITE_CLI_CONFIG_DIR).toBe('/cfg/dir');
+  });
+
   it('passes cwd, resume, model, bypass mode, and preset system prompt to query', async () => {
     let captured: Record<string, unknown> | undefined;
     const queryFn = ((params: { options?: Record<string, unknown> }) => {
@@ -104,6 +136,26 @@ describe('ClaudeSdkAdapter driver parity', () => {
     await run.stop();
     const first = await firstPromise;
     expect(first.done ? undefined : first.value.type).toBe('error');
+  });
+
+  it('surfaces an error AgentEvent when the query stream throws mid-stream', async () => {
+    const adapter = new ClaudeSdkAdapter({
+      queryFn: (() => {
+        const iterable = (async function* () {
+          yield {
+            type: 'assistant',
+            session_id: 's',
+            message: { content: [{ type: 'text', text: 'hi' }] },
+          };
+          throw new Error('boom');
+        })();
+        return Object.assign(iterable, { interrupt: async () => {} });
+      }) as never,
+    });
+    const run = adapter.run({ runId: 'r', prompt: 'p', cwd: '/w' });
+    const events = await collect(run.events);
+    // Not aborted, so the catch (err) branch in run() sets terminationReason: 'failed'.
+    expect(events[events.length - 1]).toMatchObject({ type: 'error', terminationReason: 'failed' });
   });
 });
 
