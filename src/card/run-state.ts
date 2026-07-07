@@ -100,6 +100,17 @@ export function reduce(state: RunState, evt: AgentEvent): RunState {
       return { ...state, blocks };
     }
 
+    case 'notice': {
+      return {
+        ...state,
+        blocks: [
+          ...closeStreamingText(state.blocks),
+          { kind: 'text', content: `_⛔ ${evt.text}_`, streaming: false },
+        ],
+        reasoning: { ...state.reasoning, active: false },
+      };
+    }
+
     case 'error': {
       const terminal =
         evt.terminationReason === 'interrupted'

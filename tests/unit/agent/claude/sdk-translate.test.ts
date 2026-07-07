@@ -73,6 +73,32 @@ describe('translateSdkMessage', () => {
     expect((out[0] as { message: string }).message).toContain('billing_error');
   });
 
+  it('maps permission_denied to a notice event', () => {
+    expect(
+      translateSdkMessage({
+        type: 'system',
+        subtype: 'permission_denied',
+        tool_name: 'Bash',
+        tool_use_id: 'tu-9',
+        decision_reason: 'classifier judged the command destructive',
+        message: 'Permission denied',
+      }),
+    ).toEqual([
+      { type: 'notice', text: '工具 Bash 被自动拒绝：classifier judged the command destructive' },
+    ]);
+  });
+
+  it('falls back to message when decision_reason is absent', () => {
+    const out = translateSdkMessage({
+      type: 'system',
+      subtype: 'permission_denied',
+      tool_name: 'Write',
+      tool_use_id: 'tu-10',
+      message: 'Permission denied',
+    });
+    expect(out).toEqual([{ type: 'notice', text: '工具 Write 被自动拒绝：Permission denied' }]);
+  });
+
   it('ignores unrelated message types', () => {
     expect(translateSdkMessage({ type: 'stream_event' })).toEqual([]);
     expect(translateSdkMessage(null)).toEqual([]);

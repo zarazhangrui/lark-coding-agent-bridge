@@ -38,7 +38,8 @@ export type AgentEvent =
       id: string;
       decision: 'allow' | 'deny';
       reason: 'user' | 'timeout' | 'aborted';
-    };
+    }
+  | { type: 'notice'; text: string };
 
 export const CLAUDE_DEFAULT_PERMISSION_MODE: ClaudePermissionMode = 'bypassPermissions';
 

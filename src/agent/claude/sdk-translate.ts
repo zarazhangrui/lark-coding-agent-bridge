@@ -19,7 +19,9 @@ interface SdkRawMessage {
   session_id?: string;
   cwd?: string;
   model?: string;
-  message?: { content?: ContentBlock[] };
+  tool_name?: string;
+  decision_reason?: string;
+  message?: { content?: ContentBlock[] } | string;
   usage?: {
     input_tokens?: number;
     output_tokens?: number;
@@ -43,13 +45,24 @@ export function translateSdkMessage(raw: unknown): AgentEvent[] {
     return out;
   }
 
+  if (msg.type === 'system' && msg.subtype === 'permission_denied') {
+    const tool = msg.tool_name ?? 'unknown';
+    const why =
+      (typeof msg.decision_reason === 'string' && msg.decision_reason) ||
+      (typeof msg.message === 'string' && msg.message) ||
+      'permission denied';
+    out.push({ type: 'notice', text: `工具 ${tool} 被自动拒绝：${why}` });
+    return out;
+  }
+
   if (msg.type === 'assistant') {
     // A refusal / auth / billing error surfaces on the assistant frame.
     if (typeof msg.error === 'string' && msg.error) {
       out.push({ type: 'error', message: `claude error: ${msg.error}`, terminationReason: 'failed' });
       return out;
     }
-    for (const block of msg.message?.content ?? []) {
+    const content = typeof msg.message === 'object' ? (msg.message?.content ?? []) : [];
+    for (const block of content) {
       if (block.type === 'text' && typeof block.text === 'string' && block.text) {
         out.push({ type: 'text', delta: block.text });
       } else if (block.type === 'thinking' && typeof block.thinking === 'string' && block.thinking) {
@@ -62,7 +75,8 @@ export function translateSdkMessage(raw: unknown): AgentEvent[] {
   }
 
   if (msg.type === 'user') {
-    for (const block of msg.message?.content ?? []) {
+    const content = typeof msg.message === 'object' ? (msg.message?.content ?? []) : [];
+    for (const block of content) {
       if (block.type === 'tool_result' && block.tool_use_id) {
         const output =
           typeof block.content === 'string' ? block.content : (JSON.stringify(block.content) ?? '');
