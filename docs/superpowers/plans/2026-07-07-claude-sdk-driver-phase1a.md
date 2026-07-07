@@ -652,7 +652,13 @@ export class ClaudeSdkAdapter implements AgentAdapter {
     const controller = new AbortController();
     const permissionMode = opts.permissionMode ?? CLAUDE_DEFAULT_PERMISSION_MODE;
 
-    const env = mergeProcessEnv(buildLarkChannelEnv(this.larkChannel), this.env);
+    // Seed process.env first: the SDK REPLACES (does not merge) the subprocess
+    // environment with options.env, so PATH/HOME/~/.claude discovery would be
+    // lost otherwise. Precedence: process.env < lark-channel env < profile env.
+    const env = mergeProcessEnv(
+      mergeProcessEnv(process.env, buildLarkChannelEnv(this.larkChannel)),
+      this.env,
+    );
     const options: Record<string, unknown> = {
       cwd: opts.cwd,
       abortController: controller,

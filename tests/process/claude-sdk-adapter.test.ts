@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import { ClaudeSdkAdapter } from '../../src/agent/claude/sdk-adapter.js';
 import type { AgentEvent } from '../../src/agent/types.js';
 
@@ -22,6 +22,28 @@ function fakeQuery(messages: unknown[]) {
 }
 
 describe('ClaudeSdkAdapter driver parity', () => {
+  afterEach(() => {
+    delete process.env.__SDK_ENV_PROBE__;
+  });
+
+  it('merges ambient process.env into options.env instead of replacing it', async () => {
+    process.env.__SDK_ENV_PROBE__ = 'present';
+    let captured: Record<string, unknown> | undefined;
+    const queryFn = ((params: { options?: Record<string, unknown> }) => {
+      captured = params.options;
+      return fakeQuery([{ type: 'result', subtype: 'success', session_id: 'sess-1' }])(params);
+    }) as never;
+
+    const adapter = new ClaudeSdkAdapter({ binary: '/usr/bin/claude', queryFn });
+    const run = adapter.run({ runId: 'r1', prompt: 'hello', cwd: '/work' });
+    await collect(run.events);
+
+    const env = captured?.env as NodeJS.ProcessEnv | undefined;
+    expect(env).toBeDefined();
+    expect(env?.__SDK_ENV_PROBE__).toBe('present');
+    expect(env?.LARK_CHANNEL).toBe('1');
+  });
+
   it('passes cwd, resume, model, bypass mode, and preset system prompt to query', async () => {
     let captured: Record<string, unknown> | undefined;
     const queryFn = ((params: { options?: Record<string, unknown> }) => {

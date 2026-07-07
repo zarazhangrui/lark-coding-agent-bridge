@@ -76,7 +76,10 @@ export class ClaudeSdkAdapter implements AgentAdapter {
     const controller = new AbortController();
     const permissionMode = opts.permissionMode ?? CLAUDE_DEFAULT_PERMISSION_MODE;
 
-    const env = mergeProcessEnv(buildLarkChannelEnv(this.larkChannel), this.env);
+    const env = mergeProcessEnv(
+      mergeProcessEnv(process.env, buildLarkChannelEnv(this.larkChannel)),
+      this.env,
+    );
     const options: Record<string, unknown> = {
       cwd: opts.cwd,
       abortController: controller,
