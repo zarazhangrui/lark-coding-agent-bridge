@@ -70,6 +70,14 @@ export class ClaudeAdapter implements AgentAdapter {
     // special characters ever reach the shell.
     const systemPromptFile = writeSystemPromptFile(buildBridgeSystemPrompt(this.botIdentity));
 
+    // Always allow lark-cli commands (bridge needs it for interactive cards).
+    // Strip any user-specified lark-cli pattern (may be too restrictive) and
+    // append the bridge's standard Bash(lark-cli *).
+    const userTokens = (opts.allowedTools?.trim() || '')
+      .match(/[\w]+(?:\([^)]*\))?/gi)
+      ?.filter((t) => !/^Bash\(\s*lark-cli/i.test(t) && !t.startsWith('mcp__')) ?? [];
+    const userTools = userTokens.join(' ');
+    const toolAllowlist = `Bash(lark-cli *) ${userTools}`;
     const args = [
       '-p',
       '--output-format',
@@ -77,6 +85,8 @@ export class ClaudeAdapter implements AgentAdapter {
       '--verbose',
       '--permission-mode',
       opts.permissionMode ?? CLAUDE_DEFAULT_PERMISSION_MODE,
+      '--allowedTools',
+      toolAllowlist,
       '--append-system-prompt-file',
       systemPromptFile.path,
     ];

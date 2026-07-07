@@ -152,6 +152,12 @@ export interface AppPreferences {
    * Range 100-30000; out-of-range values fall back to default.
    */
   agentStopGraceMs?: number;
+  /**
+   * Owner-only: restrict which tools the agent can use, passed as
+   * `--allowedTools` to the Claude CLI. Default: `'Bash(free *)'`.
+   * Example: `'Bash(free *) Read(*) Write(*)'`
+   */
+  allowedTools?: string;
 }
 
 /**
@@ -266,6 +272,11 @@ export function getAgentStopGraceMs(cfg: AppConfig): number {
   const raw = cfg.preferences?.agentStopGraceMs;
   if (typeof raw !== 'number' || !Number.isFinite(raw)) return 5000;
   return Math.min(30_000, Math.max(100, Math.floor(raw)));
+}
+
+/** Resolve the allowed-tools preference with default fallback. */
+export function getAllowedTools(cfg: AppConfig): string | undefined {
+  return cfg.preferences?.allowedTools;
 }
 
 export function getRunIdleTimeoutMs(cfg: AppConfig): number | undefined {

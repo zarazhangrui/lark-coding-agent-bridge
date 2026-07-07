@@ -45,6 +45,8 @@ export interface AgentRunOptions {
    * are adapter-specific.
   */
   stopGraceMs?: number;
+  /** Tool allowlist passed as `--allowedTools` to the CLI. */
+  allowedTools?: string;
 }
 
 export interface AgentRun {

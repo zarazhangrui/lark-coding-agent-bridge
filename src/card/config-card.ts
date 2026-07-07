@@ -1,7 +1,9 @@
 import { modelLabel, supportedModels } from '../agent/models';
 import type { KnownChat } from '../bot/lark-info';
+import type { AccessMode } from '../config/permissions';
 import type { AgentKind, LarkCliIdentityPreset } from '../config/profile-schema';
 import type { CotMessagesMode, MessageReplyMode } from '../config/schema';
+import { TOOL_CATEGORIES } from '../config/allowed-tools';
 
 export interface ConfigFormOpts {
   /** Profile's agent kind — decides which model catalog the picker shows. */
@@ -16,6 +18,11 @@ export interface ConfigFormOpts {
   runIdleTimeoutMinutes: number;
   requireMentionInGroup: boolean;
   larkCliIdentity: LarkCliIdentityPreset;
+  /** Permission access mode: 'read-only' | 'workspace' | 'full' */
+  defaultAccess: AccessMode;
+  allowedTools: string;
+  /** Whether to show the permission mode picker (owner in DM only). */
+  showPermissionMode: boolean;
   allowedUsers: string[];
   allowedChats: string[];
   admins: string[];
@@ -42,6 +49,22 @@ function collapsedAccessPanel(title: string, elements: object[]): object {
     padding: '8px 8px 8px 8px',
     elements,
   };
+}
+
+function toolReferencePanel(): object {
+  const md = [...TOOL_CATEGORIES]
+    .map(({ name, tools }) => `**${name}**\n${tools.map((t) => `\`${t}\``).join('  ')}`)
+    .join('\n\n');
+  return collapsedAccessPanel('📖 **allowedTools工具集合**', [
+    {
+      tag: 'markdown',
+      content:
+        md +
+        '\n\n' +
+        '**MCP 工具格式**\n`ExecuteExtraTool`（允许所有 MCP 工具）\n' +
+        '注意: 不支持在括号内指定具体 MCP 工具名（如 `ExecuteExtraTool(mcp__xxx)` 不会生效）',
+    },
+  ]);
 }
 
 function atMentionLine(openIds: string[]): string {
@@ -240,6 +263,44 @@ export function configFormCard(opts: ConfigFormOpts): object {
                 { text: { tag: 'plain_text', content: '允许用户身份' }, value: 'user-default' },
               ],
             },
+            ...(opts.showPermissionMode && opts.agentKind === 'claude'
+              ? [
+                  {
+                    tag: 'markdown',
+                    content:
+                      '\n**权限模式**\n' +
+                      '_控制 agent 对文件系统和命令的访问范围，修改后下条消息生效_\n' +
+                      '_`full`:读写任何文件,可执行任何命令_\n' +
+                      '_`workspace`:只能在工作目录内读写_\n' +
+                      '_`read-only`:只能读取文件,不能修改或执行命令_',
+                  },
+                  {
+                    tag: 'select_static',
+                    name: 'default_access',
+                    initial_option: opts.defaultAccess,
+                    options: [
+                      { text: { tag: 'plain_text', content: 'full(默认)' }, value: 'full' },
+                      { text: { tag: 'plain_text', content: 'workspace' }, value: 'workspace' },
+                      { text: { tag: 'plain_text', content: 'read-only' }, value: 'read-only' },
+                    ],
+                  },
+                  {
+                    tag: 'markdown',
+                    content:
+                      '\n**允许的工具**\n' +
+                      '允许 agent 能用哪些工具，**逗号或空格分隔**。仅在 **read-only**/**workspace** 权限下生效。默认允许`lark-cli`和Claude静默通过的部分只读命令 \n' +
+                      '注意工具名**区分大小写**，无效参数提交会报错，`mcp__`开头的参数会被忽略',
+                  },
+                  {
+                    tag: 'input',
+                    name: 'allowed_tools',
+                    default_value: opts.allowedTools,
+                    placeholder: { tag: 'plain_text', content: '' },
+                    input_type: 'text',
+                  },
+                  toolReferencePanel(),
+                ]
+              : []),
             { tag: 'hr' },
             collapsedAccessPanel('🔒 **访问控制**（点击展开）', accessElements),
             {
@@ -292,6 +353,13 @@ export function configSavedCard(opts: ConfigFormOpts): object {
   const summarize = (list: string[]): string =>
     list.length === 0 ? '_(空)_' : `${list.length} 项`;
   const cotLabel = cotMessagesLabel(opts.cotMessages);
+  const accessLabel = opts.defaultAccess;
+  const permissionLine = opts.showPermissionMode && opts.agentKind === 'claude'
+    ? `**权限模式**:\`${accessLabel}\`\n\n`
+    : '';
+  const toolsLine = opts.showPermissionMode && opts.agentKind === 'claude'
+    ? `**允许的工具**:\`${opts.allowedTools || ''}\`\n\n`
+    : '';
   return {
     schema: '2.0',
     config: { summary: { content: '偏好已保存' } },
@@ -308,7 +376,9 @@ export function configSavedCard(opts: ConfigFormOpts): object {
             `**并发上限**:\`${opts.maxConcurrentRuns}\`\n` +
             `**run 探活**:\`${opts.runIdleTimeoutMinutes > 0 ? `${opts.runIdleTimeoutMinutes} 分钟` : '关闭'}\`\n` +
             `**群里需要 @ bot**:\`${opts.requireMentionInGroup ? '是' : '否'}\`\n\n` +
-            `**lark-cli 身份策略**:\`${opts.larkCliIdentity === 'user-default' ? '允许用户身份' : '只允许应用身份'}\`\n\n` +
+            `**lark-cli 身份策略**:\`${opts.larkCliIdentity === 'user-default' ? '允许用户身份' : '只允许应用身份'}\`\n` +
+            permissionLine +
+            toolsLine +
             '🔒 **访问控制**\n' +
             `**允许私聊的用户**:${summarize(opts.allowedUsers)}\n` +
             `**允许响应的群**:${summarize(opts.allowedChats)}\n` +

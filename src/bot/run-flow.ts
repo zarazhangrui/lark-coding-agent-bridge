@@ -155,6 +155,7 @@ export async function startRunFlow(input: StartRunFlowInput): Promise<StartRunFl
               .map((attachment) => attachment.path)
               .filter((path): path is string => Boolean(path))
           : undefined,
+      allowedTools: input.profileConfig.preferences.allowedTools,
       stopGraceMs: input.stopGraceMs,
       observability: input.observability,
     });

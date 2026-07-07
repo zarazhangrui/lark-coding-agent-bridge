@@ -26,7 +26,9 @@ import { requestScopeGrantLink } from '../bot/wizard';
 import { forgetManagedCard, sendManagedCard, updateManagedCard } from '../card/managed';
 import { helpCard, resumeCard, statusCard, workspacesCard } from '../card/templates';
 import type { AppConfig, AppPreferences, MessageReplyMode, TenantBrand } from '../config/schema';
+import { validateAllowedTools } from '../config/allowed-tools';
 import {
+  getAllowedTools,
   getAgentStopGraceMs,
   getCotMessages,
   getMaxConcurrentRuns,
@@ -38,7 +40,7 @@ import {
 } from '../config/schema';
 import type { ProfileAccess, ProfileConfig } from '../config/profile-schema';
 import { resolveAppPaths } from '../config/app-paths';
-import { accessToClaudePermissionMode } from '../config/permissions';
+import { accessToClaudePermissionMode, type AccessMode } from '../config/permissions';
 import {
   loadRootConfig,
   runtimeProfileConfig,
@@ -49,6 +51,7 @@ import {
   canRunAdminCommand,
   canUseDm,
   canUseGroup,
+  isCreator,
   type OwnerRefreshState,
 } from '../policy/access';
 import { setSecret } from '../config/keystore';
@@ -1778,6 +1781,9 @@ async function showConfigForm(ctx: CommandContext): Promise<void> {
     runIdleTimeoutMinutes: ms ? Math.round(ms / 60_000) : 0,
     requireMentionInGroup: getRequireMentionInGroup(ctx.controls.cfg),
     larkCliIdentity: ctx.controls.profileConfig.larkCli.identityPreset,
+    defaultAccess: ctx.controls.profileConfig.permissions.defaultAccess,
+    allowedTools: getAllowedTools(ctx.controls.cfg) ?? '',
+    showPermissionMode: isCreator(ctx.controls, ctx.msg.senderId) && ctx.msg.chatType === 'p2p',
     allowedUsers: access.allowedUsers,
     allowedChats: access.allowedChats,
     admins: access.admins,
@@ -1881,6 +1887,63 @@ async function submitConfig(ctx: CommandContext): Promise<void> {
       : ctx.controls.profileConfig.larkCli.identityPreset;
   const previousLarkCliIdentity = ctx.controls.profileConfig.larkCli.identityPreset;
   const larkCliIdentityChanged = larkCliIdentity !== previousLarkCliIdentity;
+  // Parse permission access mode. Only accept known values; invalid/empty
+  // keeps the current setting.
+  const rawDefaultAccess = String(fv.default_access ?? '').trim();
+  const defaultAccess: AccessMode =
+    rawDefaultAccess === 'full' || rawDefaultAccess === 'workspace' || rawDefaultAccess === 'read-only'
+      ? rawDefaultAccess
+      : ctx.controls.profileConfig.permissions.defaultAccess;
+  // Parse allowed_tools — trim the string; empty means "use default".
+  const rawAllowedTools = String(fv.allowed_tools ?? '').trim();
+  let allowedTools = rawAllowedTools || undefined;
+
+  // Validate allowed_tools patterns when user has set a value.
+  if (rawAllowedTools) {
+    const { valid, invalid } = validateAllowedTools(rawAllowedTools);
+    if (invalid.length > 0) {
+      await sendManagedCard(
+        ctx.channel,
+        ctx.msg.chatId,
+        {
+          schema: '2.0',
+          config: { summary: { content: '参数校验失败' } },
+          body: {
+            elements: [
+              {
+                tag: 'markdown',
+                content:
+                  '❌ **允许的工具参数有误**\n\n' +
+                  '以下模式不是有效的工具名：\n' +
+                  invalid.map((t) => `- \`${t}\``).join('\n') +
+                  '\n\n' +
+                  '工具名**区分大小写**。在上方 `/config` 消息中展开 **📖 allowedTools工具集合** 查看完整的支持列表。\n' +
+                  'MCP 工具：`ExecuteExtraTool` \n\n' +
+                  (valid.length > 0
+                    ? '_以下模式校验通过，如需重试请只填写这些：_\n' + valid.map((t) => `- \`${t}\``).join('\n')
+                    : ''),
+              },
+            ],
+          },
+        },
+        { replyTo: ctx.msg.messageId },
+      ).catch(() => {});
+      return;
+    }
+  }
+
+  // Normalize: strip Bash(lark-cli *) and bare mcp__ tokens so the saved
+  // config reflects what the adapter actually uses. The adapter adds
+  // Bash(lark-cli *) automatically, and bare mcp__ is obsolete (users
+  // should use ExecuteExtraTool instead).
+  if (allowedTools) {
+    const cleaned = allowedTools
+      .match(/[\w]+(?:\([^)]*\))?/gi)
+      ?.filter((t) => !/^Bash\(\s*lark-cli/i.test(t) && !t.startsWith('mcp__'))
+      .join(' ')
+      .trim();
+    allowedTools = cleaned || undefined;
+  }
 
   const formMsgId = ctx.msg.messageId;
   const access = ctx.controls.profileConfig.access;
@@ -1911,6 +1974,7 @@ async function submitConfig(ctx: CommandContext): Promise<void> {
       maxConcurrentRuns,
       runIdleTimeoutMinutes,
       requireMentionInGroup,
+      allowedTools,
     };
 
     let failureStep = 'config.save';
@@ -1925,7 +1989,7 @@ async function submitConfig(ctx: CommandContext): Promise<void> {
         larkCliPolicyApplied = true;
         failureStep = 'config.save';
       }
-      await savePreferencesConfig(ctx, nextPreferences, requireMentionInGroup, larkCliIdentity);
+      await savePreferencesConfig(ctx, nextPreferences, requireMentionInGroup, larkCliIdentity, defaultAccess);
     } catch (err) {
       let rollbackFailed = false;
       if (larkCliIdentityChanged) {
@@ -1957,6 +2021,7 @@ async function submitConfig(ctx: CommandContext): Promise<void> {
       runIdleTimeoutMinutes,
       requireMentionInGroup,
       larkCliIdentity,
+      allowedTools,
       allowedUsersCount: access.allowedUsers.length,
       allowedChatsCount: access.allowedChats.length,
       adminsCount: access.admins.length,
@@ -1975,6 +2040,9 @@ async function submitConfig(ctx: CommandContext): Promise<void> {
         runIdleTimeoutMinutes,
         requireMentionInGroup,
         larkCliIdentity,
+        defaultAccess,
+        allowedTools: allowedTools ?? '',
+        showPermissionMode: isCreator(ctx.controls, ctx.msg.senderId) && ctx.msg.chatType === 'p2p',
         allowedUsers: access.allowedUsers,
         allowedChats: access.allowedChats,
         admins: access.admins,
@@ -2116,6 +2184,7 @@ async function savePreferencesConfig(
   preferences: AppPreferences,
   requireMentionInGroup: boolean,
   larkCliIdentity: ProfileConfig['larkCli']['identityPreset'],
+  defaultAccess: AccessMode,
 ): Promise<void> {
   const larkCli = {
     identityPreset: larkCliIdentity,
@@ -2130,6 +2199,7 @@ async function savePreferencesConfig(
     if (!root) {
       ctx.controls.cfg.preferences = preferences;
       ctx.controls.profileConfig.larkCli = larkCli;
+      ctx.controls.profileConfig.permissions.defaultAccess = defaultAccess;
       await saveConfig(ctx.controls.cfg, ctx.controls.configPath);
       return;
     }
@@ -2146,6 +2216,10 @@ async function savePreferencesConfig(
       access: {
         ...profile.access,
         requireMentionInGroup,
+      },
+      permissions: {
+        ...profile.permissions,
+        defaultAccess,
       },
       larkCli,
     };
