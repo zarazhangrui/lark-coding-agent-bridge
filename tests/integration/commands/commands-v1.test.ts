@@ -261,9 +261,12 @@ describe('Bridge command contracts', () => {
   it('does not expose access allowlists through the Lark /config form', async () => {
     const h = await createHarness();
 
-    await expect(h.run('/config')).resolves.toBe(true);
+    await expect(h.run('/config', { chatMode: 'group' })).resolves.toBe(true);
 
     const configCard = JSON.stringify(lastContent(h.channel));
+    expect(configCard).toContain('所有群需要 @ bot');
+    expect(configCard).toContain('本群单独设置需要 @ bot');
+    expect(configCard).toContain('current_chat_require_mention');
     expect(configCard).not.toContain('allowed_users');
     expect(configCard).not.toContain('allowed_chats');
     expect(configCard).not.toContain('admins');

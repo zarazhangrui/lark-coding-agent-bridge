@@ -1802,6 +1802,8 @@ async function showConfigForm(ctx: CommandContext): Promise<void> {
 
   const ms = getRunIdleTimeoutMs(ctx.controls.cfg);
   const access = ctx.controls.profileConfig.access;
+  const currentChatRequireMentionInGroup =
+    ctx.chatMode === 'p2p' ? undefined : !access.autoReplyChats.includes(ctx.msg.chatId);
   const card = configFormCard({
     agentKind: ctx.controls.profileConfig.agentKind,
     model: normalizeModelSelection(
@@ -1814,6 +1816,7 @@ async function showConfigForm(ctx: CommandContext): Promise<void> {
     maxConcurrentRuns: getMaxConcurrentRuns(ctx.controls.cfg),
     runIdleTimeoutMinutes: ms ? Math.round(ms / 60_000) : 0,
     requireMentionInGroup: getRequireMentionInGroup(ctx.controls.cfg),
+    currentChatRequireMentionInGroup,
     larkCliIdentity: ctx.controls.profileConfig.larkCli.identityPreset,
     allowedUsers: access.allowedUsers,
     allowedChats: access.allowedChats,
@@ -1911,6 +1914,15 @@ async function submitConfig(ctx: CommandContext): Promise<void> {
   if (rawRequireMention === 'yes') requireMentionInGroup = true;
   else if (rawRequireMention === 'no') requireMentionInGroup = false;
   else requireMentionInGroup = getRequireMentionInGroup(ctx.controls.cfg);
+  const rawCurrentChatRequireMention = String(fv.current_chat_require_mention ?? '').trim();
+  const currentChatRequireMentionInGroup =
+    ctx.chatMode === 'p2p'
+      ? undefined
+      : rawCurrentChatRequireMention === 'yes'
+        ? true
+        : rawCurrentChatRequireMention === 'no'
+          ? false
+          : !ctx.controls.profileConfig.access.autoReplyChats.includes(ctx.msg.chatId);
   const rawLarkCliIdentity = String(fv.lark_cli_identity ?? '').trim();
   const larkCliIdentity =
     rawLarkCliIdentity === 'user-default' || rawLarkCliIdentity === 'bot-only'
@@ -1920,7 +1932,6 @@ async function submitConfig(ctx: CommandContext): Promise<void> {
   const larkCliIdentityChanged = larkCliIdentity !== previousLarkCliIdentity;
 
   const formMsgId = ctx.msg.messageId;
-  const access = ctx.controls.profileConfig.access;
 
   // Detach: same reason as account submit — Lark's client locks the form
   // while the cardAction handler is running. Wait out FORM_SETTLE_MS *after*
@@ -1963,6 +1974,17 @@ async function submitConfig(ctx: CommandContext): Promise<void> {
         failureStep = 'config.save';
       }
       await savePreferencesConfig(ctx, nextPreferences, requireMentionInGroup, larkCliIdentity);
+      if (currentChatRequireMentionInGroup !== undefined) {
+        await saveAccessConfig(ctx, (current) => {
+          const list = new Set(current.autoReplyChats);
+          if (currentChatRequireMentionInGroup) list.delete(ctx.msg.chatId);
+          else list.add(ctx.msg.chatId);
+          return {
+            ...current,
+            autoReplyChats: [...list],
+          };
+        });
+      }
     } catch (err) {
       let rollbackFailed = false;
       if (larkCliIdentityChanged) {
@@ -1993,11 +2015,14 @@ async function submitConfig(ctx: CommandContext): Promise<void> {
       maxConcurrentRuns,
       runIdleTimeoutMinutes,
       requireMentionInGroup,
+      currentChatRequireMentionInGroup,
       larkCliIdentity,
-      allowedUsersCount: access.allowedUsers.length,
-      allowedChatsCount: access.allowedChats.length,
-      adminsCount: access.admins.length,
+      allowedUsersCount: ctx.controls.profileConfig.access.allowedUsers.length,
+      allowedChatsCount: ctx.controls.profileConfig.access.allowedChats.length,
+      adminsCount: ctx.controls.profileConfig.access.admins.length,
+      autoReplyChatsCount: ctx.controls.profileConfig.access.autoReplyChats.length,
     });
+    const savedAccess = ctx.controls.profileConfig.access;
     await waitForSettle();
     await showResultCardInPlace(
       ctx,
@@ -2011,10 +2036,11 @@ async function submitConfig(ctx: CommandContext): Promise<void> {
         maxConcurrentRuns,
         runIdleTimeoutMinutes,
         requireMentionInGroup,
+        currentChatRequireMentionInGroup,
         larkCliIdentity,
-        allowedUsers: access.allowedUsers,
-        allowedChats: access.allowedChats,
-        admins: access.admins,
+        allowedUsers: savedAccess.allowedUsers,
+        allowedChats: savedAccess.allowedChats,
+        admins: savedAccess.admins,
         knownChats: ctx.controls.knownChats ?? [],
       }),
     );
@@ -2022,7 +2048,7 @@ async function submitConfig(ctx: CommandContext): Promise<void> {
     // "群里不需要 @ bot" only works if the app can actually receive non-@
     // group messages (`im:message.group_msg`). When the user opts in, verify
     // the scope and, if missing, push a one-click re-authorization link.
-    if (!requireMentionInGroup) {
+    if (!requireMentionInGroup || currentChatRequireMentionInGroup === false) {
       await promptGroupMsgScopeIfMissing(ctx);
     }
   })();

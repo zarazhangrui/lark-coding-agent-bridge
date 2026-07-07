@@ -15,6 +15,7 @@ export interface ConfigFormOpts {
   /** 0 means "disabled". */
   runIdleTimeoutMinutes: number;
   requireMentionInGroup: boolean;
+  currentChatRequireMentionInGroup?: boolean;
   larkCliIdentity: LarkCliIdentityPreset;
   allowedUsers: string[];
   allowedChats: string[];
@@ -210,9 +211,9 @@ export function configFormCard(opts: ConfigFormOpts): object {
             {
               tag: 'markdown',
               content:
-                '\n**群里需要 @ bot**\n' +
+                '\n**所有群需要 @ bot**\n' +
                 '_是(默认):群和话题群里,不 @ bot 的消息不会触发回复,bot 不接群里聊天_\n' +
-                '_否:任何消息都会发给 agent(0.1.21 及更早版本的行为)_\n' +
+                '_否:所有群里任何消息都会发给 agent(0.1.21 及更早版本的行为)_\n' +
                 '_私聊永远不需要 @;`@全员` 永远不响应_',
             },
             {
@@ -224,6 +225,26 @@ export function configFormCard(opts: ConfigFormOpts): object {
                 { text: { tag: 'plain_text', content: '否' }, value: 'no' },
               ],
             },
+            ...(opts.currentChatRequireMentionInGroup === undefined
+              ? []
+              : [
+                  {
+                    tag: 'markdown',
+                    content:
+                      '\n**本群单独设置需要 @ bot**\n' +
+                      '_是(默认):本群沿用“所有群需要 @ bot”的默认安静策略_\n' +
+                      '_否:仅本群不 @ bot 也回复,其他群不受影响_',
+                  },
+                  {
+                    tag: 'select_static',
+                    name: 'current_chat_require_mention',
+                    initial_option: opts.currentChatRequireMentionInGroup ? 'yes' : 'no',
+                    options: [
+                      { text: { tag: 'plain_text', content: '是(默认)' }, value: 'yes' },
+                      { text: { tag: 'plain_text', content: '否' }, value: 'no' },
+                    ],
+                  },
+                ]),
             {
               tag: 'markdown',
               content:
@@ -307,7 +328,10 @@ export function configSavedCard(opts: ConfigFormOpts): object {
             `**COT 过程消息**:\`${cotLabel}\`\n` +
             `**并发上限**:\`${opts.maxConcurrentRuns}\`\n` +
             `**run 探活**:\`${opts.runIdleTimeoutMinutes > 0 ? `${opts.runIdleTimeoutMinutes} 分钟` : '关闭'}\`\n` +
-            `**群里需要 @ bot**:\`${opts.requireMentionInGroup ? '是' : '否'}\`\n\n` +
+            `**所有群需要 @ bot**:\`${opts.requireMentionInGroup ? '是' : '否'}\`\n` +
+            (opts.currentChatRequireMentionInGroup === undefined
+              ? '\n'
+              : `**本群单独设置需要 @ bot**:\`${opts.currentChatRequireMentionInGroup ? '是' : '否'}\`\n\n`) +
             `**lark-cli 身份策略**:\`${opts.larkCliIdentity === 'user-default' ? '允许用户身份' : '只允许应用身份'}\`\n\n` +
             '🔒 **访问控制**\n' +
             `**允许私聊的用户**:${summarize(opts.allowedUsers)}\n` +
