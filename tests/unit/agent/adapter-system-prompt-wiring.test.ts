@@ -15,7 +15,7 @@ import {
   buildBridgeSystemPrompt,
   prefixBridgeSystemPrompt,
 } from '../../../src/agent/bridge-system-prompt';
-import { ClaudeAdapter } from '../../../src/agent/claude/adapter';
+import { ClaudeSdkAdapter } from '../../../src/agent/claude/sdk-adapter';
 import { CodexAdapter } from '../../../src/agent/codex/adapter';
 
 interface FakeChild extends EventEmitter {
@@ -44,31 +44,52 @@ beforeEach(() => {
   spawnMock.spawnProcess.mockReset();
 });
 
-describe('ClaudeAdapter system prompt wiring', () => {
-  it('appends the identity-aware bridge system prompt after setBotIdentity', () => {
-    spawnMock.spawnProcess.mockReturnValue(fakeChild());
-    const adapter = new ClaudeAdapter();
+describe('ClaudeSdkAdapter system prompt wiring', () => {
+  // Fake query() that records the options it was called with, then
+  // immediately completes the run with a terminal result message.
+  function fakeQueryCapturing(
+    onCapture: (options: Record<string, unknown> | undefined) => void,
+  ) {
+    return ((params: { options?: Record<string, unknown> }) => {
+      onCapture(params.options);
+      const iterable = (async function* () {
+        yield { type: 'result', subtype: 'success', session_id: 'sess-1' };
+      })();
+      return Object.assign(iterable, { interrupt: async () => {} });
+    }) as never;
+  }
+
+  it('appends the identity-aware bridge system prompt after setBotIdentity', async () => {
+    let captured: Record<string, unknown> | undefined;
+    const adapter = new ClaudeSdkAdapter({ queryFn: fakeQueryCapturing((o) => (captured = o)) });
     adapter.setBotIdentity({ openId: 'ou_bot_self', name: 'Bridge' });
 
-    adapter.run({ runId: 'r1', prompt: 'hi', cwd: '/tmp' });
+    const run = adapter.run({ runId: 'r1', prompt: 'hi', cwd: '/tmp' });
+    for await (const _ of run.events) {
+      // drain to completion
+    }
 
-    const args = spawnMock.spawnProcess.mock.calls[0]?.[1] as string[];
-    const flagIndex = args.indexOf('--append-system-prompt');
-    expect(flagIndex).toBeGreaterThan(-1);
-    expect(args[flagIndex + 1]).toBe(
-      buildBridgeSystemPrompt({ openId: 'ou_bot_self', name: 'Bridge' }),
-    );
+    expect(captured?.systemPrompt).toEqual({
+      type: 'preset',
+      preset: 'claude_code',
+      append: buildBridgeSystemPrompt({ openId: 'ou_bot_self', name: 'Bridge' }),
+    });
   });
 
-  it('falls back to the base system prompt when no identity was set', () => {
-    spawnMock.spawnProcess.mockReturnValue(fakeChild());
-    const adapter = new ClaudeAdapter();
+  it('falls back to the base system prompt when no identity was set', async () => {
+    let captured: Record<string, unknown> | undefined;
+    const adapter = new ClaudeSdkAdapter({ queryFn: fakeQueryCapturing((o) => (captured = o)) });
 
-    adapter.run({ runId: 'r1', prompt: 'hi', cwd: '/tmp' });
+    const run = adapter.run({ runId: 'r1', prompt: 'hi', cwd: '/tmp' });
+    for await (const _ of run.events) {
+      // drain to completion
+    }
 
-    const args = spawnMock.spawnProcess.mock.calls[0]?.[1] as string[];
-    const flagIndex = args.indexOf('--append-system-prompt');
-    expect(args[flagIndex + 1]).toBe(buildBridgeSystemPrompt(undefined));
+    expect(captured?.systemPrompt).toEqual({
+      type: 'preset',
+      preset: 'claude_code',
+      append: buildBridgeSystemPrompt(undefined),
+    });
   });
 });
 

@@ -33,8 +33,8 @@ vi.mock('../../../src/agent/codex/adapter', () => ({
   },
 }));
 
-vi.mock('../../../src/agent/claude/adapter', () => ({
-  ClaudeAdapter: class {
+vi.mock('../../../src/agent/claude/sdk-adapter', () => ({
+  ClaudeSdkAdapter: class {
     id = 'claude';
     displayName = 'Claude Code';
     async isAvailable() {

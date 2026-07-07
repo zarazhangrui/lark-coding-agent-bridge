@@ -23,17 +23,28 @@ describe('platform spawn env', () => {
     ]);
   });
 
-  it('adapters use cross-spawn without shell invocation', async () => {
-    const [claudeSource, codexSource] = await Promise.all([
-      readFile(new URL('../../../src/agent/claude/adapter.ts', import.meta.url), 'utf8'),
-      readFile(new URL('../../../src/agent/codex/adapter.ts', import.meta.url), 'utf8'),
-    ]);
+  it('codex adapter uses cross-spawn without shell invocation', async () => {
+    // The Claude adapter no longer spawns a child process at all -- it drives
+    // the Claude Agent SDK's query() in-process (src/agent/claude/sdk-adapter.ts)
+    // -- so the "no shell invocation" assertion is only meaningful for Codex now.
+    const codexSource = await readFile(
+      new URL('../../../src/agent/codex/adapter.ts', import.meta.url),
+      'utf8',
+    );
 
-    expect(claudeSource).toContain("from '../../platform/spawn'");
     expect(codexSource).toContain("from '../../platform/spawn'");
-    expect(claudeSource).not.toContain("from 'node:child_process'");
     expect(codexSource).not.toContain("from 'node:child_process'");
-    expect(claudeSource).not.toContain('shell: true');
     expect(codexSource).not.toContain('shell: true');
+  });
+
+  it('Claude SDK adapter seeds process.env into the env passed to query()', async () => {
+    const sdkAdapterSource = await readFile(
+      new URL('../../../src/agent/claude/sdk-adapter.ts', import.meta.url),
+      'utf8',
+    );
+
+    expect(sdkAdapterSource).toContain("from '../../platform/spawn'");
+    expect(sdkAdapterSource).toContain('mergeProcessEnv(');
+    expect(sdkAdapterSource).toContain('mergeProcessEnv(process.env, buildLarkChannelEnv(this.larkChannel))');
   });
 });

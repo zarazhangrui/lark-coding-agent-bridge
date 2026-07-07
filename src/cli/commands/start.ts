@@ -2,7 +2,7 @@ import dns from 'node:dns';
 import os from 'node:os';
 import { createInterface } from 'node:readline';
 import pkg from '../../../package.json';
-import { ClaudeAdapter } from '../../agent/claude/adapter';
+import { ClaudeSdkAdapter } from '../../agent/claude/sdk-adapter';
 import { CodexAdapter } from '../../agent/codex/adapter';
 import {
   AgentPreflightError,
@@ -434,7 +434,7 @@ export function createRuntimeAgent(
       larkChannel,
     });
   }
-  return new ClaudeAdapter({ larkChannel });
+  return new ClaudeSdkAdapter({ larkChannel });
 }
 
 /**
