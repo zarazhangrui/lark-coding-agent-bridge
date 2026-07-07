@@ -23,7 +23,16 @@ export type AgentEvent =
       threadId?: string;
       terminationReason: 'normal' | 'interrupted' | 'timeout';
     }
-  | { type: 'error'; message: string; terminationReason: 'failed' | 'interrupted' | 'timeout' };
+  | { type: 'error'; message: string; terminationReason: 'failed' | 'interrupted' | 'timeout' }
+  | {
+      type: 'permission_request';
+      id: string;
+      toolName: string;
+      input: unknown;
+      title?: string;
+      displayName?: string;
+      description?: string;
+    };
 
 export const CLAUDE_DEFAULT_PERMISSION_MODE: ClaudePermissionMode = 'bypassPermissions';
 
@@ -63,6 +72,22 @@ export interface AgentRun {
    * 143 instead of 0; waiting it out lets it exit cleanly.
    */
   waitForExit(timeoutMs: number): Promise<boolean>;
+  /**
+   * Resolve a pending interactive permission request emitted as a
+   * `permission_request` event. No-op if the id is unknown or already
+   * settled (e.g. timed out or force-denied on stop). Adapters that never
+   * emit permission_request may omit this.
+   */
+  respondPermission?(
+    id: string,
+    decision: 'allow' | 'deny',
+    opts?: { updatedInput?: Record<string, unknown>; message?: string },
+  ): void;
+  /**
+   * Inject an additional user instruction into an in-flight run (Phase 2).
+   * Adapters without a live streaming session may omit it.
+   */
+  steer?(text: string): void;
 }
 
 /**
