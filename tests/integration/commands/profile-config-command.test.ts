@@ -90,6 +90,40 @@ describe('profile-aware account and config commands', () => {
     expect((root as unknown as { accounts?: unknown }).accounts).toBeUndefined();
   });
 
+  it('saves the current group mention override from /config submit', async () => {
+    vi.useFakeTimers();
+    const h = await createHarness();
+
+    await h.command('/config submit', {
+      require_mention_in_group: 'yes',
+      current_chat_require_mention: 'no',
+    }, {
+      chatMode: 'group',
+      chatId: 'oc-solo-agent',
+      scope: 'oc-solo-agent',
+    });
+
+    let root = await waitForRoot(h.rootDir, (candidate) =>
+      candidate.profiles.claude?.access.autoReplyChats.includes('oc-solo-agent') === true,
+    );
+    expect(root.profiles.claude?.access.requireMentionInGroup).toBe(true);
+    expect(root.profiles.claude?.access.autoReplyChats).toContain('oc-solo-agent');
+
+    await h.command('/config submit', {
+      require_mention_in_group: 'yes',
+      current_chat_require_mention: 'yes',
+    }, {
+      chatMode: 'group',
+      chatId: 'oc-solo-agent',
+      scope: 'oc-solo-agent',
+    });
+
+    root = await waitForRoot(h.rootDir, (candidate) =>
+      candidate.profiles.claude?.access.autoReplyChats.includes('oc-solo-agent') === false,
+    );
+    expect(root.profiles.claude?.access.autoReplyChats).not.toContain('oc-solo-agent');
+  });
+
   it('persists the picked model and clears it when "default" is chosen', async () => {
     vi.useFakeTimers();
     const h = await createHarness();
@@ -247,7 +281,15 @@ async function createHarness(options: {
 } = {}): Promise<{
   rootDir: string;
   channel: ReturnType<typeof createFakeChannel>;
-  command(content: string, formValue?: Record<string, unknown>): Promise<boolean>;
+  command(
+    content: string,
+    formValue?: Record<string, unknown>,
+    overrides?: {
+      chatMode?: 'p2p' | 'group' | 'topic';
+      chatId?: string;
+      scope?: string;
+    },
+  ): Promise<boolean>;
 }> {
   const rootDir = await mkdtemp(join(tmpdir(), 'bridge-profile-config-command-'));
   roots.push(rootDir);
@@ -275,20 +317,25 @@ async function createHarness(options: {
   return {
     rootDir,
     channel,
-    command: (content: string, formValue?: Record<string, unknown>) =>
-      tryHandleCommand({
-        channel: channel as unknown as CommandContext['channel'],
-        msg: message(content),
-        scope: 'chat-1',
-        chatMode: 'p2p',
-        sessions,
-        workspaces,
-        agent: new FakeAgentAdapter(),
-        activeRuns: new ActiveRuns(),
-        controls,
-        formValue,
-        fromCardAction: true,
-      }),
+    command: (content: string, formValue?: Record<string, unknown>, overrides = {}) => {
+      const chatId = overrides.chatId ?? 'chat-1';
+      return tryHandleCommand({
+          channel: channel as unknown as CommandContext['channel'],
+          msg: message(content, {
+            chatId,
+            chatType: overrides.chatMode ?? 'p2p',
+          }),
+          scope: overrides.scope ?? chatId,
+          chatMode: overrides.chatMode ?? 'p2p',
+          sessions,
+          workspaces,
+          agent: new FakeAgentAdapter(),
+          activeRuns: new ActiveRuns(),
+          controls,
+          formValue,
+          fromCardAction: true,
+        });
+    },
   };
 }
 
@@ -369,11 +416,14 @@ async function writeJson(path: string, value: unknown): Promise<void> {
   await writeFile(path, `${JSON.stringify(value, null, 2)}\n`, 'utf8');
 }
 
-function message(content: string): NormalizedMessage {
+function message(
+  content: string,
+  opts: { chatId?: string; chatType?: 'p2p' | 'group' | 'topic' } = {},
+): NormalizedMessage {
   return {
     messageId: `om-${content.replace(/\W+/g, '-').slice(0, 20)}`,
-    chatId: 'chat-1',
-    chatType: 'p2p',
+    chatId: opts.chatId ?? 'chat-1',
+    chatType: opts.chatType ?? 'p2p',
     senderId: 'ou-admin',
     senderName: 'Admin',
     content,

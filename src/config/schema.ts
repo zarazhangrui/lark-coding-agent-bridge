@@ -84,6 +84,8 @@ export interface AppAccess {
    * (/account, /config, /exit, /reconnect, /doctor, /cd, /ws, /doc,
    * /invite, /remove). */
   admins?: string[];
+  /** chat_id list for groups where non-@ messages also reach the agent. */
+  autoReplyChats?: string[];
 }
 
 export interface AppPreferences {

@@ -47,6 +47,7 @@ export function policyFingerprint(input: FingerprintInputV2): string {
 export function accessPolicyDigest(access: ProfileConfig['access']): string {
   return digestCanonical({
     admins: [...access.admins].sort(),
+    autoReplyChats: [...access.autoReplyChats].sort(),
     allowedChats: [...access.allowedChats].sort(),
     allowedUsers: [...access.allowedUsers].sort(),
     requireMentionInGroup: access.requireMentionInGroup,

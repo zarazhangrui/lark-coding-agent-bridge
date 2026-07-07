@@ -22,6 +22,7 @@ export interface ProfileAccess {
   allowedChats: string[];
   admins: string[];
   requireMentionInGroup: boolean;
+  autoReplyChats: string[];
 }
 
 export interface SandboxConfig {
@@ -254,6 +255,7 @@ function normalizeAccess(
     allowedChats: stringArray(access?.allowedChats),
     admins: stringArray(access?.admins),
     requireMentionInGroup: access?.requireMentionInGroup ?? legacyRequireMentionInGroup ?? true,
+    autoReplyChats: stringArray(access?.autoReplyChats),
   };
 }
 

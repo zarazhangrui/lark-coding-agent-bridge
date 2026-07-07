@@ -66,6 +66,7 @@ import { lookupMessageThreadId } from './thread-id';
 import { addWorkingReaction, removeReaction } from './reaction';
 import { fetchKnownChats } from './lark-info';
 import type { AppPaths } from '../config/app-paths';
+import type { ProfileConfig } from '../config/profile-schema';
 import {
   consumeCotEvents,
   CotClient,
@@ -93,6 +94,17 @@ const SUPPRESSED_API_ERROR_CODES = new Set([
   1069307, // drive.fileComment.get "not exist" — fall back to .list
   1069302, // drive.fileCommentReply.create — whole-doc comments don't accept replies; fall back to fileComment.create
 ]);
+
+export function shouldRequireMentionForGroupMessage(
+  cfg: AppConfig,
+  profileConfig: Pick<ProfileConfig, 'access'>,
+  chatId: string,
+): boolean {
+  return (
+    getRequireMentionInGroup(cfg) &&
+    !profileConfig.access.autoReplyChats.includes(chatId)
+  );
+}
 
 const SUPPRESSED_ENDPOINT_API_ERRORS = [
   {
@@ -646,7 +658,7 @@ async function intakeMessage(deps: IntakeDeps): Promise<void> {
   // event reaching here is either targeted or undirected chatter.
   if (
     msg.chatType !== 'p2p' &&
-    getRequireMentionInGroup(controls.cfg) &&
+    shouldRequireMentionForGroupMessage(controls.cfg, controls.profileConfig, msg.chatId) &&
     !msg.mentionedBot
   ) {
     log.info('intake', 'skip-no-mention', { scope, chatType: msg.chatType });

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import * as channelModule from '../../../src/bot/channel.js';
+import { createDefaultProfileConfig } from '../../../src/config/profile-schema.js';
 
 describe('Lark SDK logger noise filtering', () => {
   it('suppresses optional wiki-node permission failures that fall back to the original file token', () => {
@@ -57,6 +58,31 @@ describe('Lark SDK logger noise filtering', () => {
           },
         },
       ]),
+    ).toBe(false);
+  });
+});
+
+describe('group mention policy', () => {
+  it('keeps regular groups mention-only while allowing configured auto-reply chats', () => {
+    const profile = createDefaultProfileConfig({
+      agentKind: 'claude',
+      accounts: {
+        app: {
+          id: 'cli_test',
+          secret: '${APP_SECRET}',
+          tenant: 'feishu',
+        },
+      },
+      access: {
+        autoReplyChats: ['oc-solo-agent'],
+      },
+    });
+
+    expect(
+      channelModule.shouldRequireMentionForGroupMessage(profile, profile, 'oc-large-group'),
+    ).toBe(true);
+    expect(
+      channelModule.shouldRequireMentionForGroupMessage(profile, profile, 'oc-solo-agent'),
     ).toBe(false);
   });
 });

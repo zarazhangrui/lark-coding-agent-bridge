@@ -261,9 +261,12 @@ describe('Bridge command contracts', () => {
   it('does not expose access allowlists through the Lark /config form', async () => {
     const h = await createHarness();
 
-    await expect(h.run('/config')).resolves.toBe(true);
+    await expect(h.run('/config', { chatMode: 'group' })).resolves.toBe(true);
 
     const configCard = JSON.stringify(lastContent(h.channel));
+    expect(configCard).toContain('所有群需要 @ bot');
+    expect(configCard).toContain('本群单独设置需要 @ bot');
+    expect(configCard).toContain('current_chat_require_mention');
     expect(configCard).not.toContain('allowed_users');
     expect(configCard).not.toContain('allowed_chats');
     expect(configCard).not.toContain('admins');
@@ -285,18 +288,34 @@ describe('Bridge command contracts', () => {
         chatMode: 'group',
       }),
     ).resolves.toBe(true);
+    await expect(
+      h.run('/invite auto group', {
+        chatId: 'oc-solo-agent',
+        scope: 'oc-solo-agent',
+        chatMode: 'group',
+      }),
+    ).resolves.toBe(true);
 
     let root = await loadRootConfig(h.controls.configPath);
     expect(root?.profiles.claude?.access.allowedUsers).toContain('ou-alice');
     expect(root?.profiles.claude?.access.admins).toEqual(['ou-admin', 'ou-bob']);
     expect(root?.profiles.claude?.access.allowedChats).toContain('oc-group-1');
+    expect(root?.profiles.claude?.access.autoReplyChats).toContain('oc-solo-agent');
     expect(root?.profiles.claude?.preferences).not.toHaveProperty('access');
 
     await expect(
       h.run('/remove user @Alice', { mentions: [mention('ou-alice', 'Alice')] }),
     ).resolves.toBe(true);
+    await expect(
+      h.run('/remove auto group', {
+        chatId: 'oc-solo-agent',
+        scope: 'oc-solo-agent',
+        chatMode: 'group',
+      }),
+    ).resolves.toBe(true);
     root = await loadRootConfig(h.controls.configPath);
     expect(root?.profiles.claude?.access.allowedUsers).not.toContain('ou-alice');
+    expect(root?.profiles.claude?.access.autoReplyChats).not.toContain('oc-solo-agent');
   });
 
   it('adds every known bot group through /invite all group', async () => {

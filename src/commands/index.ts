@@ -1535,6 +1535,7 @@ async function handleInvite(args: string, ctx: CommandContext): Promise<void> {
         '• `/invite user @某人` — 加入允许私聊\n' +
         '• `/invite admin @某人` — 加入管理员\n' +
         '• `/invite group` — 把当前群加入响应群名单\n' +
+        '• `/invite auto group` — 当前群无需 @ bot 也回复\n' +
         '• `/invite all group` — 把 bot 所在的所有群一键加入',
     );
     return;
@@ -1546,6 +1547,25 @@ async function handleInvite(args: string, ctx: CommandContext): Promise<void> {
       return;
     }
     const chatId = ctx.msg.chatId;
+    if (tokens.includes('auto')) {
+      let already = false;
+      await saveAccessConfig(ctx, (current) => {
+        const list = new Set(current.autoReplyChats);
+        already = list.has(chatId);
+        if (!already) list.add(chatId);
+        return {
+          ...current,
+          autoReplyChats: [...list],
+        };
+      });
+      if (already) {
+        await reply(ctx, '✅ 当前群已开启免 @ 回复，无需重复添加。');
+        return;
+      }
+      await reply(ctx, `✅ 当前群（\`${chatId}\`）已开启免 @ 回复。其他群仍照常需要 @ bot。`);
+      await promptGroupMsgScopeIfMissing(ctx);
+      return;
+    }
     let already = false;
     await saveAccessConfig(ctx, (current) => {
       const list = new Set(current.allowedChats);
@@ -1613,7 +1633,8 @@ async function handleRemove(args: string, ctx: CommandContext): Promise<void> {
       '用法：\n' +
         '• `/remove user @某人` — 移出用户白名单\n' +
         '• `/remove admin @某人` — 移出管理员\n' +
-        '• `/remove group` — 把当前群移出响应群名单',
+        '• `/remove group` — 把当前群移出响应群名单\n' +
+        '• `/remove auto group` — 关闭当前群免 @ 回复',
     );
     return;
   }
@@ -1624,6 +1645,24 @@ async function handleRemove(args: string, ctx: CommandContext): Promise<void> {
       return;
     }
     const chatId = ctx.msg.chatId;
+    if (tokens.includes('auto')) {
+      let missing = false;
+      await saveAccessConfig(ctx, (current) => {
+        const list = new Set(current.autoReplyChats);
+        missing = !list.has(chatId);
+        list.delete(chatId);
+        return {
+          ...current,
+          autoReplyChats: [...list],
+        };
+      });
+      if (missing) {
+        await reply(ctx, '✅ 当前群本来就没有开启免 @ 回复，无需移除。');
+        return;
+      }
+      await reply(ctx, '✅ 已关闭当前群免 @ 回复；之后这个群照常需要 @ bot。');
+      return;
+    }
     let missing = false;
     await saveAccessConfig(ctx, (current) => {
       const list = new Set(current.allowedChats);
@@ -1703,6 +1742,7 @@ async function saveAccessConfig(
             allowedUsers: access.allowedUsers,
             allowedChats: access.allowedChats,
             admins: access.admins,
+            autoReplyChats: access.autoReplyChats,
           },
           requireMentionInGroup: access.requireMentionInGroup,
         };
@@ -1724,6 +1764,7 @@ async function saveAccessConfig(
         allowedUsers: access.allowedUsers.length,
         allowedChats: access.allowedChats.length,
         admins: access.admins.length,
+        autoReplyChats: access.autoReplyChats.length,
       });
       return access;
     });
@@ -1761,6 +1802,8 @@ async function showConfigForm(ctx: CommandContext): Promise<void> {
 
   const ms = getRunIdleTimeoutMs(ctx.controls.cfg);
   const access = ctx.controls.profileConfig.access;
+  const currentChatRequireMentionInGroup =
+    ctx.chatMode === 'p2p' ? undefined : !access.autoReplyChats.includes(ctx.msg.chatId);
   const card = configFormCard({
     agentKind: ctx.controls.profileConfig.agentKind,
     model: normalizeModelSelection(
@@ -1773,6 +1816,7 @@ async function showConfigForm(ctx: CommandContext): Promise<void> {
     maxConcurrentRuns: getMaxConcurrentRuns(ctx.controls.cfg),
     runIdleTimeoutMinutes: ms ? Math.round(ms / 60_000) : 0,
     requireMentionInGroup: getRequireMentionInGroup(ctx.controls.cfg),
+    currentChatRequireMentionInGroup,
     larkCliIdentity: ctx.controls.profileConfig.larkCli.identityPreset,
     allowedUsers: access.allowedUsers,
     allowedChats: access.allowedChats,
@@ -1870,6 +1914,15 @@ async function submitConfig(ctx: CommandContext): Promise<void> {
   if (rawRequireMention === 'yes') requireMentionInGroup = true;
   else if (rawRequireMention === 'no') requireMentionInGroup = false;
   else requireMentionInGroup = getRequireMentionInGroup(ctx.controls.cfg);
+  const rawCurrentChatRequireMention = String(fv.current_chat_require_mention ?? '').trim();
+  const currentChatRequireMentionInGroup =
+    ctx.chatMode === 'p2p'
+      ? undefined
+      : rawCurrentChatRequireMention === 'yes'
+        ? true
+        : rawCurrentChatRequireMention === 'no'
+          ? false
+          : !ctx.controls.profileConfig.access.autoReplyChats.includes(ctx.msg.chatId);
   const rawLarkCliIdentity = String(fv.lark_cli_identity ?? '').trim();
   const larkCliIdentity =
     rawLarkCliIdentity === 'user-default' || rawLarkCliIdentity === 'bot-only'
@@ -1879,7 +1932,6 @@ async function submitConfig(ctx: CommandContext): Promise<void> {
   const larkCliIdentityChanged = larkCliIdentity !== previousLarkCliIdentity;
 
   const formMsgId = ctx.msg.messageId;
-  const access = ctx.controls.profileConfig.access;
 
   // Detach: same reason as account submit — Lark's client locks the form
   // while the cardAction handler is running. Wait out FORM_SETTLE_MS *after*
@@ -1922,6 +1974,17 @@ async function submitConfig(ctx: CommandContext): Promise<void> {
         failureStep = 'config.save';
       }
       await savePreferencesConfig(ctx, nextPreferences, requireMentionInGroup, larkCliIdentity);
+      if (currentChatRequireMentionInGroup !== undefined) {
+        await saveAccessConfig(ctx, (current) => {
+          const list = new Set(current.autoReplyChats);
+          if (currentChatRequireMentionInGroup) list.delete(ctx.msg.chatId);
+          else list.add(ctx.msg.chatId);
+          return {
+            ...current,
+            autoReplyChats: [...list],
+          };
+        });
+      }
     } catch (err) {
       let rollbackFailed = false;
       if (larkCliIdentityChanged) {
@@ -1952,11 +2015,14 @@ async function submitConfig(ctx: CommandContext): Promise<void> {
       maxConcurrentRuns,
       runIdleTimeoutMinutes,
       requireMentionInGroup,
+      currentChatRequireMentionInGroup,
       larkCliIdentity,
-      allowedUsersCount: access.allowedUsers.length,
-      allowedChatsCount: access.allowedChats.length,
-      adminsCount: access.admins.length,
+      allowedUsersCount: ctx.controls.profileConfig.access.allowedUsers.length,
+      allowedChatsCount: ctx.controls.profileConfig.access.allowedChats.length,
+      adminsCount: ctx.controls.profileConfig.access.admins.length,
+      autoReplyChatsCount: ctx.controls.profileConfig.access.autoReplyChats.length,
     });
+    const savedAccess = ctx.controls.profileConfig.access;
     await waitForSettle();
     await showResultCardInPlace(
       ctx,
@@ -1970,10 +2036,11 @@ async function submitConfig(ctx: CommandContext): Promise<void> {
         maxConcurrentRuns,
         runIdleTimeoutMinutes,
         requireMentionInGroup,
+        currentChatRequireMentionInGroup,
         larkCliIdentity,
-        allowedUsers: access.allowedUsers,
-        allowedChats: access.allowedChats,
-        admins: access.admins,
+        allowedUsers: savedAccess.allowedUsers,
+        allowedChats: savedAccess.allowedChats,
+        admins: savedAccess.admins,
         knownChats: ctx.controls.knownChats ?? [],
       }),
     );
@@ -1981,7 +2048,7 @@ async function submitConfig(ctx: CommandContext): Promise<void> {
     // "群里不需要 @ bot" only works if the app can actually receive non-@
     // group messages (`im:message.group_msg`). When the user opts in, verify
     // the scope and, if missing, push a one-click re-authorization link.
-    if (!requireMentionInGroup) {
+    if (!requireMentionInGroup || currentChatRequireMentionInGroup === false) {
       await promptGroupMsgScopeIfMissing(ctx);
     }
   })();
