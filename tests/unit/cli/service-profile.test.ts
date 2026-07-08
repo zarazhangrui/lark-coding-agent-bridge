@@ -52,6 +52,7 @@ vi.mock('../../../src/config/paths', () => ({
 vi.mock('../../../src/daemon/paths', () => ({
   daemonStdoutPath: (profile: string) => `/tmp/lark-channel-home/profiles/${profile}/logs/daemon/stdout.log`,
   daemonStderrPath: (profile: string) => `/tmp/lark-channel-home/profiles/${profile}/logs/daemon/stderr.log`,
+  systemdUnitPath: (profile: string) => `/root/.config/systemd/user/lark-channel-bridge.bot.${profile}.service`,
 }));
 
 vi.mock('../../../src/cli/preflight', () => ({

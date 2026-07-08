@@ -94,6 +94,17 @@ export function daemonStdoutPath(profile: string = paths.profile): string {
   return join(daemonLogDir(profile), 'daemon-stdout.log');
 }
 
+/**
+ * Path to the persisted systemd service file in the bridge's own config
+ * directory (~/.lark-channel/bot.<profile>.service). Written once by the
+ * first `start` and read on subsequent starts so users can edit the unit
+ * file without it being overwritten by the built-in template.
+ */
+export function channelUnitPath(profile: string = paths.profile, rootDir?: string): string {
+  const base = rootDir ?? paths.rootDir;
+  return join(base, `bot.${serviceProfileId(profile)}.service`);
+}
+
 export function daemonStderrPath(profile: string = paths.profile): string {
   return join(daemonLogDir(profile), 'daemon-stderr.log');
 }

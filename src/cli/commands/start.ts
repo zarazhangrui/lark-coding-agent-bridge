@@ -19,6 +19,7 @@ import {
 } from '../../config/profile-schema';
 import type { AppConfig } from '../../config/schema';
 import { isComplete } from '../../config/schema';
+import { daemonReload, writeUnit } from '../../daemon/systemd';
 import { configureLogger, gcOldLogs, log, reportError } from '../../core/logger';
 import { loadTelemetryAdapter, telemetry } from '../../core/telemetry';
 import { gcMediaCache } from '../../media/cache';
@@ -98,6 +99,16 @@ export async function runStart(opts: StartOptions): Promise<void> {
   const appPaths = runtime.appPaths;
   let profileConfig = runtime.profileConfig;
   configureLogger({ logsDir: appPaths.logsDir });
+
+  // Sync the persisted unit file (written by `start`/`restart` adapter phase) to
+  // the user-level systemd unit path, then reload so systemd picks it up.
+  // Both `start`/`restart` service commands ultimately execute `bridge run`,
+  // so the sync lives here — in the `run` phase — rather than duplicating it
+  // in the adapter.
+  try {
+    await writeUnit(appPaths.profile, appPaths.rootDir);
+    daemonReload();
+  } catch {}
 
   await preFlightChecks({
     skipCheckLarkCli: opts.skipCheckLarkCli,
