@@ -69,6 +69,33 @@ describe('start runtime agent factory', () => {
     expect(profile.codex?.binaryPath).toBe('codex');
   });
 
+  it('creates OpenCodeAdapter from profile config without enabling auto approval by default', () => {
+    const profile = createDefaultProfileConfig({
+      agentKind: 'opencode',
+      accounts: appAccount(),
+      opencode: { binaryPath: '/usr/local/bin/opencode' },
+    });
+    const agent = createRuntimeAgent(profile, {
+      profileDir: '/tmp/lark-channel-bridge/profiles/opencode-e2e',
+    });
+
+    expect(agent.id).toBe('opencode');
+    expect(agent.displayName).toBe('OpenCode');
+    expect(profile.opencode?.autoApprove).toBe(false);
+  });
+
+  it('seeds a default OpenCode binary when bootstrapping a new OpenCode profile', () => {
+    const profile = createRuntimeProfileConfig({
+      agentKind: 'opencode',
+      accounts: appAccount(),
+    });
+
+    expect(profile.opencode).toEqual({
+      binaryPath: 'opencode',
+      autoApprove: false,
+    });
+  });
+
   it('updates the process registry before releasing the old app lock during reconnect', async () => {
     const source = await readFile(join(process.cwd(), 'src/cli/commands/start.ts'), 'utf8');
     const restartStart = source.indexOf('async restart()');

@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { BRIDGE_SYSTEM_PROMPT } from '../../../src/agent/bridge-system-prompt';
-import { claudeCapability, codexCapability } from '../../../src/agent/capability';
+import {
+  claudeCapability,
+  codexCapability,
+  opencodeCapability,
+} from '../../../src/agent/capability';
 import { createDefaultProfileConfig } from '../../../src/config/profile-schema';
 
 describe('agent capability contract', () => {
@@ -71,5 +75,36 @@ describe('agent capability contract', () => {
     });
 
     expect(codexCapability(profile).permissions.maxAccess).toBe('read-only');
+  });
+
+  it('defines OpenCode capability with native session resume and stdin prompt injection', () => {
+    const profile = createDefaultProfileConfig({
+      agentKind: 'opencode',
+      accounts: {
+        app: {
+          id: 'cli_test',
+          secret: '${APP_SECRET}',
+          tenant: 'feishu',
+        },
+      },
+      opencode: {
+        binaryPath: '/usr/local/bin/opencode',
+      },
+      permissions: {
+        defaultAccess: 'workspace',
+        maxAccess: 'workspace',
+      },
+    });
+
+    expect(opencodeCapability(profile)).toMatchObject({
+      agentId: 'opencode',
+      sessionKind: 'opencode-session',
+      promptInjection: 'stdin-prefix',
+      supportsNativeHistory: true,
+      systemPrompt: BRIDGE_SYSTEM_PROMPT,
+      permissions: {
+        maxAccess: 'workspace',
+      },
+    });
   });
 });

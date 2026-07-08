@@ -25,7 +25,7 @@ describe('agent-aware session catalog', () => {
     ).toBe('chat-1\x1fclaude\x1f/repo\x1ffp-1');
   });
 
-  it('stores Claude sessions and Codex threads in isolated active entries', async () => {
+  it('stores Claude sessions, OpenCode sessions, and Codex threads in isolated entries', async () => {
     const catalog = new SessionCatalog(await path());
 
     catalog.upsertActive({
@@ -44,6 +44,14 @@ describe('agent-aware session catalog', () => {
       threadId: 'thread-1',
       now: 2000,
     });
+    catalog.upsertActive({
+      scopeId: 'chat-1',
+      agentId: 'opencode',
+      cwdRealpath: '/repo',
+      policyFingerprint: 'fp-1',
+      sessionId: 'opencode-1',
+      now: 3000,
+    });
 
     expect(
       catalog.activeFor({
@@ -61,10 +69,18 @@ describe('agent-aware session catalog', () => {
         policyFingerprint: 'fp-1',
       }),
     ).toMatchObject({ threadId: 'thread-1', agentId: 'codex' });
+    expect(
+      catalog.activeFor({
+        scopeId: 'chat-1',
+        agentId: 'opencode',
+        cwdRealpath: '/repo',
+        policyFingerprint: 'fp-1',
+      }),
+    ).toMatchObject({ sessionId: 'opencode-1', agentId: 'opencode' });
     await catalog.flush();
   });
 
-  it('rejects mismatched Claude/Codex identity fields and does not auto-resume damaged entries', async () => {
+  it('rejects mismatched agent identity fields and does not auto-resume damaged entries', async () => {
     const catalog = new SessionCatalog(await path());
 
     expect(() =>
@@ -87,6 +103,16 @@ describe('agent-aware session catalog', () => {
         now: 1000,
       }),
     ).toThrow(/Codex.*threadId/i);
+    expect(() =>
+      catalog.upsertActive({
+        scopeId: 'chat-1',
+        agentId: 'opencode',
+        cwdRealpath: '/repo',
+        policyFingerprint: 'fp-1',
+        threadId: 'thread-wrong',
+        now: 1000,
+      }),
+    ).toThrow(/opencode.*sessionId/i);
 
     await catalog.replaceForTest([
       {

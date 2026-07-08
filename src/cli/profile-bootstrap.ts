@@ -14,6 +14,7 @@ export interface BootstrapProfileInput {
   workspace?: string;
   defaultWorkspace?: string;
   codexBinaryPath?: string;
+  opencodeBinaryPath?: string;
   profileDir?: string;
 }
 
@@ -29,12 +30,17 @@ export async function createBootstrapProfileConfig(
     input.agentKind === 'codex'
       ? await createBootstrapCodexConfig(input.codexBinaryPath)
       : undefined;
+  const opencode =
+    input.agentKind === 'opencode'
+      ? await createBootstrapOpenCodeConfig(input.opencodeBinaryPath)
+      : undefined;
   const profile = createDefaultProfileConfig({
     agentKind: input.agentKind,
     accounts: input.accounts,
     preferences: input.preferences,
     secrets: input.secrets,
     ...(codex ? { codex } : {}),
+    ...(opencode ? { opencode } : {}),
   });
   if (workspace) {
     profile.workspaces = {
@@ -78,10 +84,36 @@ export async function createBootstrapCodexConfig(binaryPath: string | undefined)
   return { binaryPath: resolvedBinary };
 }
 
+export async function createBootstrapOpenCodeConfig(binaryPath: string | undefined) {
+  const command = binaryPath ?? process.env.LARK_CHANNEL_OPENCODE_BIN ?? 'opencode';
+  let resolvedBinary: string;
+  try {
+    resolvedBinary = await resolveExecutablePath(command);
+  } catch (err) {
+    const errno = (err as NodeJS.ErrnoException).code;
+    throw new AgentPreflightError({
+      code: codexBootstrapBinaryErrorCode(errno),
+      agentId: 'opencode',
+      agentName: 'OpenCode',
+      command,
+      binaryPath: command,
+      errno,
+    });
+  }
+  return {
+    binaryPath: resolvedBinary,
+    autoApprove: envFlag(process.env.LARK_CHANNEL_OPENCODE_AUTO_APPROVE),
+  };
+}
+
 function codexBootstrapBinaryErrorCode(errno: string | undefined) {
   if (errno === 'EACCES' || errno === 'EPERM') return 'agent-binary-not-executable';
   if (errno === 'ELOOP' || errno === 'ENOTDIR' || errno === 'EINVAL') {
     return 'agent-binary-resolve-failed';
   }
   return 'agent-binary-not-found';
+}
+
+function envFlag(value: string | undefined): boolean {
+  return value === '1' || value?.toLowerCase() === 'true' || value?.toLowerCase() === 'yes';
 }

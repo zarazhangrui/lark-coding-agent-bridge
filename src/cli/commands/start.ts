@@ -4,6 +4,7 @@ import { createInterface } from 'node:readline';
 import pkg from '../../../package.json';
 import { ClaudeAdapter } from '../../agent/claude/adapter';
 import { CodexAdapter } from '../../agent/codex/adapter';
+import { OpenCodeAdapter } from '../../agent/opencode/adapter';
 import {
   AgentPreflightError,
   formatAgentPreflightDiagnostic,
@@ -431,6 +432,17 @@ export function createRuntimeAgent(
       ignoreUserConfig: codex.ignoreUserConfig === true,
       ignoreRules: codex.ignoreRules !== false,
       sandbox: profileConfig.sandbox.defaultMode,
+      larkChannel,
+    });
+  }
+  if (profileConfig.agentKind === 'opencode') {
+    const opencode = profileConfig.opencode;
+    if (!opencode?.binaryPath) {
+      throw new Error('opencode profile requires opencode.binaryPath');
+    }
+    return new OpenCodeAdapter({
+      binary: opencode.binaryPath,
+      autoApprove: opencode.autoApprove === true,
       larkChannel,
     });
   }

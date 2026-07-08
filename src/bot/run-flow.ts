@@ -120,7 +120,7 @@ export async function startRunFlow(input: StartRunFlowInput): Promise<StartRunFl
       cwdRealpath: workspace.cwdRealpath,
       policyFingerprint: policy.policyFingerprint,
     });
-    if (catalogEntry?.agentId === 'claude') {
+    if (catalogEntry?.agentId === 'claude' || catalogEntry?.agentId === 'opencode') {
       sessionId = catalogEntry.sessionId;
       resumeFrom = sessionId;
     } else if (catalogEntry?.agentId === 'codex') {
@@ -194,6 +194,17 @@ export function recordRunSessionEvent(input: RecordRunSessionEventInput): void {
     input.sessionCatalog?.upsertActive({
       scopeId: input.scopeId,
       agentId: 'claude',
+      cwdRealpath,
+      policyFingerprint: input.policy.policyFingerprint,
+      sessionId: input.event.sessionId,
+    });
+    return;
+  }
+  if (input.capability.agentId === 'opencode' && input.event.sessionId) {
+    const cwdRealpath = input.event.cwd ?? input.policy.cwdRealpath;
+    input.sessionCatalog?.upsertActive({
+      scopeId: input.scopeId,
+      agentId: 'opencode',
       cwdRealpath,
       policyFingerprint: input.policy.policyFingerprint,
       sessionId: input.event.sessionId,

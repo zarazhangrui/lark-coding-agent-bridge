@@ -60,6 +60,30 @@ describe('profile schema', () => {
     ).toThrow(/codex/i);
   });
 
+  it('normalizes OpenCode config with safe auto approval default', () => {
+    const cfg = createDefaultProfileConfig({
+      agentKind: 'opencode',
+      accounts: { app },
+      opencode: { binaryPath: '/usr/local/bin/opencode' },
+    });
+
+    expect(cfg.agentKind).toBe('opencode');
+    expect(cfg.opencode).toEqual({
+      binaryPath: '/usr/local/bin/opencode',
+      autoApprove: false,
+    });
+  });
+
+  it('requires opencode configuration when agentKind is opencode', () => {
+    expect(() =>
+      normalizeProfileConfig({
+        schemaVersion: 2,
+        agentKind: 'opencode',
+        accounts: { app },
+      }),
+    ).toThrow(/opencode/i);
+  });
+
   it('rejects sandbox defaults that exceed max capability as a permission error', () => {
     expect(() =>
       normalizeProfileConfig({
