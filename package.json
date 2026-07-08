@@ -1,6 +1,6 @@
 {
   "name": "lark-channel-bridge",
-  "version": "0.5.6",
+  "version": "0.5.6-unofficial.persist.0",
   "description": "Bridge Feishu/Lark messenger with local CLI coding agents",
   "type": "module",
   "packageManager": "pnpm@10.33.0",
