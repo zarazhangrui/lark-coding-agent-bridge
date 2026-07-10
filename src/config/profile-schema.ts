@@ -57,6 +57,20 @@ export type CommentConfig = Record<string, never>;
 
 export type LarkCliIdentityPreset = 'bot-only' | 'user-default';
 
+/**
+ * Deployment mode — a single switch that binds two behaviors together
+ * (see the "团队版 Bot 权限调整" spec):
+ *   - `personal` (default, the status quo): only owner + allowlisted
+ *     users/chats can use the bot; the CLI may carry owner's personal (user)
+ *     authorization per {@link LarkCliConfig.identityPreset}.
+ *   - `team`: anyone can @-use the bot (no allowlist gating), and the CLI is
+ *     forced to `bot-only` so it never carries owner's personal authorization.
+ *
+ * The two behaviors are intentionally bound to one switch, not two configs.
+ * Admin/sensitive commands stay owner/admin-gated in both modes.
+ */
+export type ProfileMode = 'personal' | 'team';
+
 export type LarkCliUserImportStatus =
   | 'not-needed'
   | 'imported'
@@ -77,6 +91,8 @@ export interface LarkCliConfig {
 export interface ProfileConfig {
   schemaVersion: 2;
   agentKind: AgentKind;
+  /** Deployment mode switch. Default 'personal'. See {@link ProfileMode}. */
+  mode: ProfileMode;
   accounts: {
     app: AppCredentials;
   };
@@ -95,6 +111,20 @@ export interface ProfileConfig {
   larkCli: LarkCliConfig;
 }
 
+/**
+ * The lark-cli identity preset that actually takes effect, after applying the
+ * deployment-mode override. Team mode forces `bot-only` regardless of the
+ * user's stored {@link LarkCliConfig.identityPreset} (which is preserved so it
+ * comes back into effect when switching back to personal mode). This is the
+ * single source of truth for "team mode forces bot-only" — every place that
+ * applies the lark-cli identity policy should read through here.
+ */
+export function effectiveLarkCliIdentity(
+  profile: Pick<ProfileConfig, 'mode' | 'larkCli'>,
+): LarkCliIdentityPreset {
+  return profile.mode === 'team' ? 'bot-only' : profile.larkCli.identityPreset;
+}
+
 export interface RootConfig {
   schemaVersion: 2;
   activeProfile: string;
@@ -108,6 +138,8 @@ export interface RootConfig {
 
 export interface CreateDefaultProfileConfigInput {
   agentKind: AgentKind;
+  /** Deployment mode. Default 'personal'. */
+  mode?: ProfileMode;
   accounts: {
     app: AppCredentials;
   };
@@ -135,6 +167,7 @@ export function normalizeProfileConfig(input: unknown): ProfileConfig {
   const raw = input as {
     schemaVersion?: unknown;
     agentKind?: unknown;
+    mode?: unknown;
     accounts?: unknown;
     secrets?: SecretsConfig;
     preferences?: (AppPreferences & { access?: Partial<ProfileAccess> }) | undefined;
@@ -183,6 +216,7 @@ export function normalizeProfileConfig(input: unknown): ProfileConfig {
   return {
     schemaVersion: 2,
     agentKind: raw.agentKind,
+    mode: raw.mode === 'team' ? 'team' : 'personal',
     accounts,
     ...(raw.secrets ? { secrets: raw.secrets } : {}),
     preferences,

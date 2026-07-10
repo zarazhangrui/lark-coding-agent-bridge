@@ -36,7 +36,13 @@ import {
   getShowToolCalls,
   secretKeyForApp,
 } from '../config/schema';
-import type { ProfileAccess, ProfileConfig } from '../config/profile-schema';
+import type {
+  LarkCliIdentityPreset,
+  ProfileAccess,
+  ProfileConfig,
+  ProfileMode,
+} from '../config/profile-schema';
+import { effectiveLarkCliIdentity } from '../config/profile-schema';
 import { resolveAppPaths } from '../config/app-paths';
 import { accessToClaudePermissionMode } from '../config/permissions';
 import {
@@ -1763,6 +1769,7 @@ async function showConfigForm(ctx: CommandContext): Promise<void> {
   const access = ctx.controls.profileConfig.access;
   const card = configFormCard({
     agentKind: ctx.controls.profileConfig.agentKind,
+    mode: ctx.controls.profileConfig.mode,
     model: normalizeModelSelection(
       ctx.controls.profileConfig.agentKind,
       ctx.controls.cfg.preferences?.model,
@@ -1870,13 +1877,26 @@ async function submitConfig(ctx: CommandContext): Promise<void> {
   if (rawRequireMention === 'yes') requireMentionInGroup = true;
   else if (rawRequireMention === 'no') requireMentionInGroup = false;
   else requireMentionInGroup = getRequireMentionInGroup(ctx.controls.cfg);
+  // Parse deployment mode. Empty / unexpected keeps current.
+  const rawMode = String(fv.deploy_mode ?? '').trim();
+  const mode: ProfileMode =
+    rawMode === 'team' || rawMode === 'personal'
+      ? rawMode
+      : ctx.controls.profileConfig.mode;
   const rawLarkCliIdentity = String(fv.lark_cli_identity ?? '').trim();
   const larkCliIdentity =
     rawLarkCliIdentity === 'user-default' || rawLarkCliIdentity === 'bot-only'
       ? rawLarkCliIdentity
       : ctx.controls.profileConfig.larkCli.identityPreset;
-  const previousLarkCliIdentity = ctx.controls.profileConfig.larkCli.identityPreset;
-  const larkCliIdentityChanged = larkCliIdentity !== previousLarkCliIdentity;
+  // Effective preset = what actually gets applied to lark-cli. Team mode forces
+  // bot-only regardless of the stored identity select; the select value is still
+  // saved verbatim so it comes back when switching to personal mode. Re-apply
+  // the lark-cli policy whenever the *effective* preset changes (covers both a
+  // direct identity-select change and a personal↔team flip).
+  const nextEffectiveIdentity: LarkCliIdentityPreset =
+    mode === 'team' ? 'bot-only' : larkCliIdentity;
+  const previousEffectiveIdentity = effectiveLarkCliIdentity(ctx.controls.profileConfig);
+  const larkCliIdentityChanged = nextEffectiveIdentity !== previousEffectiveIdentity;
 
   const formMsgId = ctx.msg.messageId;
   const access = ctx.controls.profileConfig.access;
@@ -1914,23 +1934,23 @@ async function submitConfig(ctx: CommandContext): Promise<void> {
     try {
       if (larkCliIdentityChanged) {
         failureStep = 'config.lark-cli-policy';
-        const applied = await applyConfigLarkCliIdentityPolicy(ctx, larkCliIdentity);
+        const applied = await applyConfigLarkCliIdentityPolicy(ctx, nextEffectiveIdentity);
         if (!applied) {
           throw new Error('lark-cli identity policy apply failed');
         }
         larkCliPolicyApplied = true;
         failureStep = 'config.save';
       }
-      await savePreferencesConfig(ctx, nextPreferences, requireMentionInGroup, larkCliIdentity);
+      await savePreferencesConfig(ctx, nextPreferences, requireMentionInGroup, larkCliIdentity, mode);
     } catch (err) {
       let rollbackFailed = false;
       if (larkCliIdentityChanged) {
-        const rolledBack = await applyConfigLarkCliIdentityPolicy(ctx, previousLarkCliIdentity);
+        const rolledBack = await applyConfigLarkCliIdentityPolicy(ctx, previousEffectiveIdentity);
         if (!rolledBack) {
           rollbackFailed = true;
           log.warn('command', 'lark-cli-identity-policy-rollback-failed', {
             profile: ctx.controls.profile,
-            identity: previousLarkCliIdentity,
+            identity: previousEffectiveIdentity,
           });
         }
       }
@@ -1946,6 +1966,7 @@ async function submitConfig(ctx: CommandContext): Promise<void> {
     }
 
     log.info('command', 'config-saved', {
+      mode,
       messageReply,
       showToolCalls,
       cotMessages,
@@ -1963,6 +1984,7 @@ async function submitConfig(ctx: CommandContext): Promise<void> {
       formMsgId,
       configSavedCard({
         agentKind,
+        mode,
         model: modelSelection,
         messageReply,
         showToolCalls,
@@ -2112,7 +2134,10 @@ async function savePreferencesConfig(
   preferences: AppPreferences,
   requireMentionInGroup: boolean,
   larkCliIdentity: ProfileConfig['larkCli']['identityPreset'],
+  mode: ProfileMode,
 ): Promise<void> {
+  // Store the user's identity selection verbatim (not the team-mode-forced
+  // effective preset) so it comes back into effect when switching to personal.
   const larkCli = {
     identityPreset: larkCliIdentity,
     localUserImport: {
@@ -2126,6 +2151,7 @@ async function savePreferencesConfig(
     if (!root) {
       ctx.controls.cfg.preferences = preferences;
       ctx.controls.profileConfig.larkCli = larkCli;
+      ctx.controls.profileConfig.mode = mode;
       await saveConfig(ctx.controls.cfg, ctx.controls.configPath);
       return;
     }
@@ -2135,6 +2161,7 @@ async function savePreferencesConfig(
     const { requireMentionInGroup: _requireMention, access: _access, ...profilePreferences } = preferences;
     root.profiles[ctx.controls.profile] = {
       ...profile,
+      mode,
       preferences: {
         ...profile.preferences,
         ...profilePreferences,

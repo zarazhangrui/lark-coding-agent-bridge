@@ -111,6 +111,24 @@ async function checkLarkCli(opts: PreFlightOptions): Promise<void> {
   }
 
   if (privateBinding) {
+    // Team mode: lark-cli must run bot-only and never carry a personal user.
+    // Apply bot-only to lark-cli but do NOT persist identityPreset — the stored
+    // value is the user's personal-mode choice, restored when switching back.
+    if (opts.profileConfig?.mode === 'team') {
+      const teamTarget = await readPrivateTarget(appPaths, bridgeConfig);
+      if (!teamTarget.sameApp) {
+        await bindLarkCliWithCompatibility(
+          profileArgs,
+          larkChannelEnv,
+          appPaths,
+          privateBinding,
+          'bot-only',
+        );
+      } else if (teamTarget.identityPreset !== 'bot-only') {
+        await switchLarkCliIdentityPolicy(profileArgs, larkChannelEnv, 'bot-only');
+      }
+      return;
+    }
     const target = await readPrivateTarget(appPaths, bridgeConfig);
     if (target.sameApp) {
       if (shouldSkipLocalUserImport(opts.profileConfig?.larkCli)) {

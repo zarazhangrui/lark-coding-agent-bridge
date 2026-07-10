@@ -1,11 +1,13 @@
 import { modelLabel, supportedModels } from '../agent/models';
 import type { KnownChat } from '../bot/lark-info';
-import type { AgentKind, LarkCliIdentityPreset } from '../config/profile-schema';
+import type { AgentKind, LarkCliIdentityPreset, ProfileMode } from '../config/profile-schema';
 import type { CotMessagesMode, MessageReplyMode } from '../config/schema';
 
 export interface ConfigFormOpts {
   /** Profile's agent kind — decides which model catalog the picker shows. */
   agentKind: AgentKind;
+  /** Deployment mode: 'personal' (default) or 'team'. */
+  mode: ProfileMode;
   /** Current model selection (a value from {@link supportedModels}). */
   model: string;
   messageReply: MessageReplyMode;
@@ -59,7 +61,20 @@ function chatList(chatIds: string[], knownChats: KnownChat[]): string {
 
 /** Form card for `/config`. */
 export function configFormCard(opts: ConfigFormOpts): object {
+  const teamMode = opts.mode === 'team';
+  const teamOverrideNote =
+    '\n\n_⚠️ 团队版已开启：本项被覆盖 —— 身份强制为「只允许应用身份」、访问控制不生效。切回个人版后恢复。_';
   const accessElements: object[] = [
+    ...(teamMode
+      ? [
+          {
+            tag: 'markdown',
+            content:
+              '_⚠️ **团队版已开启**：访问控制暂不生效 —— 任何人 @ bot 都能使用（管理命令仍限 owner/管理员）。切回个人版后以下白名单恢复生效。_',
+          },
+          { tag: 'hr' },
+        ]
+      : []),
     {
       tag: 'markdown',
       content: '_控制谁能通过私聊和群聊使用 bot。**留空 = 不响应聊天消息**。云文档评论按文档权限生效。_',
@@ -108,6 +123,23 @@ export function configFormCard(opts: ConfigFormOpts): object {
           tag: 'form',
           name: 'config_form',
           elements: [
+            {
+              tag: 'markdown',
+              content:
+                '**运行模式**\n' +
+                '_个人版(默认):Bot 是你一个人的助手,只有你和白名单用户能用,可携带你的个人授权访问文档/日历等_\n' +
+                '_团队版:Bot 是团队共用的助手,任何人 @ 即可使用(不做白名单校验);为避免他人借 Bot 动用你的个人权限,此模式下 CLI 强制只用应用(bot)身份,不使用个人授权_',
+            },
+            {
+              tag: 'select_static',
+              name: 'deploy_mode',
+              initial_option: opts.mode,
+              options: [
+                { text: { tag: 'plain_text', content: '个人版(默认)' }, value: 'personal' },
+                { text: { tag: 'plain_text', content: '团队版' }, value: 'team' },
+              ],
+            },
+            { tag: 'hr' },
             {
               tag: 'markdown',
               content:
@@ -229,7 +261,8 @@ export function configFormCard(opts: ConfigFormOpts): object {
               content:
                 '\n**lark-cli 身份策略**\n' +
                 '_只允许应用身份:使用 bot/app 能力,不访问个人资源_\n' +
-                '_允许用户身份:保留应用身份,并允许已授权用户访问个人日历、邮箱、云盘等资源_',
+                '_允许用户身份:保留应用身份,并允许已授权用户访问个人日历、邮箱、云盘等资源_' +
+                (teamMode ? teamOverrideNote : ''),
             },
             {
               tag: 'select_static',
@@ -301,6 +334,7 @@ export function configSavedCard(opts: ConfigFormOpts): object {
           tag: 'markdown',
           content:
             '✅ **偏好已保存**\n\n' +
+            `**运行模式**:\`${opts.mode === 'team' ? '团队版' : '个人版'}\`\n` +
             `**模型**:\`${modelLabel(opts.agentKind, opts.model)}\`\n` +
             `**消息回复方式**:${replyLabel}\n` +
             `**工具调用显示**:\`${opts.showToolCalls ? 'show' : 'hide'}\`\n` +
@@ -308,8 +342,10 @@ export function configSavedCard(opts: ConfigFormOpts): object {
             `**并发上限**:\`${opts.maxConcurrentRuns}\`\n` +
             `**run 探活**:\`${opts.runIdleTimeoutMinutes > 0 ? `${opts.runIdleTimeoutMinutes} 分钟` : '关闭'}\`\n` +
             `**群里需要 @ bot**:\`${opts.requireMentionInGroup ? '是' : '否'}\`\n\n` +
-            `**lark-cli 身份策略**:\`${opts.larkCliIdentity === 'user-default' ? '允许用户身份' : '只允许应用身份'}\`\n\n` +
-            '🔒 **访问控制**\n' +
+            `**lark-cli 身份策略**:\`${opts.mode === 'team' ? '只允许应用身份(团队版强制)' : opts.larkCliIdentity === 'user-default' ? '允许用户身份' : '只允许应用身份'}\`\n\n` +
+            '🔒 **访问控制**' +
+            (opts.mode === 'team' ? '（_团队版下不生效,任何人可用_）' : '') +
+            '\n' +
             `**允许私聊的用户**:${summarize(opts.allowedUsers)}\n` +
             `**允许响应的群**:${summarize(opts.allowedChats)}\n` +
             `**管理员**:${summarize(opts.admins)}\n\n` +

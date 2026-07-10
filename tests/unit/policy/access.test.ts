@@ -100,6 +100,27 @@ describe('access policy', () => {
     expect(canRunAdminCommand(withAdmin, ownerControls, 'ou_admin').ok).toBe(true);
   });
 
+  it('opens usage to everyone in team mode without touching admin gating', () => {
+    const team = profileWithAccess({}, 'team');
+
+    // Anyone can use DMs and groups — no allowlist needed.
+    expect(canUseDm(team, ownerControls, 'ou_stranger')).toEqual({
+      ok: true,
+      reason: 'allowed-team',
+    });
+    expect(canUseGroup(team, ownerControls, 'chat_random', 'ou_stranger')).toEqual({
+      ok: true,
+      reason: 'allowed-team',
+    });
+
+    // Admin/sensitive commands are still owner/admin-gated.
+    expect(canRunAdminCommand(team, ownerControls, 'ou_stranger').ok).toBe(false);
+    expect(canRunAdminCommand(team, ownerControls, 'ou_owner').ok).toBe(true);
+
+    const teamWithAdmin = profileWithAccess({ admins: ['ou_admin'] }, 'team');
+    expect(canRunAdminCommand(teamWithAdmin, ownerControls, 'ou_admin').ok).toBe(true);
+  });
+
   it('does not include runtime owner state in the access policy digest', () => {
     const profile = profileWithAccess({
       allowedUsers: ['ou_a'],
@@ -117,9 +138,13 @@ describe('access policy', () => {
   });
 });
 
-function profileWithAccess(access: Partial<ProfileConfig['access']> = {}): ProfileConfig {
+function profileWithAccess(
+  access: Partial<ProfileConfig['access']> = {},
+  mode: ProfileConfig['mode'] = 'personal',
+): ProfileConfig {
   return createDefaultProfileConfig({
     agentKind: 'claude',
+    mode,
     accounts: {
       app: {
         id: 'cli_test',
