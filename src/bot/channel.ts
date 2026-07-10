@@ -258,9 +258,10 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
     },
     // SDK 1.65.0-alpha.3+ knobs.
     wsConfig: {
-      // 3s liveness watchdog: if no inbound message arrives within 3s after
-      // the last ping, SDK presumes connection dead and forces a reconnect.
-      pingTimeout: 3,
+      // 30s liveness watchdog (was 3s — too aggressive on Windows where TCP
+      // keepalive cadence differs from Linux). Feishu server pings arrive
+      // every 30–60s; a 3s window falsely declares healthy connections dead.
+      pingTimeout: 30,
     },
     // 8s handshake timeout (replaces hardcoded 15s). Fast-fail + fast-retry
     // beats slow-fail in unstable networks.
@@ -269,7 +270,9 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
     // event-handling thread.
     httpTimeoutMs: 30_000,
     // Route WS + REST through HTTPS_PROXY / HTTP_PROXY when set (no-op otherwise).
-    respectProxyEnv: true,
+    // Disabled: Clash Verge on Windows interferes with WS ping/pong frames,
+    // causing spurious reconnects. Codex uses its own proxy via CODEX_HOME config.
+    respectProxyEnv: false,
   };
 
   const channel = createLarkChannel(opts);

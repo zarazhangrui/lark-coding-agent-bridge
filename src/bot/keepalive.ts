@@ -26,12 +26,12 @@ import { log, reportMetric } from '../core/logger';
  *     transient state-read races during reconnect.
  */
 
-const KEEPALIVE_INTERVAL_MS = 15_000;
-const SLEEP_DETECT_MS = 30_000;
+const KEEPALIVE_INTERVAL_MS = 30_000;
+const SLEEP_DETECT_MS = 60_000;
 const TIMER_STORM_GUARD_MS = 5_000;
 const HTTP_PROBE_TIMEOUT_MS = 5_000;
-const DEAD_THRESHOLD = 3;
-const NETWORK_DOWN_LOG_EVERY = 20; // log roughly every 5min while network is down
+const DEAD_THRESHOLD = 10;
+const NETWORK_DOWN_LOG_EVERY = 20; // log roughly every 10min while network is down
 
 export interface KeepaliveDeps {
   channel: LarkChannel;
