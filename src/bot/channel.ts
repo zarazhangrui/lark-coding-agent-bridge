@@ -164,9 +164,14 @@ function stringifyArgs(args: unknown[]): string {
     .join(' ');
 }
 
+export interface DisconnectOptions {
+  /** When true, skip activeRuns.stopAll() — surviving runs keep streaming. */
+  keepRuns?: boolean;
+}
+
 export interface BridgeChannel {
   channel: LarkChannel;
-  disconnect(): Promise<void>;
+  disconnect(opts?: DisconnectOptions): Promise<void>;
 }
 
 export interface StartChannelDeps {
@@ -466,30 +471,37 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
 
   return {
     channel,
-    disconnect: async () => {
+    disconnect: async (opts?: DisconnectOptions) => {
       activeRuns.pauseNewRuns('bridge-disconnect');
       ownerRefresh.stop();
       knownChatsRefresh.stop();
       keepalive.stop();
       pending.cancelAll();
-      const [disconnectResult, stopAllResult, ...flushResults] = await Promise.allSettled([
+      const stopAllTask = opts?.keepRuns ? null : activeRuns.stopAll();
+      const tasks: Promise<unknown>[] = [
         channel.disconnect(),
-        activeRuns.stopAll(),
+        ...(stopAllTask ? [stopAllTask] : []),
         sessions.flush(),
         sessionCatalog?.flush(),
         callbackNonceStore?.flush(),
         workspaces.flush(),
-      ]);
-      if (stopAllResult.status === 'rejected') {
+      ];
+      const results = await Promise.allSettled(tasks);
+      // stopAllResult is index 1 only when stopAll was included
+      const stopAllResult = stopAllTask
+        ? results[1]
+        : undefined;
+      const flushOffset = stopAllTask ? 2 : 1;
+      if (stopAllResult?.status === 'rejected') {
         log.fail('disconnect', stopAllResult.reason, { step: 'stopAll' });
       }
-      for (const [idx, result] of flushResults.entries()) {
+      for (const [idx, result] of results.slice(flushOffset).entries()) {
         if (result.status === 'rejected') {
           log.fail('disconnect', result.reason, { step: `flush-${idx}` });
         }
       }
-      if (disconnectResult.status === 'rejected') {
-        throw disconnectResult.reason;
+      if (results[0].status === 'rejected') {
+        throw results[0].reason;
       }
     },
   };

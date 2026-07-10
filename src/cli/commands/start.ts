@@ -275,9 +275,9 @@ export async function runStart(opts: StartOptions): Promise<void> {
                   controls: nextControls,
                   appPaths: nextRuntime.appPaths,
                 });
-                console.log('[restart] disconnecting old bridge...');
+                console.log('[restart] disconnecting old bridge (keeping in-flight runs)...');
                 try {
-                  await bridge.disconnect();
+                  await bridge.disconnect({ keepRuns: true });
                 } catch (err) {
                   console.warn('[restart] old disconnect failed:', err);
                 }

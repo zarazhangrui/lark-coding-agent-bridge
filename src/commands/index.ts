@@ -1033,15 +1033,14 @@ function formatAgo(ms: number): string {
 async function handleReconnect(args: string, ctx: CommandContext): Promise<void> {
   const wait = args.trim().split(/\s+/).filter(Boolean).includes('--wait');
   log.info('command', 'reconnect', { wait });
-  await reply(ctx, wait ? '⏳ 将在当前运行结束后重连…' : '⏳ 正在停止当前运行并重连…');
+  await reply(ctx, wait ? '⏳ 将在当前运行结束后重连…' : '⏳ 正在重连…（正在运行的 Agent 不会被中断）');
   let resumeNewRuns: (() => void) | undefined;
   try {
     resumeNewRuns = ctx.activeRuns.pauseNewRuns('reconnect-in-progress');
     if (wait) {
       await ctx.activeRuns.waitForAll();
-    } else {
-      await ctx.activeRuns.stopAll();
     }
+    // Allow in-flight runs to survive the reconnect; /stop exists for intentional kills.
     await ctx.controls.restart({ wait });
     log.info('command', 'reconnect-ok');
   } catch (err) {
