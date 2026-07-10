@@ -1,0 +1,32 @@
+package.json
+  h_965db5153ff6bf 3
+src/bot/channel.ts
+  s_8ce67acf93f05d::t_caa846dfc22ed1 594-595,980-983
+src/bot/cot.ts
+  s_8ce67acf93f05d::t_84cb6d97f0d397 15-18,40,56,74-87,90,160-166,168,172,174-193
+tests/unit/bot/cot.test.ts
+  s_8ce67acf93f05d::t_d5739e4f9dd283 93,98-100,107-118,121-123,125-128,131-150,161-163,193,195-196,198-201
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "c0caa10db9df8411089e0d44501a475a96dfc0e6",
+  "prompts": {},
+  "humans": {
+    "h_965db5153ff6bf": {
+      "author": "zeno06111-lab <zeno06111@gmail.com>"
+    }
+  },
+  "sessions": {
+    "s_8ce67acf93f05d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6024d7e1-e3e9-4af5-ac66-2062985bbc45",
+        "model": "unknown"
+      },
+      "human_author": "zeno06111-lab <zeno06111@gmail.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
