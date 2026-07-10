@@ -1,0 +1,40 @@
+package.json
+  h_965db5153ff6bf 3
+src/card/config-card.ts
+  s_5445163eee8c92::t_263016ef38da00 3,9-10,64-66,68-77,126-142,264-265,337,345-348
+src/cli/preflight.ts
+  s_5445163eee8c92::t_0fa2b3ebc2e453 114-131
+src/commands/index.ts
+  s_5445163eee8c92::t_6c57a6e95c75d5 39-45,1772,1880-1885,1891-1899,1937,1944,1948,1953,1969,1987,2137,2139-2140,2154,2164
+src/config/profile-schema.ts
+  s_5445163eee8c92::t_5e70f5447b70e7 60-73,94-95,114-127,141-142,170,219
+src/policy/access.ts
+  s_5445163eee8c92::t_6a4c72984c7e02 17,38-40,53
+tests/unit/config/profile-schema.test.ts
+  s_5445163eee8c92::t_926760739db5ae 8,54-88
+tests/unit/policy/access.test.ts
+  s_5445163eee8c92::t_3dcee17e706125 103-123,141-144,147
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "63909777ed1009915ab5940f63c335edd959f646",
+  "prompts": {},
+  "humans": {
+    "h_965db5153ff6bf": {
+      "author": "zeno06111-lab <zeno06111@gmail.com>"
+    }
+  },
+  "sessions": {
+    "s_5445163eee8c92": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "99ceaa28-c7aa-4e13-a666-5b0d98b9fa84",
+        "model": "unknown"
+      },
+      "human_author": "zeno06111-lab <zeno06111@gmail.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
