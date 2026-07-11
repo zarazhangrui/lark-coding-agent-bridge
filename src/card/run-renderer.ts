@@ -3,6 +3,14 @@ import { toolBodyMd, toolHeaderText } from './tool-render';
 
 const REASONING_MAX = 1500;
 const COLLAPSE_TOOL_THRESHOLD = 3;
+const CARD_BODY_ELEMENT_MAX = 10;
+const CARD_TOTAL_ELEMENT_MAX = 45;
+const CARD_SERIALIZED_MAX_BYTES = 24_000;
+const CARD_MARKDOWN_TABLE_MAX = 3;
+const TEXT_BLOCK_MAX = 6000;
+const TOOL_SUMMARY_MAX = 6000;
+const TEXT_TRUNCATED_NOTICE =
+  '\n\n_（回复过长，中间内容已截断以避免飞书卡片发送失败。）_\n\n';
 
 interface ToolGroup {
   kind: 'tools';
@@ -18,38 +26,65 @@ export interface RunCardRenderOptions {
   signCallback?: (action: string) => string;
 }
 
+export function getCardPayloadViolation(card: object): string | undefined {
+  const serialized = JSON.stringify(card);
+  const bytes = Buffer.byteLength(serialized, 'utf8');
+  if (bytes > CARD_SERIALIZED_MAX_BYTES) {
+    return `serialized card is ${bytes} bytes (limit ${CARD_SERIALIZED_MAX_BYTES})`;
+  }
+
+  const stats = inspectCardPayload(card);
+  if (stats.elements > CARD_TOTAL_ELEMENT_MAX) {
+    return `card has ${stats.elements} elements (limit ${CARD_TOTAL_ELEMENT_MAX})`;
+  }
+  if (stats.tables > CARD_MARKDOWN_TABLE_MAX) {
+    return `card has ${stats.tables} markdown tables (limit ${CARD_MARKDOWN_TABLE_MAX})`;
+  }
+  return undefined;
+}
+
 export function renderCard(state: RunState, options: RunCardRenderOptions = {}): object {
-  const elements: object[] = [];
+  const contentElements: object[] = [];
+  const trailingElements: object[] = [];
 
   if (state.reasoning.content) {
-    elements.push(reasoningPanel(state.reasoning.content, state.reasoning.active));
+    contentElements.push(reasoningPanel(state.reasoning.content, state.reasoning.active));
   }
 
   for (const group of groupBlocks(state.blocks)) {
     if (group.kind === 'text') {
       if (group.content.trim()) {
-        elements.push(markdown(group.content));
+        contentElements.push(markdown(group.content));
       }
     } else {
-      elements.push(...renderToolGroup(group.tools, state.terminal !== 'running'));
+      contentElements.push(...renderToolGroup(group.tools, state.terminal !== 'running'));
     }
   }
 
   if (state.terminal === 'interrupted') {
-    elements.push(noteMd('_⏹ 已被中断_'));
+    trailingElements.push(noteMd('_⏹ 已被中断_'));
   } else if (state.terminal === 'idle_timeout') {
     const mins = state.idleTimeoutMinutes ?? 0;
-    elements.push(noteMd(`_⏱ ${mins} 分钟无响应,已自动终止_`));
+    trailingElements.push(noteMd(`_⏱ ${mins} 分钟无响应,已自动终止_`));
   } else if (state.terminal === 'error' && state.errorMsg) {
-    elements.push(noteMd(`⚠️ agent 失败：${state.errorMsg}`));
-  } else if (state.terminal === 'done' && elements.length === 0) {
-    elements.push(noteMd('_（未返回内容）_'));
+    trailingElements.push(noteMd(`⚠️ agent 失败：${truncate(state.errorMsg, 2000)}`));
+  } else if (state.terminal === 'done' && contentElements.length === 0) {
+    contentElements.push(noteMd('_（未返回内容）_'));
   }
 
   if (state.terminal === 'running') {
-    if (state.footer) elements.push(footerStatus(state.footer));
-    elements.push(stopButton(options));
+    if (state.footer) trailingElements.push(footerStatus(state.footer));
+    trailingElements.push(stopButton(options));
   }
+
+  // Feishu counts nested card nodes toward its element limit. Keeping the
+  // top-level body conservative leaves room for each collapsible panel's
+  // child markdown element while preserving terminal controls and notices.
+  const contentLimit = Math.max(0, CARD_BODY_ELEMENT_MAX - trailingElements.length);
+  const elements = [
+    ...limitBodyElements(contentElements, contentLimit),
+    ...trailingElements,
+  ];
 
   return {
     schema: '2.0',
@@ -128,7 +163,10 @@ function toolPanel(tool: ToolEntry, expanded: boolean): object {
 function collapsedToolSummary(tools: ToolEntry[], finalized: boolean): object {
   const suffix = finalized ? '（已结束）' : '';
   const title = `☕ **${tools.length} 个工具调用${suffix}**`;
-  const headerList = tools.map((t) => `- ${toolHeaderText(t)}`).join('\n');
+  const headerList = limitToolSummary(
+    tools.map((t) => `- ${toolHeaderText(t)}`),
+    TOOL_SUMMARY_MAX,
+  );
   return {
     tag: 'collapsible_panel',
     expanded: false,
@@ -170,7 +208,7 @@ function panelHeader(titleMd: string): object {
 }
 
 function markdown(content: string): object {
-  return { tag: 'markdown', content };
+  return { tag: 'markdown', content: truncateWithNotice(content, TEXT_BLOCK_MAX) };
 }
 
 function noteMd(content: string): object {
@@ -212,5 +250,112 @@ function summaryText(state: RunState): string {
 }
 
 function truncate(s: string, max: number): string {
-  return s.length > max ? `${s.slice(0, max)}…` : s;
+  return s.length > max ? `${safeHead(s, max)}…` : s;
+}
+
+function truncateWithNotice(content: string, max: number): string {
+  if (content.length <= max) return content;
+  const keep = Math.max(0, max - TEXT_TRUNCATED_NOTICE.length);
+  const head = Math.floor(keep / 3);
+  const tail = keep - head;
+  return `${safeHead(content, head)}${TEXT_TRUNCATED_NOTICE}${safeTail(content, tail)}`;
+}
+
+function limitBodyElements(elements: object[], max: number): object[] {
+  if (elements.length <= max) return elements;
+  if (max <= 0) return [];
+
+  const keep = Math.max(0, max - 1);
+  const omitted = elements.length - keep;
+  return [
+    noteMd(`_（较早的 ${omitted} 个过程块已折叠，以避免飞书卡片元素超限。）_`),
+    ...elements.slice(-keep),
+  ];
+}
+
+function limitToolSummary(lines: string[], max: number): string {
+  const full = lines.join('\n');
+  if (full.length <= max) return full;
+
+  const kept: string[] = [];
+  let used = 0;
+  // Reserve enough room for the omission notice, including a large count.
+  const budget = Math.max(0, max - 80);
+  for (let i = lines.length - 1; i >= 0; i -= 1) {
+    const line = lines[i];
+    if (!line) continue;
+    const nextSize = line.length + (kept.length > 0 ? 1 : 0);
+    if (used + nextSize > budget) break;
+    kept.push(line);
+    used += nextSize;
+  }
+  kept.reverse();
+  const omitted = lines.length - kept.length;
+  const notice = `_（较早的 ${omitted} 个工具调用已省略。）_`;
+  return safeHead(`${notice}\n${kept.join('\n')}`, max);
+}
+
+function inspectCardPayload(value: unknown): { elements: number; tables: number } {
+  if (Array.isArray(value)) {
+    return value.reduce(
+      (total, item) => {
+        const next = inspectCardPayload(item);
+        return {
+          elements: total.elements + next.elements,
+          tables: total.tables + next.tables,
+        };
+      },
+      { elements: 0, tables: 0 },
+    );
+  }
+  if (!value || typeof value !== 'object') {
+    return { elements: 0, tables: 0 };
+  }
+
+  const record = value as Record<string, unknown>;
+  let elements = typeof record.tag === 'string' ? 1 : 0;
+  let tables = typeof record.content === 'string' ? countMarkdownTables(record.content) : 0;
+  for (const [key, child] of Object.entries(record)) {
+    if (key === 'content' || key === 'tag') continue;
+    const next = inspectCardPayload(child);
+    elements += next.elements;
+    tables += next.tables;
+  }
+  return { elements, tables };
+}
+
+function countMarkdownTables(content: string): number {
+  let tables = 0;
+  let fence: '```' | '~~~' | undefined;
+  for (const line of content.split('\n')) {
+    const trimmed = line.trim();
+    if (trimmed.startsWith('```') || trimmed.startsWith('~~~')) {
+      const marker = trimmed.startsWith('```') ? '```' : '~~~';
+      if (!fence) fence = marker;
+      else if (fence === marker) fence = undefined;
+      continue;
+    }
+    if (fence) continue;
+
+    const row = trimmed.replace(/^\|/, '').replace(/\|$/, '');
+    const cells = row.split('|').map((cell) => cell.trim());
+    if (cells.length >= 2 && cells.every((cell) => /^:?-{3,}:?$/.test(cell))) {
+      tables += 1;
+    }
+  }
+  return tables;
+}
+
+function safeHead(content: string, length: number): string {
+  let end = Math.min(length, content.length);
+  const last = content.charCodeAt(end - 1);
+  if (last >= 0xd800 && last <= 0xdbff) end -= 1;
+  return content.slice(0, end);
+}
+
+function safeTail(content: string, length: number): string {
+  let start = Math.max(0, content.length - length);
+  const first = content.charCodeAt(start);
+  if (first >= 0xdc00 && first <= 0xdfff) start += 1;
+  return content.slice(start);
 }
