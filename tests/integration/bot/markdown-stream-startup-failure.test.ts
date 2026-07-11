@@ -1,12 +1,14 @@
-import type { NormalizedMessage } from '@larksuite/channel';
+import type { LarkChannel, NormalizedMessage } from '@larksuite/channel';
 import { realpath } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import type { AgentEvent } from '../../../src/agent/types.js';
 import { createDefaultProfileConfig } from '../../../src/config/profile-schema.js';
+import { initialState, reduce, type RunState } from '../../../src/card/run-state.js';
 import { log } from '../../../src/core/logger.js';
 import { SessionStore } from '../../../src/session/store.js';
 import { WorkspaceStore } from '../../../src/workspace/store.js';
-import { FakeAgentAdapter } from '../../helpers/fake-agent.js';
+import { FakeAgentAdapter, type FakeAgentEvents } from '../../helpers/fake-agent.js';
 import { createTmpProfile, type TmpProfile } from '../../helpers/tmp-profile.js';
 
 const sdkMock = vi.hoisted(() => ({
@@ -25,7 +27,7 @@ vi.mock('@larksuite/channel', async (importOriginal) => {
   };
 });
 
-import { startChannel } from '../../../src/bot/channel.js';
+import { sendFinalReply, startChannel } from '../../../src/bot/channel.js';
 
 interface MessageHandlerMap {
   message?: (msg: NormalizedMessage) => Promise<void> | void;
@@ -35,6 +37,7 @@ interface FakeLarkChannel {
   botIdentity: { openId: string; name: string };
   handlers: MessageHandlerMap;
   sent: Array<{ chatId: string; content: unknown; options?: unknown }>;
+  cardUpdates: Array<{ messageId: string; card: object }>;
   rawClient: {
     request: ReturnType<typeof vi.fn>;
     application: {
@@ -63,6 +66,7 @@ interface FakeLarkChannel {
   getConnectionStatus(): { state: 'connected'; reconnectAttempts: number };
   send(chatId: string, content: unknown, options?: unknown): Promise<void>;
   stream(chatId: string, input: unknown, options?: unknown): Promise<void>;
+  updateCard(messageId: string, card: object): Promise<void>;
   addReaction(messageId: string, emojiType: string): Promise<string>;
   removeReaction(messageId: string, reactionId: string): Promise<void>;
 }
@@ -117,7 +121,7 @@ describe('markdown stream startup failures', () => {
     await waitFor(() => h.channel.rawClient.im.v1.messageReaction.delete.mock.calls.length > 0);
   });
 
-  it('logs stream failures that arrive after terminal grace expires', async () => {
+  it('delivers a fallback when stream failure arrives after terminal grace expires', async () => {
     const streamFailure = deferred<void>();
     let streamProducerStarted = false;
     const h = await createHarness({
@@ -155,12 +159,215 @@ describe('markdown stream startup failures', () => {
         (call[2] as { step?: string } | undefined)?.step === 'stream-terminal-late',
       ),
     );
+    await waitFor(
+      () => markdownForReply(h.channel, 'om_first')?.includes('流式消息更新失败') === true,
+    );
   }, 10_000);
+
+  it('falls back to a visible markdown reply when card updates fail', async () => {
+    let streamCalls = 0;
+    const h = await createHarness({
+      messageReply: 'card',
+      events: [
+        [
+          { type: 'text', delta: `start ${'x'.repeat(20_000)} end-marker` },
+          { type: 'done', terminationReason: 'normal' },
+        ],
+        [{ type: 'done', terminationReason: 'normal' }],
+      ],
+      stream: async (_chatId, input) => {
+        streamCalls += 1;
+        const producer = (input as {
+          card?: {
+            producer?: (ctrl: {
+              update(next: object | ((current: object) => object)): Promise<void>;
+              readonly messageId?: string;
+            }) => Promise<void>;
+          };
+        }).card?.producer;
+        if (producer) {
+          await producer({
+            // The real SDK resolves update() after scheduling a patch. The
+            // asynchronous patch failure is surfaced by the stream terminal.
+            update: vi.fn(async () => {}),
+            messageId: 'om_stream_card',
+          });
+        }
+        if (streamCalls > 1) return;
+        await new Promise((resolve) => setTimeout(resolve, 3200));
+        throw new Error('230099 / 11310: element exceeds the limit');
+      },
+    });
+    await startTestBridge(h);
+
+    await h.channel.handlers.message?.(message('om_first', 'first'));
+    await waitFor(
+      () => latestMarkdownContent(h.channel)?.includes('飞书卡片更新失败') === true,
+      6000,
+    );
+
+    const fallback = lastMarkdown(h.channel);
+    expect(fallback).toContain('start ');
+    expect(fallback).toContain('回复过长');
+    expect(fallback).toContain('end-marker');
+    expect(h.channel.cardUpdates.at(-1)?.messageId).toBe('om_stream_card');
+    expect(JSON.stringify(h.channel.cardUpdates.at(-1)?.card)).toContain('最终回复已改发');
+
+    await h.channel.handlers.message?.(message('om_second', 'second'));
+    await waitFor(() => h.agent.runOptions.length === 2);
+  }, 10_000);
+
+  it('preflights over-budget cards and sends markdown without an invalid update', async () => {
+    const update = vi.fn(async (_next: object | ((current: object) => object)) => {});
+    const tables = Array.from(
+      { length: 4 },
+      (_, i) => `table ${i}\n\n| key | value |\n| --- | --- |\n| a | b |`,
+    ).join('\n\n');
+    const h = await createHarness({
+      messageReply: 'card',
+      events: [
+        [
+          { type: 'text', delta: tables },
+          { type: 'done', terminationReason: 'normal' },
+        ],
+        [{ type: 'done', terminationReason: 'normal' }],
+      ],
+      stream: async (_chatId, input) => {
+        const producer = (input as {
+          card?: {
+            producer?: (ctrl: {
+              update(next: object | ((current: object) => object)): Promise<void>;
+              readonly messageId?: string;
+            }) => Promise<void>;
+          };
+        }).card?.producer;
+        if (producer) await producer({ update, messageId: 'om_preflight_card' });
+      },
+    });
+    await startTestBridge(h);
+
+    await h.channel.handlers.message?.(message('om_first', 'first'));
+    await waitFor(
+      () => latestMarkdownContent(h.channel)?.includes('飞书卡片更新失败') === true,
+    );
+
+    expect(
+      update.mock.calls.some((call) => JSON.stringify(call[0]).includes('| --- |')),
+    ).toBe(false);
+    expect(lastMarkdown(h.channel)).toContain('table 0');
+    expect(JSON.stringify(h.channel.cardUpdates.at(-1)?.card)).toContain('最终回复已改发');
+
+    await h.channel.handlers.message?.(message('om_second', 'second'));
+    await waitFor(() => h.agent.runOptions.length === 2);
+  });
+
+  it('falls back to a visible markdown reply when markdown stream updates fail', async () => {
+    let streamCalls = 0;
+    const h = await createHarness({
+      messageReply: 'markdown',
+      events: [
+        [
+          { type: 'text', delta: `start ${'x'.repeat(20_000)} end-marker` },
+          { type: 'done', terminationReason: 'normal' },
+        ],
+        [{ type: 'done', terminationReason: 'normal' }],
+      ],
+      stream: async (_chatId, input) => {
+        streamCalls += 1;
+        const producer = (input as {
+          markdown?: (ctrl: { setContent(markdown: string): Promise<void> }) => Promise<void>;
+        }).markdown;
+        if (producer) {
+          // @larksuite/channel 0.3.x swallows asynchronous markdown patch
+          // errors and records them on the controller instead of rejecting.
+          const ctrl = {
+            streamingFailed: false,
+            setContent: vi.fn(async () => {}),
+          };
+          await producer(ctrl);
+          if (streamCalls > 1) return;
+          await new Promise((resolve) => setTimeout(resolve, 3200));
+          ctrl.streamingFailed = true;
+        }
+      },
+    });
+    await startTestBridge(h);
+
+    await h.channel.handlers.message?.(message('om_first', 'first'));
+    await waitFor(
+      () => latestMarkdownContent(h.channel)?.includes('飞书流式消息更新失败') === true,
+      6000,
+    );
+
+    const fallback = lastMarkdown(h.channel);
+    expect(fallback).toContain('start ');
+    expect(fallback).toContain('回复过长');
+    expect(fallback).toContain('end-marker');
+
+    await h.channel.handlers.message?.(message('om_second', 'second'));
+    await waitFor(() => h.agent.runOptions.length === 2);
+  }, 10_000);
+
+  it('applies card preflight and fallback to non-stream final replies', async () => {
+    const tables = Array.from(
+      { length: 4 },
+      (_, i) => `table ${i}\n\n| key | value |\n| --- | --- |\n| a | b |`,
+    ).join('\n\n');
+    const h = await createHarness();
+
+    await sendFinalReply({
+      channel: h.channel as unknown as LarkChannel,
+      chatId: 'oc_dm',
+      scope: 'oc_dm',
+      state: stateFrom([
+        { type: 'text', delta: tables },
+        { type: 'done', terminationReason: 'normal' },
+      ]),
+      replyMode: 'card',
+      sendOpts: { replyTo: 'om_final' },
+      cardRenderOptions: {},
+    });
+
+    expect(lastMarkdown(h.channel)).toContain('飞书卡片更新失败');
+    expect(lastMarkdown(h.channel)).toContain('table 0');
+    expect(h.channel.sent.some((entry) => 'card' in (entry.content as object))).toBe(false);
+  });
+
+  it('detects swallowed SDK failures in non-stream markdown final replies', async () => {
+    const h = await createHarness({
+      stream: async (_chatId, input) => {
+        const producer = (input as {
+          markdown?: (ctrl: { setContent(markdown: string): Promise<void> }) => Promise<void>;
+        }).markdown;
+        if (!producer) return;
+        const ctrl = { streamingFailed: false, setContent: vi.fn(async () => {}) };
+        await producer(ctrl);
+        ctrl.streamingFailed = true;
+      },
+    });
+
+    await sendFinalReply({
+      channel: h.channel as unknown as LarkChannel,
+      chatId: 'oc_dm',
+      scope: 'oc_dm',
+      state: stateFrom([
+        { type: 'text', delta: 'final answer' },
+        { type: 'done', terminationReason: 'normal' },
+      ]),
+      replyMode: 'markdown',
+      sendOpts: { replyTo: 'om_final' },
+      cardRenderOptions: {},
+    });
+
+    expect(lastMarkdown(h.channel)).toBe('final answer');
+  });
 });
 
 async function createHarness(options: {
   reactionCreate?: () => Promise<{ data: { reaction_id: string } }>;
   stream?: StreamFn;
+  messageReply?: 'card' | 'markdown' | 'text';
+  events?: FakeAgentEvents;
 } = {}): Promise<{
   tmp: TmpProfile;
   channel: FakeLarkChannel;
@@ -190,6 +397,12 @@ async function createHarness(options: {
   });
   const profileConfig = {
     ...baseProfileConfig,
+    preferences: {
+      ...baseProfileConfig.preferences,
+      ...(options.messageReply
+        ? { messageReply: options.messageReply, messageReplyMigrated: true }
+        : {}),
+    },
     workspaces: {
       ...baseProfileConfig.workspaces,
       default: workspace,
@@ -200,7 +413,7 @@ async function createHarness(options: {
   const agent = new FakeAgentAdapter({
     id: 'codex',
     displayName: 'Codex',
-    events: [
+    events: options.events ?? [
       [
         {
           type: 'error',
@@ -252,9 +465,11 @@ function createFakeLarkChannel(options: {
 } = {}): FakeLarkChannel {
   const handlers: MessageHandlerMap = {};
   const sent: FakeLarkChannel['sent'] = [];
+  const cardUpdates: FakeLarkChannel['cardUpdates'] = [];
   const channel: FakeLarkChannel = {
     handlers,
     sent,
+    cardUpdates,
     botIdentity: { openId: 'ou_bot', name: 'Bridge' },
     rawClient: {
       request: vi.fn(async () => ({ data: { items: [] } })),
@@ -296,6 +511,9 @@ function createFakeLarkChannel(options: {
     stream: options.stream ?? (async () => {
       await new Promise<void>(() => {});
     }),
+    async updateCard(messageId, card) {
+      cardUpdates.push({ messageId, card });
+    },
     async addReaction(messageId, emojiType) {
       const r = await channel.rawClient.im.v1.messageReaction.create({
         path: { message_id: messageId },
@@ -356,9 +574,25 @@ function message(messageId: string, content: string): NormalizedMessage {
 }
 
 function lastMarkdown(channel: FakeLarkChannel): string {
+  const content = latestMarkdownContent(channel);
+  expect(content).toBeTypeOf('string');
+  return content ?? '';
+}
+
+function latestMarkdownContent(channel: FakeLarkChannel): string | undefined {
   const content = channel.sent.at(-1)?.content as { markdown?: string } | undefined;
-  expect(content?.markdown).toBeTypeOf('string');
-  return content?.markdown ?? '';
+  return content?.markdown;
+}
+
+function markdownForReply(channel: FakeLarkChannel, replyTo: string): string | undefined {
+  const entry = channel.sent.find((item) =>
+    (item.options as { replyTo?: string } | undefined)?.replyTo === replyTo,
+  );
+  return (entry?.content as { markdown?: string } | undefined)?.markdown;
+}
+
+function stateFrom(events: readonly AgentEvent[]): RunState {
+  return events.reduce((state, event) => reduce(state, event), initialState);
 }
 
 async function waitFor(predicate: () => boolean, timeoutMs = 3000): Promise<void> {

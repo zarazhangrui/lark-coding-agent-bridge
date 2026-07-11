@@ -18,7 +18,7 @@ import type { AgentAdapter, AgentEvent } from '../agent/types';
 import { handleCardAction } from '../card/dispatcher';
 import { CallbackAuth } from '../card/callback-auth';
 import { CallbackNonceStore } from '../card/callback-store';
-import { renderCard } from '../card/run-renderer';
+import { getCardPayloadViolation, renderCard } from '../card/run-renderer';
 import {
   finalizeIfRunning,
   initialState,
@@ -27,7 +27,7 @@ import {
   reduce,
   type RunState,
 } from '../card/run-state';
-import { renderText } from '../card/text-renderer';
+import { renderBoundedText, renderText } from '../card/text-renderer';
 import { tryHandleCommand, type Controls } from '../commands';
 import type { AppConfig } from '../config/schema';
 import {
@@ -1026,9 +1026,53 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
     if (replyMode === 'card') {
       let latestState: RunState = initialState;
       let producerStarted = false;
+      let cardUpdateFailed = false;
+      let cardUpdatesDisabled = false;
       let cardCtrl:
-        | { update(next: object | ((current: object) => object)): Promise<void> }
+        | {
+            update(next: object | ((current: object) => object)): Promise<void>;
+            readonly messageId?: string;
+          }
         | undefined;
+      const rememberCardUpdateFailure = (err: unknown, step: string): void => {
+        if (!cardUpdateFailed) {
+          log.warn('card', 'update-failed-degrading-to-markdown', {
+            scope,
+            step,
+            err: err instanceof Error ? err.message : String(err),
+          });
+        }
+        cardUpdateFailed = true;
+        cardUpdatesDisabled = true;
+      };
+      const updateCard = async (state: RunState): Promise<void> => {
+        if (!cardCtrl || cardUpdatesDisabled) return;
+        try {
+          const card = renderCard(filterForPrefs(state), cardRenderOptions);
+          const violation = getCardPayloadViolation(card);
+          if (violation) {
+            rememberCardUpdateFailure(new Error(violation), 'preflight');
+            return;
+          }
+          await cardCtrl.update(card);
+        } catch (err) {
+          rememberCardUpdateFailure(err, 'update');
+        }
+      };
+      let cardDegradedReplySent = false;
+      const sendCardDegradedReply = async (): Promise<void> => {
+        if (cardDegradedReplySent) return;
+        cardDegradedReplySent = true;
+        await sendStreamDegradedFinalReply({
+          channel,
+          chatId,
+          scope,
+          state: filterForPrefs(latestState),
+          sendOpts,
+          mode: 'card',
+        });
+        await markCardDeliveryDegraded(channel, cardCtrl?.messageId, scope);
+      };
       const renderDone = processAgentStream(
         handle,
         eventStream,
@@ -1037,9 +1081,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
         recordSession,
         async (state) => {
           latestState = state;
-          if (cardCtrl) {
-            await cardCtrl.update(renderCard(filterForPrefs(state), cardRenderOptions));
-          }
+          await updateCard(state);
         },
       );
       const streamDone = channel.stream(
@@ -1050,30 +1092,98 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
             producer: async (ctrl) => {
               producerStarted = true;
               cardCtrl = ctrl;
-              await ctrl.update(renderCard(filterForPrefs(latestState), cardRenderOptions));
+              await updateCard(latestState);
               await renderDone;
             },
           },
         },
         sendOpts,
       );
-      await awaitRenderAwareStream({
-        mode: replyMode,
-        streamDone,
-        renderDone,
-        producerStarted: () => producerStarted,
-        fallback: async (state) => {
-          await channel.send(
-            chatId,
-            { card: renderCard(filterForPrefs(state), cardRenderOptions) },
-            sendOpts,
-          );
-        },
-      });
+      try {
+        await awaitRenderAwareStream({
+          mode: replyMode,
+          streamDone,
+          renderDone,
+          producerStarted: () => producerStarted,
+          onLateTerminal: async (result) => {
+            if (!result.ok) {
+              rememberCardUpdateFailure(result.err, 'stream-terminal-late');
+            }
+            if (cardUpdateFailed) await sendCardDegradedReply();
+          },
+          fallback: async (state) => {
+            try {
+              const card = renderCard(filterForPrefs(state), cardRenderOptions);
+              const violation = getCardPayloadViolation(card);
+              if (violation) throw new Error(violation);
+              await channel.send(
+                chatId,
+                { card },
+                sendOpts,
+              );
+            } catch (err) {
+              rememberCardUpdateFailure(err, 'fallback-card-send');
+              throw err;
+            }
+          },
+        });
+      } catch (err) {
+        rememberCardUpdateFailure(err, 'stream');
+      }
+      if (cardUpdateFailed) {
+        await sendCardDegradedReply();
+      }
     } else if (replyMode === 'markdown') {
       let latestState: RunState = initialState;
       let producerStarted = false;
-      let markdownCtrl: { setContent(markdown: string): Promise<void> } | undefined;
+      let markdownUpdateFailed = false;
+      let markdownUpdatesDisabled = false;
+      let markdownCtrl:
+        | {
+            setContent(markdown: string): Promise<void>;
+            /** @larksuite/channel 0.3.x records async patch failures here. */
+            streamingFailed?: boolean;
+          }
+        | undefined;
+      const rememberMarkdownUpdateFailure = (err: unknown, step: string): void => {
+        if (!markdownUpdateFailed) {
+          log.warn('markdown', 'update-failed-degrading-to-send', {
+            scope,
+            step,
+            err: err instanceof Error ? err.message : String(err),
+          });
+        }
+        markdownUpdateFailed = true;
+        markdownUpdatesDisabled = true;
+      };
+      const updateMarkdown = async (state: RunState): Promise<void> => {
+        if (!markdownCtrl || markdownUpdatesDisabled) return;
+        try {
+          await markdownCtrl.setContent(renderText(filterForPrefs(state)));
+        } catch (err) {
+          rememberMarkdownUpdateFailure(err, 'update');
+        }
+      };
+      const detectMarkdownSdkFailure = (): void => {
+        if (!markdownCtrl?.streamingFailed) return;
+        rememberMarkdownUpdateFailure(
+          new Error('channel SDK reported an asynchronous markdown update failure'),
+          'sdk-update',
+        );
+      };
+      let markdownDegradedReplySent = false;
+      const sendMarkdownDegradedReply = async (): Promise<void> => {
+        if (markdownDegradedReplySent) return;
+        markdownDegradedReplySent = true;
+        await sendStreamDegradedFinalReply({
+          channel,
+          chatId,
+          scope,
+          state: filterForPrefs(latestState),
+          sendOpts,
+          mode: 'markdown',
+        });
+      };
       const renderDone = processAgentStream(
         handle,
         eventStream,
@@ -1082,9 +1192,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
         recordSession,
         async (state) => {
           latestState = state;
-          if (markdownCtrl) {
-            await markdownCtrl.setContent(renderText(filterForPrefs(state)));
-          }
+          await updateMarkdown(state);
         },
       );
       const streamDone = channel.stream(
@@ -1093,24 +1201,39 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
           markdown: async (ctrl) => {
             producerStarted = true;
             markdownCtrl = ctrl;
-            await ctrl.setContent(renderText(filterForPrefs(latestState)));
+            await updateMarkdown(latestState);
             await renderDone;
           },
         },
         sendOpts,
       );
-      await awaitRenderAwareStream({
-        mode: replyMode,
-        streamDone,
-        renderDone,
-        producerStarted: () => producerStarted,
-        fallback: async (state) => {
-          const body = renderText(filterForPrefs(state));
-          if (body.trim()) {
-            await channel.send(chatId, { markdown: body }, sendOpts);
-          }
-        },
-      });
+      try {
+        await awaitRenderAwareStream({
+          mode: replyMode,
+          streamDone,
+          renderDone,
+          producerStarted: () => producerStarted,
+          onLateTerminal: async (result) => {
+            if (!result.ok) {
+              rememberMarkdownUpdateFailure(result.err, 'stream-terminal-late');
+            }
+            detectMarkdownSdkFailure();
+            if (markdownUpdateFailed) await sendMarkdownDegradedReply();
+          },
+          fallback: async (state) => {
+            const body = renderText(filterForPrefs(state));
+            if (body.trim()) {
+              await channel.send(chatId, { markdown: body }, sendOpts);
+            }
+          },
+        });
+      } catch (err) {
+        rememberMarkdownUpdateFailure(err, 'stream');
+      }
+      detectMarkdownSdkFailure();
+      if (markdownUpdateFailed) {
+        await sendMarkdownDegradedReply();
+      }
     } else {
       // text mode: drain the agent stream without sending anything during
       // the run, then post the final rendered text once as a plain markdown
@@ -1141,7 +1264,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
   }
 }
 
-async function sendFinalReply(input: {
+export async function sendFinalReply(input: {
   channel: LarkChannel;
   chatId: string;
   scope: string;
@@ -1153,24 +1276,46 @@ async function sendFinalReply(input: {
   const body = renderText(input.state);
 
   if (input.replyMode === 'card') {
-    const result = await input.channel.send(
-      input.chatId,
-      { card: renderCard(input.state, input.cardRenderOptions) },
-      input.sendOpts,
-    );
-    log.info('outbound', 'sent', outboundLogFields(input, 'card', body, result));
+    const card = renderCard(input.state, input.cardRenderOptions);
+    const violation = getCardPayloadViolation(card);
+    if (violation) {
+      log.warn('card', 'final-preflight-failed', { scope: input.scope, err: violation });
+      await sendStreamDegradedFinalReply({ ...input, mode: 'card' });
+      return;
+    }
+    try {
+      const result = await input.channel.send(
+        input.chatId,
+        { card },
+        input.sendOpts,
+      );
+      log.info('outbound', 'sent', outboundLogFields(input, 'card', body, result));
+    } catch (err) {
+      log.warn('card', 'final-send-failed', {
+        scope: input.scope,
+        err: err instanceof Error ? err.message : String(err),
+      });
+      await sendStreamDegradedFinalReply({ ...input, mode: 'card' });
+    }
   } else if (input.replyMode === 'markdown') {
     if (body.trim()) {
+      let markdownCtrl:
+        | { setContent(markdown: string): Promise<void>; streamingFailed?: boolean }
+        | undefined;
       try {
         await input.channel.stream(
           input.chatId,
           {
             markdown: async (ctrl) => {
+              markdownCtrl = ctrl;
               await ctrl.setContent(body);
             },
           },
           input.sendOpts,
         );
+        if (markdownCtrl?.streamingFailed) {
+          throw new Error('channel SDK reported an asynchronous markdown update failure');
+        }
         log.info('outbound', 'sent', outboundLogFields(input, 'markdown-stream', body));
       } catch (err) {
         log.warn('outbound', 'markdown-stream-fallback', {
@@ -1191,6 +1336,58 @@ async function sendFinalReply(input: {
       input.sendOpts,
     );
     log.info('outbound', 'sent', outboundLogFields(input, 'text', body, result));
+  }
+}
+
+async function sendStreamDegradedFinalReply(input: {
+  channel: LarkChannel;
+  chatId: string;
+  scope: string;
+  state: RunState;
+  sendOpts: { replyTo: string; replyInThread?: boolean };
+  mode: 'card' | 'markdown';
+}): Promise<void> {
+  const body = renderBoundedText(input.state).trim() || '_（未返回内容）_';
+  const reason =
+    input.mode === 'card' ? '飞书卡片更新失败' : '飞书流式消息更新失败';
+  const markdown = `⚠️ ${reason}，已改发截断版最终回复。\n\n${body}`;
+  try {
+    const result = await input.channel.send(input.chatId, { markdown }, input.sendOpts);
+    log.info(
+      'outbound',
+      'sent',
+      outboundLogFields(
+        { scope: input.scope, replyMode: input.mode, sendOpts: input.sendOpts },
+        'markdown-degraded',
+        markdown,
+        result,
+      ),
+    );
+  } catch (err) {
+    log.fail('stream', err, { mode: input.mode, step: 'degraded-final-fallback' });
+  }
+}
+
+async function markCardDeliveryDegraded(
+  channel: LarkChannel,
+  messageId: string | undefined,
+  scope: string,
+): Promise<void> {
+  if (!messageId) return;
+  const card = renderCard({
+    ...initialState,
+    terminal: 'error',
+    footer: null,
+    errorMsg: '飞书卡片更新失败，最终回复已改发为普通消息。',
+  });
+  try {
+    await channel.updateCard(messageId, card);
+    log.info('card', 'marked-degraded', { scope, messageId });
+  } catch (err) {
+    log.warn('card', 'mark-degraded-failed', {
+      scope,
+      err: err instanceof Error ? err.message : String(err),
+    });
   }
 }
 
@@ -1366,12 +1563,17 @@ async function processAgentStream(
   return state;
 }
 
+type StreamTerminalResult =
+  | { ok: true }
+  | { ok: false; err: unknown };
+
 async function awaitRenderAwareStream(input: {
   mode: 'card' | 'markdown';
   streamDone: Promise<unknown>;
   renderDone: Promise<RunState>;
   producerStarted: () => boolean;
   fallback: (state: RunState) => Promise<void>;
+  onLateTerminal?: (result: StreamTerminalResult) => Promise<void>;
 }): Promise<void> {
   const streamResult = input.streamDone.then(
     () => ({ kind: 'stream' as const, ok: true as const }),
@@ -1414,9 +1616,14 @@ async function awaitRenderAwareStream(input: {
       mode: input.mode,
       graceMs: STREAM_TERMINAL_GRACE_MS,
     });
-    void streamResult.then((result) => {
+    void streamResult.then(async (result) => {
       if (!result.ok) {
         log.fail('stream', result.err, { mode: input.mode, step: 'stream-terminal-late' });
+      }
+      try {
+        await input.onLateTerminal?.(result);
+      } catch (err) {
+        log.fail('stream', err, { mode: input.mode, step: 'late-terminal-handler' });
       }
     });
     return;
