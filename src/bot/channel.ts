@@ -66,6 +66,7 @@ import { lookupMessageThreadId } from './thread-id';
 import { addWorkingReaction, removeReaction } from './reaction';
 import { fetchKnownChats } from './lark-info';
 import type { AppPaths } from '../config/app-paths';
+import type { DesktopStatus, DesktopStatusReporter } from '../desktop/status';
 import {
   consumeCotEvents,
   CotClient,
@@ -177,10 +178,12 @@ export interface StartChannelDeps {
   workspaces: WorkspaceStore;
   controls: Controls;
   appPaths?: Pick<AppPaths, 'secretsFile' | 'keystoreSaltFile' | 'mediaDir'>;
+  desktopStatus?: DesktopStatusReporter;
 }
 
 export async function startChannel(deps: StartChannelDeps): Promise<BridgeChannel> {
   const { cfg, agent, sessions, sessionCatalog, workspaces, controls } = deps;
+  const desktopStatus = deps.desktopStatus;
   const activeRuns = new ActiveRuns();
   // ChatModeCache stays per-bridge-instance — invalidated on restart along
   // with everything else. Topic-mode chats only need one chat.get() call ever.
@@ -317,6 +320,9 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
           lastRunModelByScope,
           scope,
           mode,
+          activeRuns,
+          pending,
+          desktopStatus,
         });
       } catch (err) {
         log.fail('flush', err);
@@ -347,6 +353,7 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
           logThreadModeOverride,
           executor,
           pool,
+          desktopStatus,
         }),
       ).catch((err) => log.fail('intake', err));
     },
@@ -390,6 +397,12 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
     },
     reconnecting: () => {
       consecutiveReconnects++;
+      void desktopStatus?.update({
+        status: 'reconnecting',
+        activeRunCount: activeRuns.snapshot().length,
+        queuedMessageCount: pending.totalSize(),
+        lastErrorKind: 'connection',
+      });
       log.warn('ws', 'reconnecting', { consecutive: consecutiveReconnects });
       reportMetric('ws_reconnect', 1, { kind: 'ws' });
       // Stdout escalation — surface jitter that's hidden in the file log.
@@ -400,6 +413,7 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
       }
     },
     reconnected: () => {
+      void updateIdleOrQueuedStatus(desktopStatus, activeRuns, pending);
       if (consecutiveReconnects > 1) {
         log.info('ws', 'recovered', { afterAttempts: consecutiveReconnects });
       } else {
@@ -410,6 +424,7 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
     // Classify common WS errors into the `network` phase so /doctor and grep
     // can find them without scanning generic `ws.fail` entries.
     error: (err) => {
+      void desktopStatus?.errorThenIdle('connection');
       const msg = err?.message ?? String(err);
       if (/ENOTFOUND|getaddrinfo/.test(msg)) {
         log.fail('network', err, { kind: 'dns', code: err.code });
@@ -442,6 +457,12 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
       ...(identity.name ? { name: identity.name } : {}),
     });
   }
+  await desktopStatus?.update({
+    status: 'idle',
+    ...(identity?.name ? { botName: identity.name } : {}),
+    activeRunCount: activeRuns.snapshot().length,
+    queuedMessageCount: pending.totalSize(),
+  });
   log.info('ws', 'connected', {
     bot: identity?.name ?? 'unknown',
     openId: identity?.openId ?? '-',
@@ -515,6 +536,69 @@ function startKnownChatsRefreshTimer(
   };
 }
 
+async function updateIdleOrQueuedStatus(
+  desktopStatus: DesktopStatusReporter | undefined,
+  activeRuns: ActiveRuns,
+  pending: PendingQueue,
+  activeRunCount = activeRuns.snapshot().length,
+): Promise<void> {
+  if (!desktopStatus) return;
+  const queuedMessageCount = pending.totalSize();
+  const status: DesktopStatus = activeRunCount > 0
+    ? 'thinking'
+    : queuedMessageCount > 0
+      ? 'queued'
+      : 'idle';
+  await desktopStatus.update({
+    status,
+    activeRunCount,
+    queuedMessageCount,
+  });
+}
+
+function createDesktopRunStateReporter(input: {
+  desktopStatus?: DesktopStatusReporter;
+  activeRuns: ActiveRuns;
+  pending: PendingQueue;
+}): (state: RunState) => Promise<void> {
+  let lastStatus: DesktopStatus | undefined;
+  return async (state: RunState): Promise<void> => {
+    const { desktopStatus, activeRuns, pending } = input;
+    if (!desktopStatus) return;
+    if (state.terminal !== 'running') {
+      lastStatus = undefined;
+      if (state.terminal === 'error') {
+        await desktopStatus.errorThenIdle('agent');
+        return;
+      }
+      if (state.terminal === 'idle_timeout') {
+        await desktopStatus.errorThenIdle('timeout');
+        return;
+      }
+      if (state.terminal === 'interrupted') {
+        await desktopStatus.errorThenIdle('interrupted');
+        return;
+      }
+      await updateIdleOrQueuedStatus(desktopStatus, activeRuns, pending, 0);
+      return;
+    }
+    const next = desktopStatusForFooter(state.footer);
+    if (next === lastStatus) return;
+    lastStatus = next;
+    await desktopStatus.update({
+      status: next,
+      activeRunCount: Math.max(1, activeRuns.snapshot().length),
+      queuedMessageCount: pending.totalSize(),
+    });
+  };
+}
+
+function desktopStatusForFooter(footer: RunState['footer']): DesktopStatus {
+  if (footer === 'tool_running') return 'tool_running';
+  if (footer === 'streaming') return 'streaming';
+  return 'thinking';
+}
+
 async function sendNonAllowedGroupHint(
   channel: LarkChannel,
   chatId: string,
@@ -544,6 +628,7 @@ interface IntakeDeps {
   logThreadModeOverride: LogThreadModeOverride;
   executor: RunExecutor;
   pool: ProcessPool;
+  desktopStatus?: DesktopStatusReporter;
 }
 
 type LogThreadModeOverride = (input: {
@@ -567,6 +652,7 @@ async function intakeMessage(deps: IntakeDeps): Promise<void> {
     logThreadModeOverride,
     executor,
     pool,
+    desktopStatus,
   } = deps;
   const preview = msg.content.length > 80 ? `${msg.content.slice(0, 80)}…` : msg.content;
   // Resolve scope (and underlying chat mode) once at intake — every
@@ -683,6 +769,11 @@ async function intakeMessage(deps: IntakeDeps): Promise<void> {
   }
 
   const size = pending.push(scope, emsg);
+  await desktopStatus?.update({
+    status: 'queued',
+    activeRunCount: activeRuns.snapshot().length,
+    queuedMessageCount: pending.totalSize(),
+  });
   log.info('intake', 'queued', { scope, queueSize: size, debounceMs: DEBOUNCE_MS });
 }
 
@@ -701,6 +792,9 @@ interface RunBatchDeps {
   lastRunModelByScope: Map<string, string>;
   scope: string;
   mode: ChatMode;
+  activeRuns: ActiveRuns;
+  pending: PendingQueue;
+  desktopStatus?: DesktopStatusReporter;
 }
 
 async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
@@ -719,6 +813,9 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
     lastRunModelByScope,
     scope,
     mode,
+    activeRuns,
+    pending,
+    desktopStatus,
   } = deps;
   if (batch.length === 0) return;
   const firstMsg = batch[0];
@@ -891,6 +988,11 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
   }
 
   const { execution, cwdRealpath: cwd } = flow;
+  await desktopStatus?.update({
+    status: 'thinking',
+    activeRunCount: Math.max(1, activeRuns.snapshot().length),
+    queuedMessageCount: pending.totalSize(),
+  });
   activePolicyFingerprints.set(scope, flow.policy.policyFingerprint);
   const handle = execution.handle;
   const eventStream = execution.subscribe();
@@ -925,6 +1027,11 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
       log.info('session', 'set-thread', { threadId: evt.threadId });
     }
   };
+  const reportRunState = createDesktopRunStateReporter({
+    desktopStatus,
+    activeRuns,
+    pending,
+  });
 
   // Resolve idle-timeout for this run: scope override (on SessionEntry) wins
   // over global default (preferences). 0 / undefined = no watchdog.
@@ -997,7 +1104,9 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
           scope,
           idleTimeoutMs,
           recordSession,
-          async () => {},
+          async (state) => {
+            await reportRunState(state);
+          },
         );
         await cotDone;
         if (cotPublisher.degradedReason) {
@@ -1036,6 +1145,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
         idleTimeoutMs,
         recordSession,
         async (state) => {
+          await reportRunState(state);
           latestState = state;
           if (cardCtrl) {
             await cardCtrl.update(renderCard(filterForPrefs(state), cardRenderOptions));
@@ -1081,6 +1191,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
         idleTimeoutMs,
         recordSession,
         async (state) => {
+          await reportRunState(state);
           latestState = state;
           if (markdownCtrl) {
             await markdownCtrl.setContent(renderText(filterForPrefs(state)));
@@ -1121,7 +1232,9 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
         scope,
         idleTimeoutMs,
         recordSession,
-        async () => {},
+        async (state) => {
+          await reportRunState(state);
+        },
       );
       await sendFinalReply({
         channel,

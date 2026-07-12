@@ -31,7 +31,7 @@ export interface ServiceAdapter {
   servicePath(): string;
 
   /** Write or overwrite the service definition. */
-  install(): Promise<void>;
+  install(opts?: { noFloatingBall?: boolean }): Promise<void>;
 
   /** Start the service (enables autostart where applicable). */
   start(): ServiceResultLike;
@@ -67,7 +67,7 @@ function makeLaunchdAdapter(profile: string): ServiceAdapter {
     fileExists: () => launchd.plistExists(profile),
     isRunning: () => launchd.isLoaded(profile),
     servicePath: () => launchAgentPlistPath(profile),
-    install: () => launchd.writePlist(profile),
+    install: (opts) => launchd.writePlist(profile, opts),
     start: () => launchd.bootstrap(profile),
     stop: () => launchd.bootout(profile),
     // launchd has no separate "disable" — bootout already removes the

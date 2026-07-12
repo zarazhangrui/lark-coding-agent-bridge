@@ -28,6 +28,8 @@
   "files": [
     "dist",
     "bin",
+    "desktop",
+    "docs",
     "README.md",
     "README.zh.md",
     "LICENSE"
@@ -35,6 +37,7 @@
   "scripts": {
     "dev": "tsup --watch",
     "build": "tsup",
+    "build:helper:macos": "swift build -c release --package-path desktop/macos-floating-ball",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:unit": "vitest run tests/unit --passWithNoTests",

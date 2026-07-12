@@ -27,6 +27,7 @@ export interface ServiceStartOptions {
   tenant?: string;
   /** Skip lark-cli auto-install + bind during `start`. */
   skipCheckLarkCli?: boolean;
+  noFloatingBall?: boolean;
   confirmStopRuntimeLockProcess?: (meta: RuntimeLockMeta) => boolean | Promise<boolean>;
   stopRuntimeLockProcess?: (meta: RuntimeLockMeta) => StopProcessEntryResult | Promise<StopProcessEntryResult>;
 }
@@ -293,7 +294,7 @@ export async function runServiceStart(opts: ServiceStartOptions = {}): Promise<v
     },
   });
 
-  await adapter.install();
+  await adapter.install({ noFloatingBall: opts.noFloatingBall });
 
   // If already running, stop first so start operations don't race.
   if (adapter.isRunning()) {

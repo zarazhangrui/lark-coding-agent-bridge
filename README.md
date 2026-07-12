@@ -88,6 +88,31 @@ Platform mapping:
 
 Daemon logs are under `~/.lark-channel/profiles/<profile>/logs/daemon/`.
 
+### macOS floating status ball
+
+On macOS, the bridge starts a small desktop status ball by default. It stays on top, can be dragged, saves its position, and expands on hover to show every visible profile. Multiple profiles share one ball; its color/state follows the highest-priority profile state.
+
+Disable it for one run with:
+
+```bash
+lark-channel-bridge run --no-floating-ball
+lark-channel-bridge start --no-floating-ball
+```
+
+Or disable it persistently in a profile config:
+
+```json
+{
+  "desktop": {
+    "floatingBall": {
+      "enabled": false
+    }
+  }
+}
+```
+
+The status snapshot is local-only and limited to profile name, bot display name, agent, status, counts, update time, short app-id suffix, and low-sensitive error kind. It does not write prompts, message bodies, tool payloads, chat/thread/session IDs, secrets, or tokens. See [desktop status docs](./docs/desktop-status.md).
+
 ### Multiple profiles: Claude and Codex
 
 By default, the bridge starts with the currently selected profile. Use `profile use <name>` to change it. Each profile keeps its own app credentials, sessions, working directories, and logs. Create multiple profiles only when you need to connect multiple PersonalAgent apps, or run Claude and Codex as separate bots:

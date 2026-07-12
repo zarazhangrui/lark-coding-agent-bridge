@@ -45,6 +45,9 @@ import { refreshOwnerControls } from '../../policy/owner';
 import { SessionStore } from '../../session/store';
 import { SessionCatalog } from '../../session/catalog';
 import { WorkspaceStore } from '../../workspace/store';
+import { shouldEnableFloatingBall } from '../../desktop/config';
+import { startFloatingBallHelper } from '../../desktop/helper';
+import { DesktopStatusReporter } from '../../desktop/status';
 
 // Prefer IPv4 — Node 20+ defaults to "verbatim" which respects whatever
 // the resolver returns first; in IPv6-broken networks (WSL2, certain VPNs,
@@ -77,6 +80,7 @@ export interface StartOptions {
   appSecret?: string;
   tenant?: string;
   skipCheckLarkCli?: boolean;
+  noFloatingBall?: boolean;
   confirmStopRuntimeLockProcess?: (err: RuntimeLockConflictError) => boolean | Promise<boolean>;
   stopRuntimeLockProcess?: (meta: RuntimeLockMeta) => StopProcessEntryResult | Promise<StopProcessEntryResult>;
 }
@@ -98,6 +102,13 @@ export async function runStart(opts: StartOptions): Promise<void> {
   const appPaths = runtime.appPaths;
   let profileConfig = runtime.profileConfig;
   configureLogger({ logsDir: appPaths.logsDir });
+  const desktopStatus = new DesktopStatusReporter({
+    rootDir: appPaths.rootDir,
+    profile: appPaths.profile,
+    agent: profileConfig.agentKind,
+    appId: cfg.accounts.app.id,
+    onWarning: (message, fields) => log.warn('desktop-status', message, fields),
+  });
 
   await preFlightChecks({
     skipCheckLarkCli: opts.skipCheckLarkCli,
@@ -119,6 +130,12 @@ export async function runStart(opts: StartOptions): Promise<void> {
     tenant: cfg.accounts.app.tenant,
     hostname: os.hostname(),
   });
+  if (shouldEnableFloatingBall({ cfg, noFloatingBall: opts.noFloatingBall })) {
+    await startFloatingBallHelper({
+      rootDir: appPaths.rootDir,
+      onWarning: (message, fields) => log.warn('desktop-status', message, fields),
+    });
+  }
 
   let agent = createRuntimeAgent(profileConfig, { ...appPaths, configPath });
   const availability = await checkRuntimeAgentAvailability(agent);
@@ -176,6 +193,7 @@ export async function runStart(opts: StartOptions): Promise<void> {
           registryFile: appPaths.userRegistryFile,
         });
         log.info('registry', 'registered', { id: entry.id, pid: process.pid });
+        await desktopStatus.update({ status: 'connecting' });
 
         // `bridge` is mutable so /account can swap it on restart. `controls` carries
         // restart() and a snapshot of the current cfg so command handlers can read
@@ -193,6 +211,7 @@ export async function runStart(opts: StartOptions): Promise<void> {
           } catch (err) {
             console.error('[disconnect-failed]', err);
           }
+          await desktopStatus.clear();
           // unregister is best-effort sync — we're about to exit anyway.
           unregisterSync(entry.id, appPaths.userRegistryFile);
           await releaseRuntimeLocks(runtimeLocks);
@@ -274,6 +293,7 @@ export async function runStart(opts: StartOptions): Promise<void> {
                   workspaces,
                   controls: nextControls,
                   appPaths: nextRuntime.appPaths,
+                  desktopStatus,
                 });
                 console.log('[restart] disconnecting old bridge...');
                 try {
@@ -330,6 +350,7 @@ export async function runStart(opts: StartOptions): Promise<void> {
           workspaces,
           controls,
           appPaths,
+          desktopStatus,
         });
 
         // Backfill the bot's display name into the registry once WS handshake is
@@ -337,6 +358,7 @@ export async function runStart(opts: StartOptions): Promise<void> {
         // ("bot 尼莫 (cli_xxx)") instead of just a short id.
         const botName = bridge.channel.botIdentity?.name;
         if (botName) {
+          await desktopStatus.update({ botName, status: 'idle' });
           await updateEntry(entry.id, { botName }, appPaths.userRegistryFile).catch((err) =>
             log.warn('registry', 'update-failed', { step: 'botName', err: String(err) }),
           );

@@ -154,6 +154,12 @@ export interface AppPreferences {
   agentStopGraceMs?: number;
 }
 
+export interface DesktopConfig {
+  floatingBall?: {
+    enabled?: boolean;
+  };
+}
+
 /**
  * Top-level config shape on disk.
  *
@@ -168,6 +174,7 @@ export interface AppConfig {
   };
   secrets?: SecretsConfig;
   preferences?: AppPreferences;
+  desktop?: DesktopConfig;
 }
 
 export function isComplete(cfg: Partial<AppConfig>): cfg is AppConfig {

@@ -88,6 +88,31 @@ lark-channel-bridge unregister [--profile <name>]
 
 daemon 日志在 `~/.lark-channel/profiles/<profile>/logs/daemon/`。
 
+### macOS 桌面悬浮状态球
+
+macOS 上默认会启动一个轻量桌面悬浮球。它置顶显示、可拖动并记住位置，鼠标 hover 时展开展示所有可见 profile；多 profile 同时运行时也只显示一个悬浮球，聚合状态取最高关注度状态。
+
+单次关闭：
+
+```bash
+lark-channel-bridge run --no-floating-ball
+lark-channel-bridge start --no-floating-ball
+```
+
+profile 配置中永久关闭：
+
+```json
+{
+  "desktop": {
+    "floatingBall": {
+      "enabled": false
+    }
+  }
+}
+```
+
+本地状态快照只包含 profile 名称、bot 显示名、agent、状态、计数、更新时间、appId 后缀和低敏错误类型；不会写入 prompt、消息正文、工具 payload、chat/thread/session ID、secret 或 token。开发与调试细节见 [desktop status docs](./docs/desktop-status.md)。
+
 ### 多 profile：分别运行 Claude 和 Codex
 
 默认情况下，bridge 使用当前激活的 profile；可以通过 `profile use <name>` 切换。每个 profile 会维护独立的应用凭据、会话、工作目录和日志。只有在需要同时连接多个 PersonalAgent 应用，或分别运行 Claude 和 Codex 时，才需要创建多个 profile：

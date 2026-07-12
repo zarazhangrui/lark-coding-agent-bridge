@@ -2,6 +2,7 @@ node_modules/
 dist/
 coverage/
 .corepack/
+.build/
 *.log
 *.tsbuildinfo
 
