@@ -44,6 +44,7 @@ import { resolveProfileRuntime } from '../../runtime/profile-runtime';
 import { refreshOwnerControls } from '../../policy/owner';
 import { SessionStore } from '../../session/store';
 import { SessionCatalog } from '../../session/catalog';
+import { MessageRouteStore } from '../../session/message-routes';
 import { WorkspaceStore } from '../../workspace/store';
 
 // Prefer IPv4 — Node 20+ defaults to "verbatim" which respects whatever
@@ -143,6 +144,9 @@ export async function runStart(opts: StartOptions): Promise<void> {
           await sessionCatalog.load();
           const workspaces = new WorkspaceStore(appPaths.workspacesFile);
           await workspaces.load();
+          // Reply-quote → source-session routing ledger. Disk-backed and
+          // best-effort; no load() needed (the file is read fresh per op).
+          const messageRoutes = new MessageRouteStore(`${appPaths.sessionsFile}.routes.json`);
 
         await gcMediaCache(MEDIA_GC_MAX_AGE_MS, appPaths.mediaDir);
         await gcOldLogs();
@@ -272,6 +276,7 @@ export async function runStart(opts: StartOptions): Promise<void> {
                   sessions,
                   sessionCatalog,
                   workspaces,
+                  messageRoutes,
                   controls: nextControls,
                   appPaths: nextRuntime.appPaths,
                 });
@@ -328,6 +333,7 @@ export async function runStart(opts: StartOptions): Promise<void> {
           sessions,
           sessionCatalog,
           workspaces,
+          messageRoutes,
           controls,
           appPaths,
         });

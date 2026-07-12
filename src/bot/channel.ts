@@ -52,6 +52,7 @@ import { createOwnerRefreshController } from '../policy/owner';
 import { RunExecutor } from '../runtime/run-executor';
 import type { SessionCatalog } from '../session/catalog';
 import type { SessionStore } from '../session/store';
+import type { MessageRouteStore } from '../session/message-routes';
 import type { WorkspaceStore } from '../workspace/store';
 import { ActiveRuns, type RunHandle } from './active-runs';
 import { ChatModeCache, type ChatMode } from './chat-mode-cache';
@@ -177,6 +178,11 @@ export interface StartChannelDeps {
   workspaces: WorkspaceStore;
   controls: Controls;
   appPaths?: Pick<AppPaths, 'secretsFile' | 'keystoreSaltFile' | 'mediaDir'>;
+  /** Optional reply-quote → source-session routing ledger. When present, the
+   * bridge records each outbound reply's message_id and routes inbound
+   * reply-quotes of those messages back to their originating scope. Omitting
+   * it disables the feature (no behavior change). */
+  messageRoutes?: MessageRouteStore;
 }
 
 export async function startChannel(deps: StartChannelDeps): Promise<BridgeChannel> {
@@ -315,6 +321,7 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
           callbackAuth,
           activePolicyFingerprints,
           lastRunModelByScope,
+          messageRoutes: deps.messageRoutes,
           scope,
           mode,
         });
@@ -699,6 +706,7 @@ interface RunBatchDeps {
   callbackAuth?: CallbackAuth;
   activePolicyFingerprints: Map<string, string>;
   lastRunModelByScope: Map<string, string>;
+  messageRoutes?: MessageRouteStore;
   scope: string;
   mode: ChatMode;
 }
@@ -717,9 +725,12 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
     callbackAuth,
     activePolicyFingerprints,
     lastRunModelByScope,
-    scope,
+    messageRoutes,
     mode,
   } = deps;
+  // `scope` is `let` (not destructured) because reply-quote routing may
+  // override it below to the source session's scope.
+  let scope = deps.scope;
   if (batch.length === 0) return;
   const firstMsg = batch[0];
   const lastMsg = batch[batch.length - 1];
@@ -767,6 +778,37 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
         type: q.rawContentType,
         contentChars: q.content.length,
       });
+    }
+  }
+
+  // Reply-quote session routing. If any quoted message is one the bridge
+  // previously sent (recorded in the message-route ledger), route this run
+  // back to that message's originating scope instead of the current chat's
+  // scope. Because cwd + session resume are derived from the scope downstream,
+  // overriding the scope reconnects the run to the source conversation. This
+  // is what lets a user pull a past answer's session into any chat by quoting
+  // it. Entirely best-effort and gated on a ledger hit — a miss, a disabled
+  // ledger, or any error leaves `scope` untouched, so non-quote messages and
+  // quotes of non-bridge messages behave exactly as before.
+  if (messageRoutes && quoteTargets.length > 0) {
+    for (const targetId of quoteTargets) {
+      try {
+        const route = await messageRoutes.lookup(targetId);
+        if (route && route.scope !== scope) {
+          log.info('quote-route', 'inbound-routed', {
+            quotedMessageId: targetId,
+            fromScope: scope,
+            toScope: route.scope,
+          });
+          scope = route.scope;
+          break;
+        }
+      } catch (err) {
+        log.warn('quote-route', 'lookup-failed', {
+          quotedMessageId: targetId,
+          err: err instanceof Error ? err.message : String(err),
+        });
+      }
     }
   }
 
@@ -939,6 +981,23 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
     log.info('flush', 'idle-watchdog', { idleTimeoutMs });
   }
 
+  // Register this run's final reply in the message-route ledger so a later
+  // reply-quote of it routes back to this (possibly already-overridden) scope
+  // and its session. Best-effort: `record` never throws, and the whole thing
+  // is a no-op when the ledger is disabled or no message_id came back (e.g. a
+  // stream that produced no message). Uses the session id/cwd this run just
+  // recorded so external tools reading the ledger can target the session.
+  const registerReplyRoute = async (messageId: string | undefined): Promise<void> => {
+    if (!messageRoutes || !messageId) return;
+    const entry = sessions.getRaw(scope);
+    await messageRoutes.record(messageId, {
+      scope,
+      ts: Date.now(),
+      ...(entry?.sessionId ? { sessionId: entry.sessionId } : {}),
+      cwd: entry?.cwd ?? cwd,
+    });
+  };
+
   const replyMode = getMessageReplyMode(controls.cfg);
   log.info('flush', 'reply-mode', { mode: replyMode });
   const cotMessages = getCotMessages(controls.cfg);
@@ -1009,7 +1068,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
             reason: cotPublisher.degradedReason,
           });
         }
-        await sendFinalReply({
+        const cotReplyId = await sendFinalReply({
           channel,
           chatId,
           scope,
@@ -1018,6 +1077,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
           sendOpts,
           cardRenderOptions,
         });
+        await registerReplyRoute(cotReplyId);
         return;
       }
       log.warn('cot', 'fallback-existing-reply', { reason: 'create-disabled' });
@@ -1057,19 +1117,19 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
         },
         sendOpts,
       );
-      await awaitRenderAwareStream({
+      const cardReplyId = await awaitRenderAwareStream({
         mode: replyMode,
         streamDone,
         renderDone,
         producerStarted: () => producerStarted,
-        fallback: async (state) => {
-          await channel.send(
+        fallback: async (state) =>
+          channel.send(
             chatId,
             { card: renderCard(filterForPrefs(state), cardRenderOptions) },
             sendOpts,
-          );
-        },
+          ),
       });
+      await registerReplyRoute(cardReplyId);
     } else if (replyMode === 'markdown') {
       let latestState: RunState = initialState;
       let producerStarted = false;
@@ -1099,7 +1159,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
         },
         sendOpts,
       );
-      await awaitRenderAwareStream({
+      const markdownReplyId = await awaitRenderAwareStream({
         mode: replyMode,
         streamDone,
         renderDone,
@@ -1107,10 +1167,12 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
         fallback: async (state) => {
           const body = renderText(filterForPrefs(state));
           if (body.trim()) {
-            await channel.send(chatId, { markdown: body }, sendOpts);
+            return channel.send(chatId, { markdown: body }, sendOpts);
           }
+          return undefined;
         },
       });
+      await registerReplyRoute(markdownReplyId);
     } else {
       // text mode: drain the agent stream without sending anything during
       // the run, then post the final rendered text once as a plain markdown
@@ -1123,7 +1185,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
         recordSession,
         async () => {},
       );
-      await sendFinalReply({
+      const textReplyId = await sendFinalReply({
         channel,
         chatId,
         scope,
@@ -1132,6 +1194,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
         sendOpts,
         cardRenderOptions,
       });
+      await registerReplyRoute(textReplyId);
     }
   } catch (err) {
     log.fail('stream', err);
@@ -1149,7 +1212,7 @@ async function sendFinalReply(input: {
   replyMode: ReturnType<typeof getMessageReplyMode>;
   sendOpts: { replyTo: string; replyInThread?: boolean };
   cardRenderOptions: { signCallback?: (action: string) => string };
-}): Promise<void> {
+}): Promise<string | undefined> {
   const body = renderText(input.state);
 
   if (input.replyMode === 'card') {
@@ -1159,10 +1222,11 @@ async function sendFinalReply(input: {
       input.sendOpts,
     );
     log.info('outbound', 'sent', outboundLogFields(input, 'card', body, result));
+    return result.messageId;
   } else if (input.replyMode === 'markdown') {
     if (body.trim()) {
       try {
-        await input.channel.stream(
+        const result = await input.channel.stream(
           input.chatId,
           {
             markdown: async (ctrl) => {
@@ -1171,7 +1235,8 @@ async function sendFinalReply(input: {
           },
           input.sendOpts,
         );
-        log.info('outbound', 'sent', outboundLogFields(input, 'markdown-stream', body));
+        log.info('outbound', 'sent', outboundLogFields(input, 'markdown-stream', body, result));
+        return result.messageId;
       } catch (err) {
         log.warn('outbound', 'markdown-stream-fallback', {
           err: err instanceof Error ? err.message : String(err),
@@ -1182,8 +1247,10 @@ async function sendFinalReply(input: {
           input.sendOpts,
         );
         log.info('outbound', 'sent', outboundLogFields(input, 'markdown', body, result));
+        return result.messageId;
       }
     }
+    return undefined;
   } else if (body.trim()) {
     const result = await input.channel.send(
       input.chatId,
@@ -1191,7 +1258,9 @@ async function sendFinalReply(input: {
       input.sendOpts,
     );
     log.info('outbound', 'sent', outboundLogFields(input, 'text', body, result));
+    return result.messageId;
   }
+  return undefined;
 }
 
 async function sendCotDegradedNotice(input: {
@@ -1368,13 +1437,13 @@ async function processAgentStream(
 
 async function awaitRenderAwareStream(input: {
   mode: 'card' | 'markdown';
-  streamDone: Promise<unknown>;
+  streamDone: Promise<{ messageId?: string }>;
   renderDone: Promise<RunState>;
   producerStarted: () => boolean;
-  fallback: (state: RunState) => Promise<void>;
-}): Promise<void> {
+  fallback: (state: RunState) => Promise<{ messageId?: string } | void>;
+}): Promise<string | undefined> {
   const streamResult = input.streamDone.then(
-    () => ({ kind: 'stream' as const, ok: true as const }),
+    (res) => ({ kind: 'stream' as const, ok: true as const, messageId: res?.messageId }),
     (err) => ({ kind: 'stream' as const, ok: false as const, err }),
   );
   const renderResult = input.renderDone.then(
@@ -1387,8 +1456,7 @@ async function awaitRenderAwareStream(input: {
       log.fail('stream', first.err, { mode: input.mode, step: 'stream' });
       const rendered = await renderResult;
       if (!rendered.ok) throw rendered.err;
-      await runFallbackReply(input.mode, rendered.state, input.fallback);
-      return;
+      return runFallbackReply(input.mode, rendered.state, input.fallback);
     }
     throw first.err;
   }
@@ -1396,13 +1464,12 @@ async function awaitRenderAwareStream(input: {
   if (first.kind === 'stream') {
     const rendered = await renderResult;
     if (!rendered.ok) throw rendered.err;
-    return;
+    return first.messageId;
   }
 
   if (!input.producerStarted()) {
     log.warn('stream', 'producer-not-started-before-agent-terminal', { mode: input.mode });
-    await runFallbackReply(input.mode, first.state, input.fallback);
-    return;
+    return runFallbackReply(input.mode, first.state, input.fallback);
   }
 
   const terminal = await Promise.race([
@@ -1419,20 +1486,23 @@ async function awaitRenderAwareStream(input: {
         log.fail('stream', result.err, { mode: input.mode, step: 'stream-terminal-late' });
       }
     });
-    return;
+    return undefined;
   }
   if (!terminal.ok) throw terminal.err;
+  return terminal.messageId;
 }
 
 async function runFallbackReply(
   mode: 'card' | 'markdown',
   state: RunState,
-  fallback: (state: RunState) => Promise<void>,
-): Promise<void> {
+  fallback: (state: RunState) => Promise<{ messageId?: string } | void>,
+): Promise<string | undefined> {
   try {
-    await fallback(state);
+    const result = await fallback(state);
+    return result?.messageId;
   } catch (err) {
     log.fail('stream', err, { mode, step: 'fallback' });
+    return undefined;
   }
 }
 
