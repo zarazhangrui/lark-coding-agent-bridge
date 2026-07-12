@@ -354,6 +354,32 @@ async function handleNewChat(rawName: string, ctx: CommandContext): Promise<void
     ctx.workspaces.setCwd(created.chatId, sourceCwd);
   }
 
+  // Auto-allow the freshly created group. The v2 access policy is
+  // fail-closed: a chat_id absent from `allowedChats` is denied with reason
+  // `denied-chat` (logged as `skip-not-allowed-user`), so a group the bot
+  // itself just spun up would be silently ignored — the bot builds a room it
+  // then refuses to talk in.
+  // Persist the new chat_id into the allowlist (idempotent) so messages in
+  // the new group are accepted immediately, without the user having to run
+  // `/invite group` from inside it. Best-effort: the group already exists, so
+  // a persistence failure must not fail the command — just log and continue
+  // (the user can still `/invite group` manually).
+  try {
+    await saveAccessConfig(ctx, (current) => {
+      const list = new Set(current.allowedChats);
+      if (list.has(created.chatId)) return current;
+      list.add(created.chatId);
+      return { ...current, allowedChats: [...list] };
+    });
+    log.info('command', 'new-chat-auto-allowed', {
+      chatId: `…${created.chatId.slice(-6)}`,
+    });
+  } catch (err) {
+    log.warn('command', 'new-chat-auto-allow-failed', {
+      err: err instanceof Error ? err.message : String(err),
+    });
+  }
+
   // Welcome the user inside the new group with a hint about how to start.
   const welcome = sourceCwd
     ? `🎉 群已建好，cwd 继承自原群：\`${sourceCwd}\`\n\n@我 + 任意消息开始对话。`
