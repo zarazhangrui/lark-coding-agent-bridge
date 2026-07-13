@@ -67,10 +67,12 @@ struct BallPosition: Codable {
 final class StatusStore {
     private let statusURL: URL
     private let positionURL: URL
+    private let logURL: URL
 
     init(root: URL) {
         self.statusURL = root.appendingPathComponent("desktop-status.json")
         self.positionURL = root.appendingPathComponent("desktop-floating-ball.json")
+        self.logURL = root.appendingPathComponent("desktop-floating-ball.log")
     }
 
     func readSnapshot() -> StatusSnapshot {
@@ -98,6 +100,24 @@ final class StatusStore {
         )
         try? data.write(to: positionURL, options: [.atomic])
         try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: positionURL.path)
+    }
+
+    func log(_ message: String) {
+        let line = "\(isoNow()) \(message)\n"
+        guard let data = line.data(using: .utf8) else { return }
+        try? FileManager.default.createDirectory(
+            at: logURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        if FileManager.default.fileExists(atPath: logURL.path),
+           let handle = try? FileHandle(forWritingTo: logURL) {
+            _ = try? handle.seekToEnd()
+            try? handle.write(contentsOf: data)
+            try? handle.close()
+        } else {
+            try? data.write(to: logURL, options: [.atomic])
+            try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: logURL.path)
+        }
     }
 }
 
@@ -192,6 +212,14 @@ final class BallView: NSView {
 
     private func collapsedBallRect() -> NSRect {
         let side: CGFloat = 44
+        if expanded {
+            return NSRect(
+                x: bounds.width - side,
+                y: (bounds.height - side) / 2,
+                width: side,
+                height: side
+            )
+        }
         return NSRect(x: (bounds.width - side) / 2, y: (bounds.height - side) / 2, width: side, height: side)
     }
 
@@ -233,36 +261,47 @@ final class BallView: NSView {
     }
 }
 
+final class FloatingPanel: NSPanel {
+    override var canBecomeKey: Bool { false }
+    override var canBecomeMain: Bool { false }
+}
+
 final class BallController {
     private let store: StatusStore
-    private let window: NSWindow
+    private let window: FloatingPanel
     private let view: BallView
     private var timer: Timer?
+    private var collapseTimer: Timer?
     private var collapsedOrigin: NSPoint
 
     init(store: StatusStore) {
         self.store = store
         self.view = BallView(frame: NSRect(x: 0, y: 0, width: 44, height: 44))
         self.collapsedOrigin = BallController.safeOrigin(for: store.readPosition())
-        self.window = NSWindow(
+        self.window = FloatingPanel(
             contentRect: NSRect(origin: collapsedOrigin, size: NSSize(width: 44, height: 44)),
-            styleMask: [.borderless],
+            styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
             defer: false
         )
         window.isOpaque = false
         window.backgroundColor = .clear
-        window.level = .floating
+        window.level = .statusBar
         window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
         window.hasShadow = true
+        window.hidesOnDeactivate = false
+        window.isReleasedWhenClosed = false
+        window.ignoresMouseEvents = false
         window.contentView = view
-        view.onHoverChanged = { [weak self] expanded in self?.setExpanded(expanded) }
+        view.onHoverChanged = { [weak self] expanded in self?.handleHoverChanged(expanded) }
         view.onDragEnded = { [weak self] in self?.saveCollapsedPosition() }
     }
 
     func start() {
         refresh()
+        store.log("show window origin=\(window.frame.origin.x),\(window.frame.origin.y) size=\(window.frame.size.width),\(window.frame.size.height) screens=\(screenSummary())")
         window.orderFrontRegardless()
+        window.display()
         timer = Timer.scheduledTimer(withTimeInterval: 0.35, repeats: true) { [weak self] _ in
             self?.refresh()
         }
@@ -272,37 +311,80 @@ final class BallController {
         view.snapshot = store.readSnapshot()
     }
 
+    private func handleHoverChanged(_ hovering: Bool) {
+        if hovering {
+            collapseTimer?.invalidate()
+            collapseTimer = nil
+            setExpanded(true)
+            return
+        }
+        scheduleCollapseIfOutside()
+    }
+
+    private func scheduleCollapseIfOutside() {
+        collapseTimer?.invalidate()
+        collapseTimer = Timer.scheduledTimer(withTimeInterval: 0.18, repeats: false) { [weak self] _ in
+            guard let self else { return }
+            self.collapseTimer = nil
+            let mouse = NSEvent.mouseLocation
+            if self.window.frame.insetBy(dx: -4, dy: -4).contains(mouse) {
+                return
+            }
+            self.setExpanded(false)
+        }
+    }
+
     private func setExpanded(_ expanded: Bool) {
-        view.expanded = expanded
+        if view.expanded == expanded {
+            return
+        }
         let size = expanded ? expandedSize() : NSSize(width: 44, height: 44)
         let origin: NSPoint
         if expanded {
-            let center = NSPoint(x: window.frame.midX, y: window.frame.midY)
+            view.expanded = true
             origin = BallController.clamp(
-                origin: NSPoint(x: center.x - size.width / 2, y: center.y - size.height / 2),
+                origin: NSPoint(
+                    x: collapsedOrigin.x - (size.width - 44),
+                    y: collapsedOrigin.y - (size.height - 44) / 2
+                ),
                 size: size
             )
+            window.setFrame(NSRect(origin: origin, size: size), display: true, animate: true)
+            view.frame = NSRect(origin: .zero, size: size)
         } else {
-            origin = collapsedOrigin
+            let collapsedFrame = NSRect(origin: collapsedOrigin, size: size)
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = 0.16
+                context.allowsImplicitAnimation = true
+                window.animator().setFrame(collapsedFrame, display: true)
+            } completionHandler: { [weak self] in
+                guard let self else { return }
+                self.view.frame = NSRect(origin: .zero, size: size)
+                self.view.expanded = false
+            }
         }
-        window.setFrame(NSRect(origin: origin, size: size), display: true, animate: true)
-        view.frame = NSRect(origin: .zero, size: size)
     }
 
     private func expandedSize() -> NSSize {
         let rows = max(1, min(8, view.snapshot.profiles.count))
-        return NSSize(width: 360, height: CGFloat(28 + rows * 26))
+        return NSSize(width: 180, height: CGFloat(28 + rows * 26))
     }
 
     private func saveCollapsedPosition() {
-        collapsedOrigin = BallController.clamp(origin: window.frame.origin, size: NSSize(width: 44, height: 44))
+        let origin = view.expanded
+            ? NSPoint(
+                x: window.frame.maxX - 44,
+                y: window.frame.midY - 22
+            )
+            : window.frame.origin
+        collapsedOrigin = BallController.clamp(origin: origin, size: NSSize(width: 44, height: 44))
         window.setFrameOrigin(collapsedOrigin)
         store.writePosition(collapsedOrigin)
     }
 
     private static func safeOrigin(for saved: NSPoint?) -> NSPoint {
-        let visible = NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 900, height: 700)
-        let fallback = NSPoint(x: visible.maxX - 58, y: visible.maxY - 58)
+        let visible = defaultVisibleFrame()
+        let fallback = NSPoint(x: visible.midX - 22, y: visible.midY - 22)
         return clamp(origin: saved ?? fallback, size: NSSize(width: 44, height: 44))
     }
 
@@ -316,6 +398,21 @@ final class BallController {
             y: min(max(origin.y, frame.minY + inset), frame.maxY - size.height - inset)
         )
     }
+
+    private static func defaultVisibleFrame() -> NSRect {
+        let mouse = NSEvent.mouseLocation
+        return NSScreen.screens.first(where: { $0.visibleFrame.contains(mouse) })?.visibleFrame
+            ?? NSScreen.main?.visibleFrame
+            ?? NSScreen.screens.first?.visibleFrame
+            ?? NSRect(x: 0, y: 0, width: 900, height: 700)
+    }
+}
+
+func screenSummary() -> String {
+    NSScreen.screens.enumerated().map { idx, screen in
+        let frame = screen.visibleFrame
+        return "#\(idx)(x:\(Int(frame.minX)),y:\(Int(frame.minY)),w:\(Int(frame.width)),h:\(Int(frame.height)))"
+    }.joined(separator: ",")
 }
 
 func isoNow() -> String {
@@ -333,14 +430,34 @@ func rootURL() -> URL {
     return FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".lark-channel", isDirectory: true)
 }
 
-let root = rootURL()
-guard let instanceLock = SingleInstanceLock(root: root) else {
-    exit(0)
+final class AppDelegate: NSObject, NSApplicationDelegate {
+    private let root: URL
+    private var instanceLock: SingleInstanceLock?
+    private var controller: BallController?
+
+    init(root: URL) {
+        self.root = root
+    }
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        let store = StatusStore(root: root)
+        guard let lock = SingleInstanceLock(root: root) else {
+            store.log("another instance is already running")
+            NSApplication.shared.terminate(nil)
+            return
+        }
+        instanceLock = lock
+        store.log("application did finish launching root=\(root.path)")
+        let controller = BallController(store: store)
+        self.controller = controller
+        controller.start()
+    }
 }
-_ = instanceLock
+
+var retainedAppDelegate: AppDelegate?
 
 let app = NSApplication.shared
+retainedAppDelegate = AppDelegate(root: rootURL())
+app.delegate = retainedAppDelegate
 app.setActivationPolicy(.accessory)
-let controller = BallController(store: StatusStore(root: root))
-controller.start()
 app.run()

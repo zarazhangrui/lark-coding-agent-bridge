@@ -13,12 +13,21 @@ export interface StartFloatingBallHelperInput {
 
 export function resolveFloatingBallHelperCandidates(env: NodeJS.ProcessEnv = process.env): string[] {
   const here = dirname(fileURLToPath(import.meta.url));
-  const packageRoot = resolve(here, '..', '..');
-  return [
+  const packageRoots = uniqueStrings([
+    // Built package: dist/cli.js -> package root.
+    resolve(here, '..'),
+    // Source/test execution: src/desktop/helper.ts -> package root.
+    resolve(here, '..', '..'),
+  ]);
+  const swiftBuildTriple = process.arch === 'arm64' ? 'arm64-apple-macosx' : 'x86_64-apple-macosx';
+  return uniqueStrings([
     env.LARK_CHANNEL_FLOATING_BALL_HELPER,
-    join(packageRoot, 'desktop', 'macos-floating-ball', 'LarkChannelFloatingBall'),
-    join(packageRoot, 'desktop', 'macos-floating-ball', '.build', 'release', 'LarkChannelFloatingBall'),
-  ].filter((value): value is string => Boolean(value));
+    ...packageRoots.flatMap((packageRoot) => [
+      join(packageRoot, 'desktop', 'macos-floating-ball', 'LarkChannelFloatingBall'),
+      join(packageRoot, 'desktop', 'macos-floating-ball', '.build', swiftBuildTriple, 'release', 'LarkChannelFloatingBall'),
+      join(packageRoot, 'desktop', 'macos-floating-ball', '.build', 'release', 'LarkChannelFloatingBall'),
+    ]),
+  ].filter((value): value is string => Boolean(value)));
 }
 
 export function resolveFloatingBallHelperPath(
@@ -58,4 +67,8 @@ export async function startFloatingBallHelper(
     });
     return false;
   }
+}
+
+function uniqueStrings(values: Array<string | undefined>): string[] {
+  return [...new Set(values.filter((value): value is string => Boolean(value)))];
 }
