@@ -812,6 +812,10 @@ async function handleStatus(_args: string, ctx: CommandContext): Promise<void> {
       : undefined;
   const provider = await resolveModelProvider(ctx.controls.profile);
   const balance = provider ? (await fetchModelBalance(provider)) ?? '-' : '-';
+
+  // Read allowedTools from config
+  const allowedTools = getAllowedTools(ctx.controls.cfg) || undefined;
+
   const card = statusCard({
     profileName: ctx.controls.profile,
     cwd,
@@ -829,6 +833,7 @@ async function handleStatus(_args: string, ctx: CommandContext): Promise<void> {
     scope: ctx.scope,
     chatMode: ctx.chatMode,
     balance,
+    allowedTools,
   });
   await ctx.channel.send(ctx.msg.chatId, { card }, commandReplyOptions(ctx));
 }
@@ -1974,7 +1979,10 @@ async function submitConfig(ctx: CommandContext): Promise<void> {
       maxConcurrentRuns,
       runIdleTimeoutMinutes,
       requireMentionInGroup,
-      allowedTools,
+      // allowed_tools form field is only rendered when showPermissionMode
+      // is true (owner in DM). In all other cases (owner in group, admin,
+      // allowed user), preserve the existing value on submit.
+      ...('allowed_tools' in fv ? { allowedTools } : {}),
     };
 
     let failureStep = 'config.save';

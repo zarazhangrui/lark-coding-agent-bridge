@@ -88,7 +88,7 @@ export async function handleCardAction(deps: CardDispatchDeps): Promise<void> {
       return;
     }
     log.info('cardAction', 'cmd', { cmd, scope });
-    const msg = makeFakeMsg(deps.evt, threadId);
+    const msg = makeFakeMsg(deps.evt, threadId, mode);
 
     const ctx: CommandContext = {
       channel: deps.channel,
@@ -252,11 +252,12 @@ function composeArgs(sub: string, payload: Record<string, unknown>): string {
 function makeFakeMsg(
   evt: CardActionEvent,
   threadId: string | undefined,
+  mode: 'p2p' | 'group' | 'topic',
 ): NormalizedMessage {
   return {
     messageId: evt.messageId,
     chatId: evt.chatId,
-    chatType: 'p2p',
+    chatType: mode === 'p2p' ? 'p2p' : 'group',
     threadId,
     senderId: evt.operator.openId,
     senderName: evt.operator.name,
