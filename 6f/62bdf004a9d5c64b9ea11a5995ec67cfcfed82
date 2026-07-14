@@ -1,0 +1,38 @@
+package.json
+  h_965db5153ff6bf 3,50
+pnpm-lock.yaml
+  s_5445163eee8c92::t_f4963fb8050bf6 15-16,375-376,1336
+src/bot/channel.ts
+  s_ae40a511d70ccf::t_1ebfdcebb8fe28 1066,1074,1116,1147-1177,1189-1196
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "6f62bdf004a9d5c64b9ea11a5995ec67cfcfed82",
+  "prompts": {},
+  "humans": {
+    "h_965db5153ff6bf": {
+      "author": "zeno06111-lab <zeno06111@gmail.com>"
+    }
+  },
+  "sessions": {
+    "s_5445163eee8c92": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "99ceaa28-c7aa-4e13-a666-5b0d98b9fa84",
+        "model": "unknown"
+      },
+      "human_author": "zeno06111-lab <zeno06111@gmail.com>"
+    },
+    "s_ae40a511d70ccf": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "c1a6f87b-ed30-4b33-be8f-3d5f53c693f5",
+        "model": "unknown"
+      },
+      "human_author": "zeno06111-lab <zeno06111@gmail.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
