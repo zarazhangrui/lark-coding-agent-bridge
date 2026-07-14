@@ -6,6 +6,7 @@ import { createDefaultProfileConfig } from '../../../src/config/profile-schema.j
 import { SessionStore } from '../../../src/session/store.js';
 import { WorkspaceStore } from '../../../src/workspace/store.js';
 import { FakeAgentAdapter } from '../../helpers/fake-agent.js';
+import type { AgentEvent } from '../../../src/agent/types.js';
 import { createTmpProfile, type TmpProfile } from '../../helpers/tmp-profile.js';
 
 const sdkMock = vi.hoisted(() => ({
@@ -51,13 +52,14 @@ interface FakeLarkChannel {
   getAppInfo: ReturnType<typeof vi.fn>;
   listChats: ReturnType<typeof vi.fn>;
   fetchRawMessage: ReturnType<typeof vi.fn>;
+  recallMessage: ReturnType<typeof vi.fn>;
   on(handlers: MessageHandlerMap): void;
   connect(): Promise<void>;
   disconnect(): Promise<void>;
   getChatMode(chatId: string): Promise<'group' | 'topic'>;
   getConnectionStatus(): { state: 'connected'; reconnectAttempts: number };
   send(chatId: string, content: unknown, options?: unknown): Promise<{ messageId: string }>;
-  stream(chatId: string, input: unknown, options?: unknown): Promise<void>;
+  stream(chatId: string, input: unknown, options?: unknown): Promise<{ messageId: string }>;
 }
 
 const cleanups: Array<() => Promise<void>> = [];
@@ -271,6 +273,68 @@ describe('topic message quote handling', () => {
     expect(prompt).not.toContain('<topic_context>');
   });
 
+  it('recalls the streamed message when the agent produces no content', async () => {
+    // Empty agent output must not leave an "(no content)" card behind — the SDK
+    // creates the streaming card eagerly, so we recall it when nothing renders.
+    const h = await createHarness({
+      chatMode: 'group',
+      agentEvents: [{ type: 'done', terminationReason: 'normal' }],
+    });
+
+    await startTestBridge(h);
+
+    await h.channel.handlers.message?.(
+      message({ messageId: 'om_empty', rootId: 'om_empty', parentId: 'om_empty', content: '@Bridge ping' }),
+    );
+    await waitFor(() => h.channel.streams.length === 1);
+    await waitFor(() => h.channel.recallMessage.mock.calls.length === 1);
+
+    expect(h.channel.recallMessage).toHaveBeenCalledWith('om_stream_1');
+  });
+
+  it('does not recall when the agent produced real content', async () => {
+    const h = await createHarness({
+      chatMode: 'group',
+      agentEvents: [
+        { type: 'text', delta: '这是真正的回答' },
+        { type: 'done', terminationReason: 'normal' },
+      ],
+    });
+
+    await startTestBridge(h);
+
+    await h.channel.handlers.message?.(
+      message({ messageId: 'om_real', rootId: 'om_real', parentId: 'om_real', content: '@Bridge 问题' }),
+    );
+    await waitFor(() => h.channel.streams.length === 1);
+    // give any (erroneous) recall a chance to fire before asserting it didn't
+    await new Promise((resolve) => setTimeout(resolve, 60));
+
+    expect(h.channel.recallMessage).not.toHaveBeenCalled();
+  });
+
+  it('skips a group message that does not mention the bot (requireMention default)', async () => {
+    const h = await createHarness({ chatMode: 'group' });
+
+    await startTestBridge(h);
+
+    await h.channel.handlers.message?.(
+      message({
+        messageId: 'om_no_at',
+        rootId: 'om_no_at',
+        parentId: 'om_no_at',
+        content: '@同事 这里的帖子哪些是我们做的',
+        mentionedBot: false,
+      }),
+    );
+    // no run should start; give the pipeline a moment to (not) act
+    await new Promise((resolve) => setTimeout(resolve, 80));
+
+    expect(h.agent.runOptions).toHaveLength(0);
+    expect(h.channel.streams).toHaveLength(0);
+    expect(h.channel.recallMessage).not.toHaveBeenCalled();
+  });
+
   it('keeps regular group reply quotes as quoted context', async () => {
     const h = await createHarness({
       chatMode: 'group',
@@ -335,6 +399,7 @@ async function createHarness(options: {
   quotedMessages?: Record<string, string>;
   rawThreadIds?: Record<string, string>;
   threadMessages?: Array<Record<string, unknown>>;
+  agentEvents?: AgentEvent[];
 } = {}):Promise<{
   tmp: TmpProfile;
   channel: FakeLarkChannel & { handlers: MessageHandlerMap };
@@ -370,7 +435,7 @@ async function createHarness(options: {
   const sessions = new SessionStore(join(tmp.profile, 'sessions.json'));
   const workspaces = new WorkspaceStore(join(tmp.profile, 'workspaces.json'));
   const agent = new FakeAgentAdapter({
-    events: [{ type: 'done', terminationReason: 'normal' }],
+    events: options.agentEvents ?? [{ type: 'done', terminationReason: 'normal' }],
   });
   const channel = createFakeLarkChannel(options);
   sdkMock.channel = channel;
@@ -477,7 +542,9 @@ function createFakeLarkChannel(options: {
       if (isMarkdownStreamInput(input)) {
         await input.markdown({ setContent: async () => {} });
       }
+      return { messageId: `om_stream_${streams.length}` };
     },
+    recallMessage: vi.fn(async () => {}),
   };
 }
 
@@ -501,7 +568,10 @@ function message(input: {
   parentId: string;
   threadId?: string;
   content: string;
+  mentionedBot?: boolean;
+  mentions?: Array<{ key: string; openId: string; name: string; isBot: boolean }>;
 }): NormalizedMessage {
+  const mentionedBot = input.mentionedBot ?? true;
   return {
     messageId: input.messageId,
     chatId: 'oc_topic_chat',
@@ -511,9 +581,13 @@ function message(input: {
     content: input.content,
     rawContentType: 'text',
     resources: [],
-    mentions: [{ key: '@_user_1', openId: 'ou_bot', name: 'Bridge', isBot: true }],
+    mentions:
+      input.mentions ??
+      (mentionedBot
+        ? [{ key: '@_user_1', openId: 'ou_bot', name: 'Bridge', isBot: true }]
+        : [{ key: '@_user_1', openId: 'ou_human', name: '同事', isBot: false }]),
     mentionAll: false,
-    mentionedBot: true,
+    mentionedBot,
     rootId: input.rootId,
     parentId: input.parentId,
     ...(input.threadId ? { threadId: input.threadId } : {}),

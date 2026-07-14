@@ -1063,6 +1063,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
         renderDone,
         producerStarted: () => producerStarted,
         fallback: async (state) => {
+          if (renderText(filterForPrefs(state)).trim() === '') return;
           await channel.send(
             chatId,
             { card: renderCard(filterForPrefs(state), cardRenderOptions) },
@@ -1070,6 +1071,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
           );
         },
       });
+      await recallIfEmptyStreamedReply(channel, streamDone, filterForPrefs(latestState), scope);
     } else if (replyMode === 'markdown') {
       let latestState: RunState = initialState;
       let producerStarted = false;
@@ -1111,6 +1113,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
           }
         },
       });
+      await recallIfEmptyStreamedReply(channel, streamDone, filterForPrefs(latestState), scope);
     } else {
       // text mode: drain the agent stream without sending anything during
       // the run, then post the final rendered text once as a plain markdown
@@ -1141,6 +1144,37 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
   }
 }
 
+/**
+ * The SDK creates the streaming card eagerly (before any content arrives), so a
+ * run that produces no text leaves a card the SDK fills with its "(no content)"
+ * placeholder. When the final render has nothing to show — a clean `done` with
+ * no text; error/interrupt/timeout keep it non-empty via their notices — recall
+ * that empty message instead of leaving noise in the chat.
+ *
+ * `finalState` must already be `filterForPrefs`-projected (what the user sees).
+ */
+async function recallIfEmptyStreamedReply(
+  channel: LarkChannel,
+  streamDone: Promise<unknown>,
+  finalState: RunState,
+  scope: string,
+): Promise<void> {
+  if (renderText(finalState).trim() !== '') return;
+  const result = (await streamDone.catch(() => undefined)) as { messageId?: string } | undefined;
+  const messageId = result?.messageId;
+  if (!messageId) return;
+  try {
+    await channel.recallMessage(messageId);
+    log.info('outbound', 'recall-empty', { scope, messageId });
+  } catch (err) {
+    log.warn('outbound', 'recall-empty-failed', {
+      scope,
+      messageId,
+      err: err instanceof Error ? err.message : String(err),
+    });
+  }
+}
+
 async function sendFinalReply(input: {
   channel: LarkChannel;
   chatId: string;
@@ -1151,6 +1185,14 @@ async function sendFinalReply(input: {
   cardRenderOptions: { signCallback?: (action: string) => string };
 }): Promise<void> {
   const body = renderText(input.state);
+
+  // Nothing deliverable to send (agent produced no text on a clean finish;
+  // error/interrupt/timeout keep `body` non-empty via their notices). Skip
+  // rather than post an empty card that renders as "(no content)".
+  if (!body.trim()) {
+    log.info('outbound', 'skip-empty', { scope: input.scope, mode: input.replyMode });
+    return;
+  }
 
   if (input.replyMode === 'card') {
     const result = await input.channel.send(
