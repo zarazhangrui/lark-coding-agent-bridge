@@ -18,4 +18,14 @@ export type {
   AdapterMeta,
   TelemetryEvent,
 } from './core/telemetry';
+
+// Optional raw event hooks (see README "Optional event hooks"). Types let an
+// external hook package implement custom EventKey handlers.
+export type {
+  EventHookAdapter,
+  EventHookContext,
+  EventHookFactory,
+  EventHookHandler,
+  EventHookMeta,
+} from './core/event-hooks';
 export { reportMetric, reportError } from './core/logger';

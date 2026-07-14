@@ -47,9 +47,18 @@ describe('/reconnect profile lifecycle', () => {
   it('starts the replacement bridge with replacement controls before swapping globals', async () => {
     const source = await readFile(new URL('../../../src/cli/commands/start.ts', import.meta.url), 'utf8');
 
-    expect(source).toContain('const nextControls = makeControls(nextRuntime.appPaths, next, nextRuntime.profileConfig)');
+    expect(source).toMatch(
+      /const nextControls = makeControls\(\s*nextRuntime\.appPaths,\s*next,\s*nextRuntime\.profileConfig,\s*\);/,
+    );
+    expect(source).toContain('const nextEventHookMeta = eventHookMeta(');
+    expect(source).toContain('const nextEventHooks = await loadEventHookAdapter(nextEventHookMeta)');
+    expect(source).toContain('eventHooks: nextEventHooks');
+    expect(source).toContain('eventHookMeta: nextEventHookMeta');
     expect(source).toContain('controls: nextControls');
     expect(source).toContain('controls = nextControls');
+    expect(source.indexOf('const nextControls = makeControls(')).toBeLessThan(
+      source.indexOf('const nextEventHooks = await loadEventHookAdapter(nextEventHookMeta)'),
+    );
   });
 
   it('guards direct bridge disconnects and IM commands with the current profile runtime context', async () => {

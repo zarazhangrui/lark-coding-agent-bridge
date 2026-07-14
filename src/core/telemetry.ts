@@ -1,4 +1,5 @@
 import type { LogContext, LogFields } from './logger';
+import { normalizeModuleSpecifier } from './module-specifier';
 
 /**
  * Optional telemetry hook.
@@ -144,10 +145,6 @@ export async function loadTelemetryAdapter(meta: AdapterMeta): Promise<void> {
       err: err instanceof Error ? err.message : String(err),
     });
   }
-}
-
-function normalizeModuleSpecifier(specifier: string): string {
-  return specifier.startsWith('file:') ? specifier.replace(/%7E/gi, '~') : specifier;
 }
 
 /** The active adapter — noop until/unless `loadTelemetryAdapter` installs one. */
