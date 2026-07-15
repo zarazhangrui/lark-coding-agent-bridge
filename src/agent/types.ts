@@ -88,4 +88,9 @@ export interface AgentAdapter {
    * Adapters that don't bake identity into their prompts may omit it.
    */
   setBotIdentity?(identity: AgentBotIdentity): void;
+  /**
+   * Directory where this adapter writes generated image artifacts. The bridge
+   * uses this optional hint for fast-path delivery while a run is still active.
+   */
+  getGeneratedImagesDir?(): string | undefined;
 }
