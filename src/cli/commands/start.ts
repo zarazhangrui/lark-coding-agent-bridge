@@ -184,7 +184,7 @@ export async function runStart(opts: StartOptions): Promise<void> {
         let restarting = false;
 
         let stopping = false;
-        const stop = async (sig: string): Promise<void> => {
+        const stop = async (sig: string, exitCode = 0): Promise<void> => {
           if (stopping) return;
           stopping = true;
           console.log(`\n收到 ${sig}，正在关闭...`);
@@ -197,7 +197,7 @@ export async function runStart(opts: StartOptions): Promise<void> {
           unregisterSync(entry.id, appPaths.userRegistryFile);
           await releaseRuntimeLocks(runtimeLocks);
           await flushTelemetry();
-          process.exit(0);
+          process.exit(exitCode);
         };
 
         let controls: Controls;
@@ -223,8 +223,8 @@ export async function runStart(opts: StartOptions): Promise<void> {
             configPath,
             cfg: currentCfg,
             processId: entry.id,
-            async exit() {
-              await stop('exit-command');
+            async exit(exitCode = 0) {
+              await stop('exit-command', exitCode);
             },
             async restart() {
               if (restarting) return;

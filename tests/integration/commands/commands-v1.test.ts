@@ -10,6 +10,7 @@ import { SessionStore } from '../../../src/session/store.js';
 import { WorkspaceStore } from '../../../src/workspace/store.js';
 import { createFakeAgent } from '../../helpers/fake-agent.js';
 import { createFakeChannel, type FakeChannel } from '../../helpers/fake-channel.js';
+import { writeVersionExecutable } from '../../helpers/fake-executable.js';
 import { createTmpProfile, type TmpProfile } from '../../helpers/tmp-profile.js';
 
 interface RunOverrides {
@@ -256,6 +257,41 @@ describe('Bridge command contracts', () => {
     ).resolves.toBe(true);
 
     expect(lastMarkdown(h.channel)).toContain('仅管理员可用');
+  });
+
+  it('switches backend profiles before invoking an agent', async () => {
+    const h = await createHarness();
+    const codexBinary = await writeVersionExecutable(h.tmp.root, 'codex-fixture', 'codex 1.0');
+    const root = await loadRootConfig(h.controls.configPath);
+    expect(root).toBeDefined();
+    const codex = createDefaultProfileConfig({
+      agentKind: 'codex',
+      accounts: { app: { id: 'app-id', secret: 'secret', tenant: 'feishu' } },
+      access: { admins: ['ou-admin'] },
+      sandbox: { defaultMode: 'read-only', maxMode: 'workspace-write' },
+      preferences: { maxConcurrentRuns: 2 },
+      codex: { binaryPath: codexBinary },
+    });
+    codex.workspaces.default = h.tmp.workspace;
+    root!.profiles.codex = codex;
+    await saveRootConfig(root!, h.controls.configPath);
+
+    await expect(h.run('/backend')).resolves.toBe(true);
+    expect(lastMarkdown(h.channel)).toContain('当前后端');
+    expect(lastMarkdown(h.channel)).toContain('codex');
+    expect(h.agent.runOptions).toHaveLength(0);
+
+    await expect(h.run('/backend codex', { senderId: 'ou-not-admin' })).resolves.toBe(true);
+    expect(lastMarkdown(h.channel)).toContain('仅管理员可用');
+
+    await expect(h.run('/backend codex')).resolves.toBe(true);
+    const switched = await loadRootConfig(h.controls.configPath);
+    expect(switched?.activeProfile).toBe('codex');
+    expect(lastMarkdown(h.channel)).toContain('正在切换');
+    expect(h.agent.runOptions).toHaveLength(0);
+    await vi.waitFor(() => {
+      expect(h.controls.exit).toHaveBeenCalledWith(75);
+    });
   });
 
   it('does not expose access allowlists through the Lark /config form', async () => {

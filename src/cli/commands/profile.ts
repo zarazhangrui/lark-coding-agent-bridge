@@ -1,5 +1,5 @@
 import { existsSync } from 'node:fs';
-import { rm } from 'node:fs/promises';
+import { copyFile, mkdir, rm } from 'node:fs/promises';
 import { resolveAppPaths } from '../../config/app-paths';
 import { paths } from '../../config/paths';
 import {
@@ -33,6 +33,11 @@ export interface ProfileCreateOptions extends ProfileCommandOptions {
   appId?: string;
   appSecret?: string;
   tenant?: string;
+}
+
+export interface ProfileCloneOptions extends ProfileCommandOptions {
+  agent?: string;
+  codexBin?: string;
 }
 
 export interface ProfileRemoveOptions extends ProfileCommandOptions {
@@ -134,6 +139,51 @@ export async function runProfileCreate(
     });
   });
   console.log(`已创建 profile: ${name}`);
+}
+
+export async function runProfileClone(
+  sourceName: string,
+  targetName: string,
+  opts: ProfileCloneOptions = {},
+): Promise<void> {
+  const rootDir = opts.rootDir ?? paths.rootDir;
+  const configFile = resolveAppPaths({ rootDir }).configFile;
+  await withConfigFileLock(configFile, async () => {
+    const root = await loadRootConfig(configFile);
+    if (!root) throw new Error('config not initialized');
+    const source = root.profiles[sourceName];
+    if (!source) throw new Error(`profile not found: ${sourceName}`);
+    if (root.profiles[targetName]) throw new Error(`profile already exists: ${targetName}`);
+
+    const agentKind = agentKindFromString(opts.agent) ?? source.agentKind;
+    const target = structuredClone(source);
+    target.agentKind = agentKind;
+    target.larkCli = { identityPreset: source.larkCli.identityPreset };
+    if (agentKind === 'codex') {
+      target.codex = {
+        binaryPath: opts.codexBin ?? process.env.LARK_CHANNEL_CODEX_BIN ?? 'codex',
+        inheritCodexHome: true,
+        ignoreUserConfig: true,
+        ignoreRules: true,
+      };
+    } else {
+      target.codex = undefined;
+    }
+
+    const sourcePaths = resolveAppPaths({ rootDir, profile: sourceName });
+    const targetPaths = resolveAppPaths({ rootDir, profile: targetName });
+    await mkdir(targetPaths.profileDir, { recursive: true });
+    for (const [sourceFile, targetFile] of [
+      [sourcePaths.secretsFile, targetPaths.secretsFile],
+      [sourcePaths.keystoreSaltFile, targetPaths.keystoreSaltFile],
+    ] as const) {
+      if (existsSync(sourceFile)) await copyFile(sourceFile, targetFile);
+    }
+
+    root.profiles[targetName] = target;
+    await saveRootConfig(root, configFile);
+  });
+  console.log(`已克隆 profile: ${sourceName} -> ${targetName}`);
 }
 
 export async function runProfileUse(

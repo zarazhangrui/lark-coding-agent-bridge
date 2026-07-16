@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promi
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { runProfileCreate } from '../../../src/cli/commands/profile';
+import { runProfileClone, runProfileCreate } from '../../../src/cli/commands/profile';
 import { resolveAppPaths } from '../../../src/config/app-paths';
 import {
   createDefaultProfileConfig,
@@ -10,7 +10,7 @@ import {
   type RootConfig,
 } from '../../../src/config/profile-schema';
 import { loadRootConfig } from '../../../src/config/profile-store';
-import { getSecret } from '../../../src/config/keystore';
+import { getSecret, setSecret } from '../../../src/config/keystore';
 import { secretKeyForApp } from '../../../src/config/schema';
 import { writeVersionExecutable } from '../../helpers/fake-executable';
 
@@ -170,6 +170,31 @@ describe('profile create command', () => {
     const saved = JSON.parse(await readFile(join(root, 'config.json'), 'utf8')) as RootConfig;
     const managed = await realpath(resolveAppPaths({ rootDir: root, profile: 'claude-managed' }).defaultWorkspaceDir);
     expect(saved.profiles['claude-managed']?.workspaces.default).toBe(managed);
+  });
+
+  it('clones an app profile into a Codex standby without copying sessions', async () => {
+    const root = await makeRoot();
+    await writeProfiles(root, 'claude', ['claude']);
+    const sourcePaths = resolveAppPaths({ rootDir: root, profile: 'claude' });
+    await setSecret(secretKeyForApp('cli_claude'), 'shared-secret', sourcePaths);
+    await writeFile(sourcePaths.sessionsFile, '{"chat":"claude-session"}\n', 'utf8');
+    const codex = await writeVersionExecutable(root, 'codex-clone', 'codex 2.0.0');
+
+    await runProfileClone('claude', 'codex', {
+      rootDir: root,
+      agent: 'codex',
+      codexBin: codex,
+    });
+
+    const saved = await loadRootConfig(join(root, 'config.json'));
+    const targetPaths = resolveAppPaths({ rootDir: root, profile: 'codex' });
+    expect(saved?.activeProfile).toBe('claude');
+    expect(saved?.profiles.codex?.agentKind).toBe('codex');
+    expect(saved?.profiles.codex?.accounts.app.id).toBe('cli_claude');
+    expect(saved?.profiles.codex?.codex?.binaryPath).toBe(codex);
+    expect(saved?.profiles.codex?.codex?.inheritCodexHome).toBe(true);
+    await expect(getSecret(secretKeyForApp('cli_claude'), targetPaths)).resolves.toBe('shared-secret');
+    await expect(readFile(targetPaths.sessionsFile, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
   });
 });
 

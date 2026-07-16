@@ -50,6 +50,7 @@ import {
   runtimeProfileConfig,
   saveRootConfig,
   withConfigFileLock,
+  writeActiveProfile,
 } from '../config/profile-store';
 import {
   canRunAdminCommand,
@@ -87,6 +88,7 @@ import type { WorkspaceStore } from '../workspace/store';
 import { createBoundChat, defaultChatName } from '../bot/group';
 import { fetchKnownChats, type KnownChat } from '../bot/lark-info';
 import { applyLarkCliIdentityPolicy, hasStructuredLarkCliUserAuth } from '../lark-cli/identity-policy';
+import { checkAgentAvailability, formatAgentPreflightError } from '../agent/preflight';
 
 export interface Controls {
   profile: string;
@@ -101,7 +103,7 @@ export interface Controls {
   restart(opts?: { wait?: boolean }): Promise<void>;
   /** Stop this whole process gracefully (disconnect + exit). Used by /exit
    * when the user targets the receiving process itself. */
-  exit(): Promise<void>;
+  exit(exitCode?: number): Promise<void>;
   /** Path to the config file the bridge was started with. */
   configPath: string;
   /** The current app config (snapshot at startChannel time). */
@@ -180,6 +182,7 @@ const handlers: Record<string, Handler> = {
   '/ps': handlePs,
   '/exit': handleExit,
   '/doctor': handleDoctor,
+  '/backend': handleBackend,
   '/reconnect': handleReconnect,
   '/doc': handleDoc,
   '/invite': handleInvite,
@@ -198,6 +201,7 @@ const ADMIN_COMMANDS = new Set([
   '/exit',
   '/reconnect',
   '/doctor',
+  '/backend',
   '/cd',
   '/ws',
   '/invite',
@@ -1056,6 +1060,130 @@ async function handleReconnect(args: string, ctx: CommandContext): Promise<void>
     await reply(ctx, `❌ 重连失败:${err instanceof Error ? err.message : String(err)}`);
   } finally {
     resumeNewRuns?.();
+  }
+}
+
+export const PLANNED_PROFILE_SWITCH_EXIT_CODE = 75;
+
+async function handleBackend(args: string, ctx: CommandContext): Promise<void> {
+  const root = await loadRootConfig(ctx.controls.configPath);
+  if (!root) {
+    await reply(ctx, '❌ bridge profile 配置不存在。');
+    return;
+  }
+
+  const currentProfile = root.profiles[root.activeProfile];
+  if (!currentProfile) {
+    await reply(ctx, `❌ 当前 profile \`${root.activeProfile}\` 不存在。`);
+    return;
+  }
+
+  const targetKind = args.trim().toLowerCase();
+  if (!targetKind) {
+    const rows = Object.entries(root.profiles)
+      .filter(([, profile]) => profile.accounts.app.id === currentProfile.accounts.app.id)
+      .map(([name, profile]) => {
+        const marker = name === root.activeProfile ? ' ← 当前' : '';
+        return `- \`${profile.agentKind}\`：profile \`${name}\`${marker}`;
+      });
+    await reply(
+      ctx,
+      [
+        `当前后端：**${currentProfile.agentKind === 'codex' ? 'Codex' : 'Claude Code'}**`,
+        '',
+        rows.length > 0 ? rows.join('\n') : '没有可切换的同 App profile。',
+        '',
+        '用法：`/backend claude` 或 `/backend codex`',
+      ].join('\n'),
+    );
+    return;
+  }
+
+  if (targetKind !== 'claude' && targetKind !== 'codex') {
+    await reply(ctx, '❌ 仅支持 `/backend claude` 或 `/backend codex`。');
+    return;
+  }
+  if (currentProfile.agentKind === targetKind) {
+    await reply(ctx, `当前已经是 **${targetKind === 'codex' ? 'Codex' : 'Claude Code'}**。`);
+    return;
+  }
+
+  const activeScopes = ctx.activeRuns.scopes();
+  if (activeScopes.length > 0) {
+    await reply(ctx, `❌ 当前还有 ${activeScopes.length} 个任务在运行，结束后再切换后端。`);
+    return;
+  }
+
+  const candidates = Object.entries(root.profiles).filter(
+    ([, profile]) =>
+      profile.agentKind === targetKind &&
+      profile.accounts.app.id === currentProfile.accounts.app.id,
+  );
+  const preferred = candidates.find(([name]) => name === targetKind) ?? candidates[0];
+  if (!preferred) {
+    await reply(
+      ctx,
+      `❌ 没有找到使用同一飞书 App 的 ${targetKind === 'codex' ? 'Codex' : 'Claude Code'} profile。`,
+    );
+    return;
+  }
+  if (candidates.length > 1 && preferred[0] !== targetKind) {
+    await reply(ctx, `❌ 找到多个 ${targetKind} profile，请先将目标 profile 命名为 \`${targetKind}\`。`);
+    return;
+  }
+
+  const [targetProfileName, targetProfile] = preferred;
+  const binary =
+    targetKind === 'codex'
+      ? targetProfile.codex?.binaryPath
+      : process.env.LARK_CHANNEL_CLAUDE_BIN ?? 'claude';
+  if (!binary) {
+    await reply(ctx, `❌ ${targetKind} profile 缺少可执行文件配置。`);
+    return;
+  }
+  const availability = await checkAgentAvailability({
+    agentId: targetKind,
+    agentName: targetKind === 'codex' ? 'Codex CLI' : 'Claude Code',
+    command: binary,
+    binaryPath: binary,
+  });
+  if (!availability.ok) {
+    await reply(ctx, `❌ 目标后端不可用：\n${formatAgentPreflightError(availability.error)}`);
+    return;
+  }
+
+  const resumeNewRuns = ctx.activeRuns.pauseNewRuns('backend-switch-in-progress');
+  try {
+    await withConfigFileLock(ctx.controls.configPath, async () => {
+      const latest = await loadRootConfig(ctx.controls.configPath);
+      if (!latest?.profiles[targetProfileName]) {
+        throw new Error(`target profile disappeared: ${targetProfileName}`);
+      }
+      const latestCurrent = latest.profiles[latest.activeProfile];
+      const latestTarget = latest.profiles[targetProfileName];
+      if (!latestCurrent || latestCurrent.accounts.app.id !== latestTarget.accounts.app.id) {
+        throw new Error('target profile no longer uses the same Lark app');
+      }
+      latest.activeProfile = targetProfileName;
+      await saveRootConfig(latest, ctx.controls.configPath);
+      await writeActiveProfile(dirname(ctx.controls.configPath), targetProfileName);
+    });
+    log.info('command', 'backend-switch', {
+      from: root.activeProfile,
+      to: targetProfileName,
+      agent: targetKind,
+    });
+    await reply(
+      ctx,
+      `⏳ 正在切换至 **${targetKind === 'codex' ? 'Codex' : 'Claude Code'}**，服务将短暂重启。`,
+    );
+    void (async () => {
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      await ctx.controls.exit(PLANNED_PROFILE_SWITCH_EXIT_CODE).catch(() => {});
+    })();
+  } catch (err) {
+    resumeNewRuns();
+    throw err;
   }
 }
 
