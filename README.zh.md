@@ -323,6 +323,34 @@ pnpm build
 
 `pnpm test` 包含 unit、integration 和 process-level adapter 测试。CI 在 macOS、Ubuntu、Windows 上执行 `pnpm install --frozen-lockfile`、`pnpm test`、`pnpm typecheck` 和 `pnpm build`。
 
+## 可选：事件 Hook
+
+bridge 自己持有一条 Lark 长连接。如果要处理框架内置逻辑没有覆盖的事件，不要为同一个应用再启动第二个本地 consumer。用 `LARK_CHANNEL_EVENT_HOOK_MODULE` 指向一个 default export（或导出 `createEventHooks`）`EventHookFactory` 的模块；bridge 会在 SDK/channel Handler 就绪后、WebSocket 启动前，把这些 EventKey 添加到现有 dispatcher。
+
+```bash
+LARK_CHANNEL_EVENT_HOOK_MODULE=file:///opt/lark-hooks/rejoin.mjs lark-channel-bridge start
+```
+
+bridge 会用 Node.js 直接加载这个模块，所以 `.mjs` 里必须是 JavaScript。如果用 TypeScript 编写，请先编译成 ESM JavaScript，再让环境变量指向生成的 `.mjs` 文件。
+
+```ts
+import type { EventHookFactory } from 'lark-channel-bridge';
+
+const createEventHooks: EventHookFactory = () => ({
+  handlers: {
+    async 'im.chat.member.user.deleted_v1'(event, { channel }) {
+      // 在这里读取 event.chat_id / event.users，并执行你自己的策略。
+      // hook 运行在 bridge 进程内，可以使用 channel.rawClient。
+    },
+  },
+});
+export default createEventHooks;
+```
+
+事件 hook 不会修改飞书应用配置。启用前，请先在飞书开放平台为应用添加所需权限和事件订阅，并选择长连接接收事件。
+
+事件 Hook 只能做增量注册。任何已经由 SDK 或 channel 占用的 EventKey 都会被拒绝并记录警告。模块不存在、工厂函数不合法、channel 注册点不可用或 handler 抛错都会被记录并隔离，bridge 会继续运行。
+
 ## 可选：遥测（Telemetry）
 
 默认情况下 bridge **不上报任何数据**：没有指标、没有日志离开你的机器，也不引入任何遥测依赖。下面这个钩子在你主动开启前完全是空操作。

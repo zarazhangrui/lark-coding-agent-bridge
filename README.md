@@ -323,6 +323,34 @@ pnpm build
 
 `pnpm test` includes unit, integration, and process-level adapter tests. CI runs on macOS, Ubuntu, and Windows with `pnpm install --frozen-lockfile`, `pnpm test`, `pnpm typecheck`, and `pnpm build`.
 
+## Optional event hooks
+
+The bridge owns one Lark long connection. If you need events that the framework does not handle itself, do not start a second local consumer for the same app. Point `LARK_CHANNEL_EVENT_HOOK_MODULE` at a module that default-exports (or exports `createEventHooks`) an `EventHookFactory`; the bridge will add those EventKeys to its existing dispatcher after SDK/channel handlers are known and before the WebSocket starts.
+
+```bash
+LARK_CHANNEL_EVENT_HOOK_MODULE=file:///opt/lark-hooks/rejoin.mjs lark-channel-bridge start
+```
+
+The configured module is imported directly by Node.js, so `.mjs` files must contain JavaScript. If you write the hook in TypeScript, compile it to ESM JavaScript first and point the environment variable at the generated `.mjs` file.
+
+```ts
+import type { EventHookFactory } from 'lark-channel-bridge';
+
+const createEventHooks: EventHookFactory = () => ({
+  handlers: {
+    async 'im.chat.member.user.deleted_v1'(event, { channel }) {
+      // Inspect event.chat_id / event.users here and perform local policy.
+      // The hook runs inside the bridge process and can use channel.rawClient.
+    },
+  },
+});
+export default createEventHooks;
+```
+
+Event hooks do not change the Lark app configuration. Before enabling a hook, add its required permissions and event subscriptions in the Lark Developer Console and select long-connection delivery.
+
+Event hooks are additive only. Any EventKey already owned by the SDK or channel is rejected with a warning. A missing module, bad factory, unavailable channel hook point, or throwing handler is logged and contained so the bridge keeps running.
+
 ## Optional telemetry
 
 By default the bridge reports **nothing**: no metrics, no logs leave your machine, and it pulls in zero telemetry dependencies. The hook below is inert unless you opt in.

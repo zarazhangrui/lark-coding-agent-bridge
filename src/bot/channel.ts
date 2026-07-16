@@ -66,6 +66,11 @@ import { lookupMessageThreadId } from './thread-id';
 import { addWorkingReaction, removeReaction } from './reaction';
 import { fetchKnownChats } from './lark-info';
 import type { AppPaths } from '../config/app-paths';
+import type {
+  EventHookAdapter,
+  EventHookMeta,
+} from '../core/event-hooks';
+import { installEventHookHandlers } from './event-hooks';
 import {
   consumeCotEvents,
   CotClient,
@@ -177,9 +182,35 @@ export interface StartChannelDeps {
   workspaces: WorkspaceStore;
   controls: Controls;
   appPaths?: Pick<AppPaths, 'secretsFile' | 'keystoreSaltFile' | 'mediaDir'>;
+  eventHooks?: EventHookAdapter;
+  eventHookMeta?: EventHookMeta;
 }
 
 export async function startChannel(deps: StartChannelDeps): Promise<BridgeChannel> {
+  let startupChannel: LarkChannel | undefined;
+  try {
+    return await startChannelImpl(deps, (channel) => {
+      startupChannel = channel;
+    });
+  } catch (err) {
+    try {
+      await startupChannel?.disconnect();
+    } catch (disconnectErr) {
+      log.fail('eventHook', disconnectErr, { step: 'disconnect-after-start-failure' });
+    }
+    try {
+      await deps.eventHooks?.close?.();
+    } catch (closeErr) {
+      log.fail('eventHook', closeErr, { step: 'close-after-start-failure' });
+    }
+    throw err;
+  }
+}
+
+async function startChannelImpl(
+  deps: StartChannelDeps,
+  onChannelCreated: (channel: LarkChannel) => void,
+): Promise<BridgeChannel> {
   const { cfg, agent, sessions, sessionCatalog, workspaces, controls } = deps;
   const activeRuns = new ActiveRuns();
   // ChatModeCache stays per-bridge-instance — invalidated on restart along
@@ -268,6 +299,12 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
   };
 
   const channel = createLarkChannel(opts);
+  onChannelCreated(channel);
+  installEventHookHandlers(
+    channel,
+    deps.eventHooks,
+    deps.eventHookMeta ?? { version: 'unknown' },
+  );
   const media = new MediaCache(channel, deps.appPaths?.mediaDir);
 
   // Pending → run handoff: while a run is active on a chat, block its pending
@@ -480,8 +517,14 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
         callbackNonceStore?.flush(),
         workspaces.flush(),
       ]);
+      const [eventHookCloseResult] = await Promise.allSettled([
+        Promise.resolve().then(() => deps.eventHooks?.close?.()),
+      ]);
       if (stopAllResult.status === 'rejected') {
         log.fail('disconnect', stopAllResult.reason, { step: 'stopAll' });
+      }
+      if (eventHookCloseResult.status === 'rejected') {
+        log.fail('disconnect', eventHookCloseResult.reason, { step: 'eventHooks.close' });
       }
       for (const [idx, result] of flushResults.entries()) {
         if (result.status === 'rejected') {

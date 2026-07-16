@@ -21,6 +21,10 @@ import type { AppConfig } from '../../config/schema';
 import { isComplete } from '../../config/schema';
 import { configureLogger, gcOldLogs, log, reportError } from '../../core/logger';
 import { loadTelemetryAdapter, telemetry } from '../../core/telemetry';
+import {
+  loadEventHookAdapter,
+  type EventHookMeta,
+} from '../../core/event-hooks';
 import { gcMediaCache } from '../../media/cache';
 import { preFlightChecks } from '../preflight';
 import { promptAndStopActiveBridgeMigrationConflict } from './migrate';
@@ -258,7 +262,17 @@ export async function runStart(opts: StartOptions): Promise<void> {
                 console.log(
                   `[restart] connecting new bridge with appId=${next.accounts.app.id} tenant=${next.accounts.app.tenant}...`,
                 );
-                const nextControls = makeControls(nextRuntime.appPaths, next, nextRuntime.profileConfig);
+                const nextControls = makeControls(
+                  nextRuntime.appPaths,
+                  next,
+                  nextRuntime.profileConfig,
+                );
+                const nextEventHookMeta = eventHookMeta(
+                  next,
+                  nextRuntime.appPaths,
+                  nextRuntime.configPath,
+                );
+                const nextEventHooks = await loadEventHookAdapter(nextEventHookMeta);
                 // Connect-before-disconnect: if the new bridge fails to come up
                 // (e.g. network outage during a force-reconnect), throwing here
                 // leaves the old bridge — and its keepalive timer — untouched, so
@@ -274,6 +288,8 @@ export async function runStart(opts: StartOptions): Promise<void> {
                   workspaces,
                   controls: nextControls,
                   appPaths: nextRuntime.appPaths,
+                  eventHooks: nextEventHooks,
+                  eventHookMeta: nextEventHookMeta,
                 });
                 console.log('[restart] disconnecting old bridge...');
                 try {
@@ -321,6 +337,8 @@ export async function runStart(opts: StartOptions): Promise<void> {
           return currentControls;
         };
         controls = makeControls(appPaths, cfg, profileConfig);
+        const initialEventHookMeta = eventHookMeta(cfg, appPaths, configPath);
+        const initialEventHooks = await loadEventHookAdapter(initialEventHookMeta);
 
         bridge = await startChannel({
           cfg,
@@ -330,6 +348,8 @@ export async function runStart(opts: StartOptions): Promise<void> {
           workspaces,
           controls,
           appPaths,
+          eventHooks: initialEventHooks,
+          eventHookMeta: initialEventHookMeta,
         });
 
         // Backfill the bot's display name into the registry once WS handshake is
@@ -557,6 +577,21 @@ async function releaseRuntimeLocks(locks: AcquiredRuntimeLock[]): Promise<void> 
       }),
     );
   }
+}
+
+function eventHookMeta(
+  cfg: AppConfig,
+  appPaths: Pick<AppPaths, 'profile'>,
+  configPath: string,
+): EventHookMeta {
+  return {
+    version: pkg.version,
+    appId: cfg.accounts.app.id,
+    tenant: cfg.accounts.app.tenant,
+    profile: appPaths.profile,
+    configPath,
+    hostname: os.hostname(),
+  };
 }
 
 async function flushTelemetry(timeoutMs = 2000): Promise<void> {
