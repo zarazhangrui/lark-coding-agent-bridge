@@ -120,6 +120,7 @@ lark-channel-bridge --help
 ```bash
 lark-channel-bridge profile create claude --agent claude
 lark-channel-bridge profile create codex --agent codex
+lark-channel-bridge profile clone claude codex --agent codex
 lark-channel-bridge profile list
 lark-channel-bridge profile use <name>
 lark-channel-bridge profile remove <name>
@@ -144,6 +145,7 @@ lark-channel-bridge profile export <name> --include-secrets --yes
 | `/ws remove <name>` | 删除命名工作空间 |
 | `/resume` | 恢复同 agent、工作目录、权限模式兼容的历史会话 |
 | `/status` | 查看 profile、agent、工作目录、会话、lark-cli 身份和运行状态 |
+| `/backend [claude\|codex]` | 查看或切换当前 Agent 后端（仅 owner/admin；需要 supervisor 对退出码 75 执行重启） |
 | `/config` | 调整展示偏好、访问控制和 lark-cli 身份策略 |
 | `/invite user @某人` | 允许用户私聊使用 bot |
 | `/invite admin @某人` | 添加访问控制管理员 |

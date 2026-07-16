@@ -85,7 +85,7 @@ describe('start runtime agent factory', () => {
     const source = await readFile(join(process.cwd(), 'src/cli/commands/start.ts'), 'utf8');
     const stopStart = source.indexOf('const stop = async');
     const releaseIndex = source.indexOf('await releaseRuntimeLocks(runtimeLocks)', stopStart);
-    const exitIndex = source.indexOf('process.exit(0)', stopStart);
+    const exitIndex = source.indexOf('process.exit(exitCode)', stopStart);
 
     expect(stopStart).toBeGreaterThanOrEqual(0);
     expect(releaseIndex).toBeGreaterThanOrEqual(0);

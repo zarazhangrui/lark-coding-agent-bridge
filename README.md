@@ -120,6 +120,7 @@ lark-channel-bridge --help
 ```bash
 lark-channel-bridge profile create claude --agent claude
 lark-channel-bridge profile create codex --agent codex
+lark-channel-bridge profile clone claude codex --agent codex
 lark-channel-bridge profile list
 lark-channel-bridge profile use <name>
 lark-channel-bridge profile remove <name>
@@ -144,6 +145,7 @@ If a profile was created with the wrong agent kind, stop or unregister any match
 | `/ws remove <name>` | Delete a named workspace |
 | `/resume` | Resume compatible history for the same agent, working directory, and permission mode |
 | `/status` | Show profile, agent, working directory, session, lark-cli identity, and run state |
+| `/backend [claude\|codex]` | Show or switch the active agent backend (owner/admin only; requires a supervisor that restarts on exit code 75) |
 | `/config` | Adjust presentation preferences, access settings, and lark-cli identity policy |
 | `/invite user @name` | Allow a user to use the bot in DMs |
 | `/invite admin @name` | Add an access-control admin |

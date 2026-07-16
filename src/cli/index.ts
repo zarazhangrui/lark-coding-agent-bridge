@@ -11,6 +11,7 @@ import {
 } from './commands/secrets';
 import {
   runProfileCreate,
+  runProfileClone,
   runProfileExport,
   runProfileList,
   runProfileRemove,
@@ -95,6 +96,18 @@ profile
     tenant?: string;
   }) => {
     await runProfileCreate(name, opts);
+  });
+
+profile
+  .command('clone <source> <name>')
+  .description('Clone an existing app profile as another agent backend without copying sessions')
+  .option('--agent <kind>', 'target agent kind (claude or codex)')
+  .option('--codex-bin <path>', 'Codex binary path when cloning as codex')
+  .action(async (source: string, name: string, opts: {
+    agent?: string;
+    codexBin?: string;
+  }) => {
+    await runProfileClone(source, name, opts);
   });
 
 profile
