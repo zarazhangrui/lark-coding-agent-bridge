@@ -310,6 +310,49 @@ Cloud-doc comments do not need a separate workspace binding or document allowlis
 **The agent subprocess looks frozen (card stuck on the last frame).** The bridge supports an idle watchdog: if the agent emits nothing for N minutes, the process is killed and the card is annotated with the auto-termination reason. Disabled by default. Enable with `/config` globally, or `/timeout 10` for the current session; `/timeout off` disables it for the session; `/timeout default` clears the session override.
 
 **The agent says it cannot see an image I sent.** Upgrade to the latest version. Releases before 0.1.0 had a filename-dedup bug.
+**`start` fails on Windows with `ERROR: Access is denied.` / how to run hidden in the background:** On Windows, `start` registers a Task Scheduler task via `schtasks /Create /SC ONLOGON /RL LIMITED`. A non-admin terminal fails immediately with `ERROR: Access is denied.` Even when run as admin, the `.cmd` launcher still pops a visible cmd window whose closing also kills the listener, so it is not truly headless; and `/HIDE` is not a valid `schtasks` argument on current Windows 11, so that path is a dead end.
+
+A purely user-level, admin-free, hidden autostart: launch `run --skip-check-lark-cli` from a VBS script (`WScript.Shell.Run cmd, 0, False`, where `0` means a hidden window), and drop that VBS into the Startup folder so it launches hidden on login.
+
+1. Create the launcher, e.g. `%USERPROFILE%\.lark-channel\start-bridge-hidden.vbs`:
+
+```vbs
+Set o = CreateObject("WScript.Shell")
+Set env = o.Environment("Process")
+
+home = o.ExpandEnvironmentStrings("%USERPROFILE%") & "\.lark-channel"
+env("LARK_CHANNEL_HOME") = home
+
+' Startup-launched processes get a minimal PATH; prepend the dirs the daemon / agent need
+p = env("PATH")
+nodeDir = o.ExpandEnvironmentStrings("%LOCALAPPDATA%") & "\Programs\nodejs"
+codexBin = o.ExpandEnvironmentStrings("%USERPROFILE%") & "\.codex\bin"
+gitCmd  = "C:\Program Files\Git\cmd"
+If InStr(1, p, nodeDir, 1) = 0 Then p = nodeDir & ";" & p
+If InStr(1, p, codexBin, 1) = 0 Then p = codexBin & ";" & p
+If InStr(1, p, gitCmd, 1) = 0 Then p = gitCmd & ";" & p
+env("PATH") = p
+
+node    = nodeDir & "\node.exe"
+bridge  = nodeDir & "\node_modules\lark-channel-bridge\bin\lark-channel-bridge.mjs"
+logFile = home & "\bridge-autostart.log"
+
+' None of the paths contain spaces, so no extra quoting is needed; style 0 = hidden window; False = do not wait for the child
+cmd = "cmd /c " & node & " " & bridge & " run --profile codex --skip-check-lark-cli >> " & logFile & " 2>&1"
+o.Run cmd, 0, False
+```
+
+> Replace `--profile codex` with the profile you actually use (switch the active profile with `lark-channel-bridge profile use`). For first run, do `lark-channel-bridge run` once to finish the QR scan, then switch to this approach.
+
+2. Put a shortcut to the VBS (or the VBS itself) in the Startup folder: `%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup`. The shortcut target should be `wscript.exe "C:\Users\<you>\.lark-channel\start-bridge-hidden.vbs"`.
+
+3. Sign out and back in (or reboot) to take effect; to start immediately, just double-click the VBS.
+
+**Disable autostart:** delete the shortcut / VBS from the Startup folder.
+
+**Disable the old ONLOGON task** (only if you previously registered one as admin): run `schtasks /Change /Disable /TN LarkChannelBridge.Bot.<profile>` in an admin terminal, or disable / delete it in Task Scheduler.
+
+**Note:** once you use the VBS approach, the `start` / `stop` / `status` service commands no longer manage this daemon. Check status with `/status` inside Feishu; logs are at `%USERPROFILE%\.lark-channel\bridge-autostart.log`. This approach shares the same `~/.lark-channel/config.json` as a foreground `run`.
 
 ## Testing and CI
 

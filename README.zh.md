@@ -310,6 +310,49 @@ grep '"event":"enter"' ~/.lark-channel/profiles/<profile>/logs/bridge-$(date +%Y
 **agent 子进程假死（卡片停在最后一帧不动）**：支持 idle 探活。agent 一段时间没输出就会被 SIGTERM kill，卡片末尾会标出自动终止原因。默认关闭。开启方式：`/config` 设全局值（分钟），或 `/timeout 10` 只对当前会话生效；`/timeout off` 关掉当前会话的探活；`/timeout default` 清掉会话覆盖，回退到全局设置。
 
 **图片发过去 agent 说看不到**：升级到最新版，0.1.0 之前的版本有文件名去重 bug。
+**Windows 上 `start` 报 `ERROR: Access is denied.` / 如何隐藏窗口后台常驻**：`start` 在 Windows 上会通过 `schtasks /Create /SC ONLOGON /RL LIMITED` 注册"任务计划程序"任务；非管理员终端会直接失败（报错 `ERROR: Access is denied.`）。即便用管理员跑通，任务计划程序拉起的 `.cmd` 仍会弹出一个可见的 cmd 窗口，关掉窗口监听就被关掉，并不是纯后台；而且 `/HIDE` 在当前 Windows 11 上不是 `schtasks` 的合法参数，这条路走不通。
+
+纯用户级、免管理员、隐藏窗口的自启方案：用 VBS 脚本（`WScript.Shell.Run cmd, 0, False`，第 2 个参数为 `0` = 隐藏窗口）启动 `run --skip-check-lark-cli`，再把 VBS 放进启动文件夹，登录时自动隐藏运行。
+
+1. 新建启动器，例如 `%USERPROFILE%\.lark-channel\start-bridge-hidden.vbs`：
+
+```vbs
+Set o = CreateObject("WScript.Shell")
+Set env = o.Environment("Process")
+
+home = o.ExpandEnvironmentStrings("%USERPROFILE%") & "\.lark-channel"
+env("LARK_CHANNEL_HOME") = home
+
+' 启动文件夹拉起时 PATH 很精简，补上 daemon / agent 需要的目录
+p = env("PATH")
+nodeDir = o.ExpandEnvironmentStrings("%LOCALAPPDATA%") & "\Programs\nodejs"
+codexBin = o.ExpandEnvironmentStrings("%USERPROFILE%") & "\.codex\bin"
+gitCmd  = "C:\Program Files\Git\cmd"
+If InStr(1, p, nodeDir, 1) = 0 Then p = nodeDir & ";" & p
+If InStr(1, p, codexBin, 1) = 0 Then p = codexBin & ";" & p
+If InStr(1, p, gitCmd, 1) = 0 Then p = gitCmd & ";" & p
+env("PATH") = p
+
+node    = nodeDir & "\node.exe"
+bridge  = nodeDir & "\node_modules\lark-channel-bridge\bin\lark-channel-bridge.mjs"
+logFile = home & "\bridge-autostart.log"
+
+' 路径都不含空格，无需额外加引号；style 0 = 隐藏窗口；False = 不等子进程退出
+cmd = "cmd /c " & node & " " & bridge & " run --profile codex --skip-check-lark-cli >> " & logFile & " 2>&1"
+o.Run cmd, 0, False
+```
+
+> `--profile codex` 换成你实际使用的 profile（默认激活的 profile 用 `lark-channel-bridge profile use` 切换）。若是首次启动，先跑一次 `lark-channel-bridge run` 完成扫码绑定，再改用本方案。
+
+2. 在启动文件夹放一个指向该 VBS 的快捷方式（或把 VBS 直接放进去）。启动文件夹路径：`%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup`。快捷方式目标填 `wscript.exe "C:\Users\<你的用户名>\.lark-channel\start-bridge-hidden.vbs"`。
+
+3. 注销重登（或重启）即生效；想立即启动直接双击 VBS 即可。
+
+**停用自启**：删掉启动文件夹里的快捷方式 / VBS 即可。
+
+**停用旧的 ONLOGON 任务**（仅当你之前用管理员 `start` 成功注册过）：在管理员终端执行 `schtasks /Change /Disable /TN LarkChannelBridge.Bot.<profile>`，或在"任务计划程序"里手动禁用 / 删除。
+
+**注意**：改用 VBS 自启后，`start` / `stop` / `status` 这套服务命令不再管理这个 daemon；查看运行状态用飞书内 `/status`，日志在 `%USERPROFILE%\.lark-channel\bridge-autostart.log`。本方案和 `run` 前台用的是同一份 `~/.lark-channel/config.json` 配置。
 
 ## 测试与 CI
 
