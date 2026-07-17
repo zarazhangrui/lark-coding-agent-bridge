@@ -17,11 +17,32 @@ const sdkMock = vi.hoisted(() => ({
   }),
 }));
 
-vi.mock('@larksuite/channel', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@larksuite/channel')>();
+vi.mock('@larksuite/channel', () => {
   return {
-    ...actual,
     createLarkChannel: sdkMock.createLarkChannel,
+    normalize: async (fakeRaw:any, opts?: any) => {
+      const msg = fakeRaw?.message ?? {};
+      let content = '';
+      if (typeof msg.content === 'string') {
+        try {
+          const parsed = JSON.parse(msg.content);
+          content = parsed?.text ?? msg.content;
+        } catch {
+          content = msg.content;
+        }
+      }
+      return {
+        messageId: msg.message_id ?? '',
+        senderId: fakeRaw?.sender?.sender_id?.open_id ?? '',
+        senderName: undefined,
+        content,
+        rawContentType: msg.message_type ?? 'text',
+        mentions: msg.mentions ?? [],
+        mentionAll: false,
+        mentionedBot: false,
+        createTime: msg.create_time ? Number(msg.create_time) : Date.now(),
+      };
+    },
   };
 });
 
@@ -543,6 +564,18 @@ function createFakeLarkChannel(options: {
         await input.markdown({ setContent: async () => {} });
       }
       return { messageId: `om_stream_${streams.length}` };
+    },
+    async addReaction(messageId, emojiType) {
+      const r = await (this as any).rawClient.im.v1.messageReaction.create({
+        path: { message_id: messageId },
+        data: { reaction_type: { emoji_type: emojiType } },
+      });
+      return (r as { data?: { reaction_id?: string } })?.data?.reaction_id ?? '';
+    },
+    async removeReaction(messageId, reactionId) {
+      await (this as any).rawClient.im.v1.messageReaction.delete({
+        path: { message_id: messageId, reaction_id: reactionId },
+      });
     },
     recallMessage: vi.fn(async () => {}),
   };
