@@ -34,7 +34,6 @@ import {
   getRequireMentionInGroup,
   getRunIdleTimeoutMs,
   getShowToolCalls,
-  secretKeyForApp,
 } from '../config/schema';
 import type {
   LarkCliIdentityPreset,
@@ -46,19 +45,13 @@ import { effectiveLarkCliIdentity } from '../config/profile-schema';
 import { resolveAppPaths } from '../config/app-paths';
 import { accessToClaudePermissionMode } from '../config/permissions';
 import {
-  loadRootConfig,
-  runtimeProfileConfig,
-  saveRootConfig,
-  withConfigFileLock,
-} from '../config/profile-store';
-import {
   canRunAdminCommand,
   canUseDm,
   canUseGroup,
   type OwnerRefreshState,
 } from '../policy/access';
-import { setSecret } from '../config/keystore';
-import { buildEncryptedAccountConfig, saveConfig } from '../config/store';
+import { buildEncryptedAccountConfig } from '../config/store';
+import * as configOps from '../config/config-ops';
 import { log, reportMetric } from '../core/logger';
 import { renderCard } from '../card/run-renderer';
 import {
@@ -76,6 +69,7 @@ import {
 } from '../session/codex-history';
 import type { SessionCatalog, SessionCatalogIdentity } from '../session/catalog';
 import { isAlive, readAndPrune, resolveTarget } from '../runtime/registry';
+import { readUiSidecar } from '../ui/sidecar';
 import type { SessionStore } from '../session/store';
 import { resolveWorkingDirectory } from '../policy/workspace';
 import { evaluateRunPolicy } from '../policy/run-policy';
@@ -86,7 +80,7 @@ import { validateAppCredentials } from '../utils/feishu-auth';
 import type { WorkspaceStore } from '../workspace/store';
 import { createBoundChat, defaultChatName } from '../bot/group';
 import { fetchKnownChats, type KnownChat } from '../bot/lark-info';
-import { applyLarkCliIdentityPolicy, hasStructuredLarkCliUserAuth } from '../lark-cli/identity-policy';
+import { hasStructuredLarkCliUserAuth } from '../lark-cli/identity-policy';
 
 export interface Controls {
   profile: string;
@@ -1696,49 +1690,7 @@ async function saveAccessConfig(
   ctx: CommandContext,
   mutate: (access: ProfileAccess) => ProfileAccess,
 ): Promise<ProfileAccess> {
-  try {
-    return await withConfigFileLock(ctx.controls.configPath, async () => {
-      const root = await loadRootConfig(ctx.controls.configPath);
-      if (!root) {
-        const access = mutate(ctx.controls.profileConfig.access);
-        ctx.controls.profileConfig = {
-          ...ctx.controls.profileConfig,
-          access,
-        };
-        ctx.controls.cfg.preferences = {
-          ...(ctx.controls.cfg.preferences ?? {}),
-          access: {
-            allowedUsers: access.allowedUsers,
-            allowedChats: access.allowedChats,
-            admins: access.admins,
-          },
-          requireMentionInGroup: access.requireMentionInGroup,
-        };
-        await saveConfig(ctx.controls.cfg, ctx.controls.configPath);
-        return access;
-      }
-
-      const profile = root.profiles[ctx.controls.profile];
-      if (!profile) throw new Error(`profile not found: ${ctx.controls.profile}`);
-      const access = mutate(profile.access);
-      root.profiles[ctx.controls.profile] = {
-        ...profile,
-        access,
-      };
-      await saveRootConfig(root, ctx.controls.configPath);
-      ctx.controls.profileConfig = root.profiles[ctx.controls.profile]!;
-      ctx.controls.cfg = runtimeProfileConfig(root, ctx.controls.profile);
-      log.info('command', 'access-mutated', {
-        allowedUsers: access.allowedUsers.length,
-        allowedChats: access.allowedChats.length,
-        admins: access.admins.length,
-      });
-      return access;
-    });
-  } catch (err) {
-    reportMetric('command_fail', 1, { step: 'access.save' });
-    throw err;
-  }
+  return configOps.saveAccessConfig(ctx.controls, mutate);
 }
 
 // ────────────── /config — preferences form ──────────────
@@ -1769,6 +1721,11 @@ async function showConfigForm(ctx: CommandContext): Promise<void> {
 
   const ms = getRunIdleTimeoutMs(ctx.controls.cfg);
   const access = ctx.controls.profileConfig.access;
+  // Surface the local web console URL when the supervisor (`--web-ui`) is
+  // running — read from the host sidecar and confirm the owning process is
+  // alive so we don't advertise a stale address.
+  const sidecar = await readUiSidecar(commandProfilePaths(ctx).hostUiFile).catch(() => undefined);
+  const consoleUrl = sidecar && isAlive(sidecar.pid) ? sidecar.url : undefined;
   const card = configFormCard({
     agentKind: ctx.controls.profileConfig.agentKind,
     mode: ctx.controls.profileConfig.mode,
@@ -1787,6 +1744,7 @@ async function showConfigForm(ctx: CommandContext): Promise<void> {
     allowedChats: access.allowedChats,
     admins: access.admins,
     knownChats: ctx.controls.knownChats ?? [],
+    ...(consoleUrl ? { consoleUrl } : {}),
   });
   if (ctx.fromCardAction) await recallMessage(ctx, ctx.msg.messageId);
   await sendManagedCard(ctx.channel, ctx.msg.chatId, card, commandReplyOptions(ctx));
@@ -2087,21 +2045,7 @@ async function applyConfigLarkCliIdentityPolicy(
   ctx: CommandContext,
   larkCliIdentity: ProfileConfig['larkCli']['identityPreset'],
 ): Promise<boolean> {
-  const appPaths = commandProfilePaths(ctx);
-  const ok = await applyLarkCliIdentityPolicy({
-    profile: appPaths.profile,
-    rootDir: appPaths.rootDir,
-    configPath: ctx.controls.configPath,
-    larkCliConfigDir: appPaths.larkCliConfigDir,
-    larkCliSourceConfigFile: appPaths.larkCliSourceConfigFile,
-  }, larkCliIdentity).catch(() => false);
-  if (!ok) {
-    log.warn('command', 'lark-cli-identity-policy-apply-failed', {
-      profile: appPaths.profile,
-      identity: larkCliIdentity,
-    });
-  }
-  return ok;
+  return configOps.applyProfileLarkCliIdentity(ctx.controls, larkCliIdentity);
 }
 
 async function saveAccountConfig(
@@ -2109,26 +2053,7 @@ async function saveAccountConfig(
   newCfg: AppConfig,
   plaintextSecret: string,
 ): Promise<void> {
-  const appPaths = commandProfilePaths(ctx);
-  await setSecret(secretKeyForApp(newCfg.accounts.app.id), plaintextSecret, appPaths);
-
-  const root = await loadRootConfig(ctx.controls.configPath);
-  if (!root) {
-    await saveConfig(newCfg, ctx.controls.configPath);
-    ctx.controls.cfg = newCfg;
-    return;
-  }
-
-  const profile = root.profiles[ctx.controls.profile];
-  if (!profile) throw new Error(`profile not found: ${ctx.controls.profile}`);
-  root.profiles[ctx.controls.profile] = {
-    ...profile,
-    accounts: newCfg.accounts,
-  };
-  if (newCfg.secrets) root.secrets = newCfg.secrets;
-  await saveRootConfig(root, ctx.controls.configPath);
-  ctx.controls.profileConfig = root.profiles[ctx.controls.profile]!;
-  ctx.controls.cfg = runtimeProfileConfig(root, ctx.controls.profile);
+  return configOps.saveAccountConfig(ctx.controls, newCfg, plaintextSecret);
 }
 
 async function savePreferencesConfig(
@@ -2138,44 +2063,11 @@ async function savePreferencesConfig(
   larkCliIdentity: ProfileConfig['larkCli']['identityPreset'],
   mode: ProfileMode,
 ): Promise<void> {
-  // Store the user's identity selection verbatim (not the team-mode-forced
-  // effective preset) so it comes back into effect when switching to personal.
-  const larkCli = {
-    identityPreset: larkCliIdentity,
-    localUserImport: {
-      status: 'not-needed' as const,
-      attemptedAt: new Date().toISOString(),
-      reason: larkCliIdentity === 'user-default' ? 'manual-user-default' : 'manual-bot-only',
-    },
-  };
-  await withConfigFileLock(ctx.controls.configPath, async () => {
-    const root = await loadRootConfig(ctx.controls.configPath);
-    if (!root) {
-      ctx.controls.cfg.preferences = preferences;
-      ctx.controls.profileConfig.larkCli = larkCli;
-      ctx.controls.profileConfig.mode = mode;
-      await saveConfig(ctx.controls.cfg, ctx.controls.configPath);
-      return;
-    }
-
-    const profile = root.profiles[ctx.controls.profile];
-    if (!profile) throw new Error(`profile not found: ${ctx.controls.profile}`);
-    const { requireMentionInGroup: _requireMention, access: _access, ...profilePreferences } = preferences;
-    root.profiles[ctx.controls.profile] = {
-      ...profile,
-      mode,
-      preferences: {
-        ...profile.preferences,
-        ...profilePreferences,
-      },
-      access: {
-        ...profile.access,
-        requireMentionInGroup,
-      },
-      larkCli,
-    };
-    await saveRootConfig(root, ctx.controls.configPath);
-    ctx.controls.profileConfig = root.profiles[ctx.controls.profile]!;
-    ctx.controls.cfg = runtimeProfileConfig(root, ctx.controls.profile);
-  });
+  return configOps.savePreferencesConfig(
+    ctx.controls,
+    preferences,
+    requireMentionInGroup,
+    larkCliIdentity,
+    mode,
+  );
 }

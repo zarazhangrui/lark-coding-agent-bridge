@@ -22,6 +22,13 @@ export interface ProfileAccess {
   allowedChats: string[];
   admins: string[];
   requireMentionInGroup: boolean;
+  /**
+   * Per-chat override of {@link requireMentionInGroup}, keyed by chat_id.
+   * `true` = require an @-mention in that chat, `false` = respond to every
+   * message. A chat absent from the map follows the global setting. Takes
+   * priority over `requireMentionInGroup` for the chats it lists.
+   */
+  chatRequireMention?: Record<string, boolean>;
 }
 
 export interface SandboxConfig {
@@ -283,12 +290,25 @@ function normalizeAccess(
   access: Partial<ProfileAccess> | undefined,
   legacyRequireMentionInGroup: boolean | undefined,
 ): ProfileAccess {
+  const chatRequireMention = normalizeChatMentionMap(access?.chatRequireMention);
   return {
     allowedUsers: stringArray(access?.allowedUsers),
     allowedChats: stringArray(access?.allowedChats),
     admins: stringArray(access?.admins),
     requireMentionInGroup: access?.requireMentionInGroup ?? legacyRequireMentionInGroup ?? true,
+    // Omit when empty so configs without per-chat overrides stay clean.
+    ...(Object.keys(chatRequireMention).length > 0 ? { chatRequireMention } : {}),
   };
+}
+
+/** Keep only string→boolean entries; drop anything malformed. */
+function normalizeChatMentionMap(input: unknown): Record<string, boolean> {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return {};
+  const out: Record<string, boolean> = {};
+  for (const [chatId, value] of Object.entries(input as Record<string, unknown>)) {
+    if (chatId && typeof value === 'boolean') out[chatId] = value;
+  }
+  return out;
 }
 
 function normalizeWorkspaces(input: {

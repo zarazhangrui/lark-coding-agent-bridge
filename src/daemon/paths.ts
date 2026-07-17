@@ -1,5 +1,6 @@
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { createHash } from 'node:crypto';
 import { resolveAppPaths } from '../config/app-paths';
 import { paths } from '../config/paths';
 
@@ -10,13 +11,28 @@ import { paths } from '../config/paths';
  */
 export const SERVICE_NAME = 'lark-channel-bridge.bot';
 
+/**
+ * Reserved service id for the machine-wide supervisor+console daemon
+ * (`start --web-ui`). Keyed distinctly from any real profile so the supervisor
+ * service has a fixed label/log path (one per machine) and never flaps against
+ * per-profile classic services. It passes `serviceProfileId` validation, so it
+ * flows through the same label/unit/task/log helpers as a profile.
+ */
+export const SUPERVISOR_SERVICE_ID = 'supervisor';
+
 export function serviceProfileId(profile: string): string {
   const trimmed = profile.trim();
   if (!trimmed) throw new Error('profile name is required for service id');
-  if (!/^[A-Za-z0-9._-]+$/.test(trimmed) || trimmed === '.' || trimmed === '..') {
-    throw new Error(`invalid profile name: ${profile}`);
-  }
-  return trimmed;
+  if (trimmed === '.' || trimmed === '..') throw new Error(`invalid profile name: ${profile}`);
+  // ASCII-safe names pass through unchanged so existing service labels/paths
+  // stay stable. Names with non-ASCII (e.g. Chinese 尼莫) or other OS-label-
+  // unsafe chars get a deterministic ASCII-safe, unique id (sanitized base +
+  // short hash) so any profile can still be installed as an OS daemon.
+  if (/^[A-Za-z0-9._-]+$/.test(trimmed)) return trimmed;
+  const base =
+    trimmed.replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^[-.]+|[-.]+$/g, '').slice(0, 24) || 'profile';
+  const hash = createHash('sha1').update(trimmed).digest('hex').slice(0, 8);
+  return `${base}-${hash}`;
 }
 
 export function serviceNameForProfile(profile: string = paths.profile): string {

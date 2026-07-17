@@ -21,8 +21,12 @@ export interface PlistInputs {
    * tools (lark-cli, claude) can be resolved by name. launchd defaults
    * to a very minimal PATH otherwise. */
   envPath: string;
-  /** Profile this service instance is pinned to. */
+  /** Service id (profile name, or the reserved supervisor id) — drives the
+   * label and log paths. */
   profile: string;
+  /** CLI args after the entry path, e.g. `['run', '--profile', 'claude']` or
+   * `['run', '--web-ui']`. */
+  runArgs: string[];
   /** Root directory for config/profile state. */
   channelHome: string;
 }
@@ -34,6 +38,7 @@ export function buildPlist(inputs: PlistInputs): string {
       .replace(/</g, '&lt;')
       .replace(/>/g, '&gt;')
       .replace(/"/g, '&quot;');
+  const argStrings = inputs.runArgs.map((a) => `        <string>${escape(a)}</string>`).join('\n');
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -44,9 +49,7 @@ export function buildPlist(inputs: PlistInputs): string {
     <array>
         <string>${escape(inputs.nodePath)}</string>
         <string>${escape(inputs.bridgeEntryPath)}</string>
-        <string>run</string>
-        <string>--profile</string>
-        <string>${escape(inputs.profile)}</string>
+${argStrings}
     </array>
     <key>RunAtLoad</key>
     <true/>
@@ -68,7 +71,7 @@ export function buildPlist(inputs: PlistInputs): string {
 `;
 }
 
-export async function writePlist(profile: string): Promise<void> {
+export async function writePlist(profile: string, runArgs: string[] = ['run']): Promise<void> {
   const bridgeEntryPath = process.argv[1];
   if (!bridgeEntryPath) {
     throw new Error('cannot determine bridge entry path (process.argv[1] is empty)');
@@ -78,6 +81,7 @@ export async function writePlist(profile: string): Promise<void> {
     bridgeEntryPath,
     envPath: process.env.PATH ?? '',
     profile,
+    runArgs,
     channelHome: paths.rootDir,
   });
   const plistPath = launchAgentPlistPath(profile);

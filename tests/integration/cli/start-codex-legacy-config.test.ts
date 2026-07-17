@@ -1,88 +1,35 @@
 import { chmod, mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import { createDefaultProfileConfig } from '../../../src/config/profile-schema';
 import { createRootConfig, saveRootConfig } from '../../../src/config/profile-store';
-import { RuntimeLockConflictError, type RuntimeLockMeta } from '../../../src/runtime/locks';
+import { createRuntimeAgent } from '../../../src/cli/commands/start';
+import { resolveProfileRuntime } from '../../../src/runtime/profile-runtime';
 
-const mocks = vi.hoisted(() => ({
-  withProfileAndAppLocks: vi.fn(),
-}));
-
-vi.mock('../../../src/runtime/locks', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../../../src/runtime/locks')>();
-  return {
-    ...actual,
-    withProfileAndAppLocks: mocks.withProfileAndAppLocks,
-  };
-});
-
-const { runStart, createRuntimeAgent } = await import('../../../src/cli/commands/start');
 const { loadRootConfig } = await import('../../../src/config/profile-store');
 
 const cleanups: Array<() => Promise<void>> = [];
 
 afterEach(async () => {
-  vi.clearAllMocks();
   await Promise.all(cleanups.splice(0).map((cleanup) => cleanup()));
 });
 
 describe('Codex startup compatibility with legacy binary metadata', () => {
-  it('starts past profile loading when an older Codex profile only has binaryPath', async () => {
-    const h = await createLegacyCodexConfig({
-      codexMetadata: {},
-    });
-    const holder: RuntimeLockMeta = {
-      kind: 'profile',
-      target: join(h.root, 'registry', 'locks', 'profile', 'codex.lock'),
-      profile: 'codex',
-      agentKind: 'codex',
-      pid: 12345,
-      startedAt: '2026-06-04T09:00:00.000Z',
-    };
-    mocks.withProfileAndAppLocks.mockRejectedValueOnce(
-      new RuntimeLockConflictError('profile', holder.target, holder, new Error('locked')),
-    );
-
-    await expect(
-      runStart({
-        config: h.configPath,
-        profile: 'codex',
-        skipCheckLarkCli: true,
-        confirmStopRuntimeLockProcess: async () => false,
-      }),
-    ).resolves.toBeUndefined();
-
-    expect(mocks.withProfileAndAppLocks).toHaveBeenCalledTimes(1);
+  it('loads a legacy Codex profile that only has binaryPath, past agent availability', async () => {
+    const h = await createLegacyCodexConfig({ codexMetadata: {} });
+    const runtime = await resolveProfileRuntime({ config: h.configPath, profile: 'codex', allowBootstrap: false });
+    const agent = createRuntimeAgent(runtime.profileConfig, { ...runtime.appPaths, configPath: runtime.configPath });
+    expect(agent.id).toBe('codex');
+    expect(await agent.isAvailable()).toBe(true);
   });
 
-  it('starts past profile loading and agent availability when legacy Codex metadata is stale', async () => {
-    const h = await createLegacyCodexConfig({
-      codexMetadata: staleLegacyMetadata(),
-    });
-    const holder: RuntimeLockMeta = {
-      kind: 'profile',
-      target: join(h.root, 'registry', 'locks', 'profile', 'codex.lock'),
-      profile: 'codex',
-      agentKind: 'codex',
-      pid: 12345,
-      startedAt: '2026-06-04T09:00:00.000Z',
-    };
-    mocks.withProfileAndAppLocks.mockRejectedValueOnce(
-      new RuntimeLockConflictError('profile', holder.target, holder, new Error('locked')),
-    );
-
-    await expect(
-      runStart({
-        config: h.configPath,
-        profile: 'codex',
-        skipCheckLarkCli: true,
-        confirmStopRuntimeLockProcess: async () => false,
-      }),
-    ).resolves.toBeUndefined();
-
-    expect(mocks.withProfileAndAppLocks).toHaveBeenCalledTimes(1);
+  it('loads and refreshes stale legacy Codex metadata, past agent availability', async () => {
+    const h = await createLegacyCodexConfig({ codexMetadata: staleLegacyMetadata() });
+    const runtime = await resolveProfileRuntime({ config: h.configPath, profile: 'codex', allowBootstrap: false });
+    const agent = createRuntimeAgent(runtime.profileConfig, { ...runtime.appPaths, configPath: runtime.configPath });
+    expect(agent.id).toBe('codex');
+    expect(await agent.isAvailable()).toBe(true);
   });
 
   it('prepares the first Codex run from config even when legacy metadata points elsewhere', async () => {

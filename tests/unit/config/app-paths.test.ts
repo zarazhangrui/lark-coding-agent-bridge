@@ -77,5 +77,19 @@ describe('resolveAppPaths', () => {
 
     expect(() => resolveAppPaths({ rootDir: root, profile: 'codex dev' })).toThrow(/invalid profile name/i);
     expect(() => resolveAppPaths({ rootDir: root, profile: 'b64_Y29kZXggZGV2' })).not.toThrow();
+    // Path-dangerous / reserved chars are still rejected.
+    expect(() => resolveAppPaths({ rootDir: root, profile: 'a/b' })).toThrow(/invalid profile name/i);
+    expect(() => resolveAppPaths({ rootDir: root, profile: '..' })).toThrow(/invalid profile name/i);
+    expect(() => resolveAppPaths({ rootDir: root, profile: 'a:b' })).toThrow(/invalid profile name/i);
+  });
+
+  it('accepts Unicode profile names (e.g. a Chinese bot name) as a directory segment', async () => {
+    const root = await tempRoot();
+
+    const paths = resolveAppPaths({ rootDir: root, profile: '尼莫' });
+
+    expect(paths.profile).toBe('尼莫');
+    expect(paths.profileDir).toBe(join(root, 'profiles', '尼莫'));
+    expect(paths.profileLockFile).toBe(join(root, 'registry', 'locks', 'profile', '尼莫.lock'));
   });
 });

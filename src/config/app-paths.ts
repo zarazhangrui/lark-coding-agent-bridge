@@ -24,6 +24,15 @@ export interface AppPaths {
   larkCliTargetConfigFile: string;
   mediaDir: string;
   logsDir: string;
+  /** Sidecar file describing the running bridge's local web-config server
+   * ({ url, token, port, pid }); written on start, removed on stop. */
+  uiFile: string;
+  /** Host-level (machine-wide) sidecar for the single supervisor's console. */
+  hostUiFile: string;
+  /** Host-level supervisor logs dir. */
+  hostLogsDir: string;
+  /** Machine-wide lock ensuring only one supervisor runs. */
+  hostLockFile: string;
   registryDir: string;
   userRegistryFile: string;
   userLockDir: string;
@@ -58,6 +67,10 @@ export function resolveAppPaths(opts: ResolveAppPathsOptions = {}): AppPaths {
     larkCliTargetConfigFile: join(profileDir, 'lark-cli', 'lark-channel', 'config.json'),
     mediaDir: join(profileDir, 'media'),
     logsDir: join(profileDir, 'logs'),
+    uiFile: join(profileDir, 'ui.json'),
+    hostUiFile: join(rootDir, 'ui.json'),
+    hostLogsDir: join(rootDir, 'logs'),
+    hostLockFile: join(userLockDir, 'supervisor.lock'),
     registryDir,
     userRegistryFile: join(registryDir, 'processes.json'),
     userLockDir,
@@ -69,7 +82,11 @@ export function resolveAppPaths(opts: ResolveAppPathsOptions = {}): AppPaths {
 function normalizeProfileName(profile: string): string {
   const trimmed = profile.trim();
   if (!trimmed) throw new Error('profile name is required');
-  if (!/^[A-Za-z0-9._-]+$/.test(trimmed) || trimmed === '.' || trimmed === '..') {
+  // Allow Unicode letters/digits (so bot names like 尼莫 can be used directly as
+  // the profile name) but reject anything unsafe as a single path segment:
+  // whitespace, path separators, control chars, and Windows-reserved chars.
+  // Service labels sanitize non-ASCII names separately (see serviceProfileId).
+  if (/[\u0000-\u001f\s/\\:*?"<>|]/.test(trimmed) || trimmed === '.' || trimmed === '..') {
     throw new Error(`invalid profile name: ${profile}`);
   }
   return trimmed;

@@ -22,6 +22,11 @@ import { isComplete } from '../../config/schema';
 import { configureLogger, gcOldLogs, log, reportError } from '../../core/logger';
 import { loadTelemetryAdapter, telemetry } from '../../core/telemetry';
 import { gcMediaCache } from '../../media/cache';
+import { startUiServer } from '../../ui/server';
+import { readUiSidecar, removeUiSidecar, writeUiSidecar } from '../../ui/sidecar';
+import type { UiServerHandle } from '../../ui/types';
+import { Supervisor } from '../../runtime/supervisor';
+import { acquireHostLock } from '../../runtime/host-lock';
 import { preFlightChecks } from '../preflight';
 import { promptAndStopActiveBridgeMigrationConflict } from './migrate';
 import { stopProcessEntry, type StopProcessEntryResult } from './ps';
@@ -41,7 +46,16 @@ import {
   type RuntimeLockMeta,
 } from '../../runtime/locks';
 import { resolveProfileRuntime } from '../../runtime/profile-runtime';
+import {
+  assertReconnectAgentKindUnchanged,
+  checkRuntimeAgentAvailability,
+  createRuntimeAgent,
+  releaseRuntimeLocks,
+} from '../../runtime/agent-runtime';
 import { refreshOwnerControls } from '../../policy/owner';
+
+// Re-exported for existing tests that import these from this module.
+export { assertReconnectAgentKindUnchanged, createRuntimeAgent };
 import { SessionStore } from '../../session/store';
 import { SessionCatalog } from '../../session/catalog';
 import { WorkspaceStore } from '../../workspace/store';
@@ -77,41 +91,109 @@ export interface StartOptions {
   appSecret?: string;
   tenant?: string;
   skipCheckLarkCli?: boolean;
+  /** Start the machine-wide supervisor + web console instead of a single
+   * profile in the foreground. Default false → classic headless run. */
+  webUi?: boolean;
   confirmStopRuntimeLockProcess?: (err: RuntimeLockConflictError) => boolean | Promise<boolean>;
   stopRuntimeLockProcess?: (meta: RuntimeLockMeta) => StopProcessEntryResult | Promise<StopProcessEntryResult>;
 }
 
+/**
+ * Foreground bridge entry.
+ *
+ *  - `run` / `run --profile X` → **classic**: one profile in the foreground,
+ *    no web console, headless-safe (works on servers without a browser).
+ *  - `run --web-ui` → **supervisor console**: one machine-wide process hosting
+ *    all profiles + a local web console to start/stop/configure them.
+ */
 export async function runStart(opts: StartOptions): Promise<void> {
+  if (opts.webUi) {
+    await runSupervisorConsole(opts);
+    return;
+  }
+  await runClassic(opts);
+}
+
+const migrationConflictHandler = async (err: unknown): Promise<boolean> => {
+  const handled = await promptAndStopActiveBridgeMigrationConflict(err as never, {
+    cancelMessage: '已取消启动。',
+  });
+  if (!handled) process.exit(0);
+  return true;
+};
+
+/**
+ * Classic single-profile foreground run (the pre-supervisor default). Uses the
+ * Supervisor internally to host exactly one profile — no host lock (so multiple
+ * classic runs coexist in separate terminals) and no web console. Fails loudly
+ * if the profile can't come online.
+ */
+async function runClassic(opts: StartOptions): Promise<void> {
   const runtime = await resolveProfileRuntime({
     ...opts,
     allowBootstrap: true,
-    handleActiveBridgeMigrationConflict: async (err) => {
-      const handled = await promptAndStopActiveBridgeMigrationConflict(err, {
-        cancelMessage: '已取消启动。',
-      });
-      if (!handled) process.exit(0);
-      return true;
-    },
+    handleActiveBridgeMigrationConflict: migrationConflictHandler,
   });
-  let cfg = runtime.cfg;
+  const { cfg, configPath, appPaths } = runtime;
+  configureLogger({ logsDir: appPaths.logsDir });
+  await loadTelemetryAdapter({
+    version: pkg.version,
+    appId: cfg.accounts.app.id,
+    tenant: cfg.accounts.app.tenant,
+    hostname: os.hostname(),
+  });
+  await gcOldLogs();
+
+  const supervisor = new Supervisor({ configPath, rootDir: appPaths.rootDir });
+
+  // Retry loop: on a profile/app runtime-lock conflict, offer to stop the
+  // holder and try again (same UX as older single-profile `run`).
+  for (;;) {
+    try {
+      await supervisor.startProfile(appPaths.profile);
+      break;
+    } catch (err) {
+      const action = await handleRuntimeLockConflict(err, opts);
+      if (action === 'retry') continue;
+      if (action === 'cancel') {
+        process.exit(0);
+      }
+      throw err; // unhandled → surfaced to the CLI top-level handler (exit 1)
+    }
+  }
+  console.log(`✓ profile「${appPaths.profile}」已上线（前台运行，Ctrl-C 退出）`);
+
+  await parkWithShutdown(supervisor, appPaths, undefined, undefined);
+}
+
+/**
+ * Supervisor console mode: one process per machine hosting every profile, with
+ * a local web console. A second `run --web-ui` / `start --web-ui` detects the
+ * running control plane and prints its URL instead of launching a duplicate.
+ */
+async function runSupervisorConsole(opts: StartOptions): Promise<void> {
+  const runtime = await resolveProfileRuntime({
+    ...opts,
+    allowBootstrap: true,
+    handleActiveBridgeMigrationConflict: migrationConflictHandler,
+  });
+  const cfg = runtime.cfg;
   const configPath = runtime.configPath;
   const appPaths = runtime.appPaths;
-  let profileConfig = runtime.profileConfig;
-  configureLogger({ logsDir: appPaths.logsDir });
+  configureLogger({ logsDir: appPaths.hostLogsDir });
 
-  await preFlightChecks({
-    skipCheckLarkCli: opts.skipCheckLarkCli,
-    bridgeConfig: cfg,
-    profileConfig,
-    appPaths,
-    larkChannel: {
-      profile: appPaths.profile,
-      rootDir: appPaths.rootDir,
-      configPath,
-      larkCliConfigDir: appPaths.larkCliConfigDir,
-      larkCliSourceConfigFile: appPaths.larkCliSourceConfigFile,
-    },
-  });
+  // One supervisor per machine. If one is already running, print its console
+  // URL and exit instead of launching a duplicate.
+  const hostLock = await acquireHostLock(appPaths.hostLockFile);
+  if (!hostLock) {
+    const sidecar = await readUiSidecar(appPaths.hostUiFile);
+    console.log(
+      sidecar
+        ? `控制面已在运行：${sidecar.url}`
+        : '控制面已在运行（另一个 supervisor 进程持有锁）。',
+    );
+    return;
+  }
 
   await loadTelemetryAdapter({
     version: pkg.version,
@@ -119,323 +201,73 @@ export async function runStart(opts: StartOptions): Promise<void> {
     tenant: cfg.accounts.app.tenant,
     hostname: os.hostname(),
   });
+  await gcOldLogs();
 
-  let agent = createRuntimeAgent(profileConfig, { ...appPaths, configPath });
-  const availability = await checkRuntimeAgentAvailability(agent);
-  if (!availability.ok) {
-    console.error(formatAgentPreflightDiagnostic(availability.diagnostic));
-    log.warn('agent', 'preflight-failed', { diagnostic: availability.diagnostic });
-    process.exit(1);
+  const supervisor = new Supervisor({ configPath, rootDir: appPaths.rootDir });
+
+  // Single web console (host sidecar), backed by the supervisor.
+  let uiServer: UiServerHandle | undefined;
+  try {
+    uiServer = await startUiServer({ supervisor, version: pkg.version, rootDir: appPaths.rootDir });
+    await writeUiSidecar(appPaths.hostUiFile, uiServer, new Date().toISOString());
+    console.log(`✓ 控制台：${uiServer.url}`);
+  } catch (err) {
+    log.warn('ui', 'server-start-failed', { err: String(err) });
   }
 
-  for (;;) {
-    try {
-      let runtimeLocks: AcquiredRuntimeLock[] = [];
-      await withProfileAndAppLocks(
-        appPaths,
-        cfg.accounts.app.id,
-        cfg.agentKind ?? 'claude',
-        async (locks) => {
-          runtimeLocks = locks;
-          const sessions = new SessionStore(appPaths.sessionsFile);
-          await sessions.load();
-          const sessionCatalog = new SessionCatalog(`${appPaths.sessionsFile}.catalog.json`);
-          await sessionCatalog.load();
-          const workspaces = new WorkspaceStore(appPaths.workspacesFile);
-          await workspaces.load();
-
-        await gcMediaCache(MEDIA_GC_MAX_AGE_MS, appPaths.mediaDir);
-        await gcOldLogs();
-
-        // Same-app conflict detection. Open-platform routes events to one of the
-        // long-connections at random, so two `start` of the same app makes "who
-        // answered me" unpredictable. Warn + interactive triage before connecting.
-        const conflicts = await sameAppLiveOthers(
-          cfg.accounts.app.id,
-          process.pid,
-          appPaths.userRegistryFile,
-        );
-        if (conflicts.length > 0) {
-          const proceed = await resolveConflict(conflicts);
-          if (!proceed) {
-            console.log('已取消启动。');
-            process.exit(0);
-          }
-        }
-
-        // Register self in the process registry. Cleanup is wired via stop() and
-        // 'exit' below — both paths run unregisterSync so stale entries don't
-        // poison the next start.
-        const entry = await register({
-          appId: cfg.accounts.app.id,
-          tenant: cfg.accounts.app.tenant,
-          profileName: appPaths.profile,
-          agentKind: cfg.agentKind ?? 'claude',
-          configPath,
-          version: pkg.version,
-          registryFile: appPaths.userRegistryFile,
-        });
-        log.info('registry', 'registered', { id: entry.id, pid: process.pid });
-
-        // `bridge` is mutable so /account can swap it on restart. `controls` carries
-        // restart() and a snapshot of the current cfg so command handlers can read
-        // and replace credentials without plumbing through the whole runStart scope.
-        let bridge: BridgeChannel;
-        let restarting = false;
-
-        let stopping = false;
-        const stop = async (sig: string): Promise<void> => {
-          if (stopping) return;
-          stopping = true;
-          console.log(`\n收到 ${sig}，正在关闭...`);
-          try {
-            await bridge.disconnect();
-          } catch (err) {
-            console.error('[disconnect-failed]', err);
-          }
-          // unregister is best-effort sync — we're about to exit anyway.
-          unregisterSync(entry.id, appPaths.userRegistryFile);
-          await releaseRuntimeLocks(runtimeLocks);
-          await flushTelemetry();
-          process.exit(0);
-        };
-
-        let controls: Controls;
-        const makeControls = (
-          currentPaths: AppPaths,
-          currentCfg: AppConfig,
-          currentProfileConfig: ProfileConfig,
-        ): Controls => {
-          const currentControls: Controls = {
-            profile: currentPaths.profile,
-            profileConfig: currentProfileConfig,
-            ownerRefreshState: 'unknown',
-            knownChats: [],
-            async refreshOwner(channelOverride) {
-              const target = channelOverride ?? bridge?.channel;
-              if (!target) return;
-              await refreshOwnerControls(
-                currentControls,
-                target,
-                currentControls.cfg.accounts.app.id,
-              );
-            },
-            configPath,
-            cfg: currentCfg,
-            processId: entry.id,
-            async exit() {
-              await stop('exit-command');
-            },
-            async restart() {
-              if (restarting) return;
-              restarting = true;
-              let nextAppLock: AcquiredRuntimeLock | undefined;
-              try {
-                const nextRuntime = await resolveProfileRuntime({
-                  config: configPath,
-                  profile: appPaths.profile,
-                  allowBootstrap: false,
-                });
-                const next = nextRuntime.cfg;
-                if (!isComplete(next)) throw new Error('config incomplete after change');
-                assertReconnectAgentKindUnchanged(cfg.agentKind, next.agentKind);
-                const nextAgent = createRuntimeAgent(nextRuntime.profileConfig, {
-                  ...nextRuntime.appPaths,
-                  configPath: nextRuntime.configPath,
-                });
-                const nextAvailability = await checkRuntimeAgentAvailability(nextAgent);
-                if (!nextAvailability.ok) {
-                  throw nextAvailability.error;
-                }
-                const appChanged = next.accounts.app.id !== cfg.accounts.app.id;
-                if (appChanged) {
-                  nextAppLock = await acquireAppRuntimeLock(
-                    nextRuntime.appPaths,
-                    next.accounts.app.id,
-                    next.agentKind ?? 'claude',
-                  );
-                }
-                console.log(
-                  `[restart] connecting new bridge with appId=${next.accounts.app.id} tenant=${next.accounts.app.tenant}...`,
-                );
-                const nextControls = makeControls(nextRuntime.appPaths, next, nextRuntime.profileConfig);
-                // Connect-before-disconnect: if the new bridge fails to come up
-                // (e.g. network outage during a force-reconnect), throwing here
-                // leaves the old bridge — and its keepalive timer — untouched, so
-                // the next keepalive tick (~15s later) can retry restart. Without
-                // this ordering, a failed restart would tear down the only
-                // keepalive in the process and the bot would never recover until
-                // someone manually restarts it.
-                const next_bridge = await startChannel({
-                  cfg: next,
-                  agent: nextAgent,
-                  sessions,
-                  sessionCatalog,
-                  workspaces,
-                  controls: nextControls,
-                  appPaths: nextRuntime.appPaths,
-                });
-                console.log('[restart] disconnecting old bridge...');
-                try {
-                  await bridge.disconnect();
-                } catch (err) {
-                  console.warn('[restart] old disconnect failed:', err);
-                }
-                bridge = next_bridge;
-                // Update while the old app lock is still held. Registry write paths
-                // prune stale entries by matching the currently persisted app lock.
-                await updateEntry(entry.id, {
-                  appId: next.accounts.app.id,
-                  tenant: next.accounts.app.tenant,
-                  configPath,
-                  botName: bridge.channel.botIdentity?.name,
-                }, appPaths.userRegistryFile).catch((err) =>
-                  log.warn('registry', 'update-failed', { err: String(err) }),
-                );
-                if (nextAppLock) {
-                  const oldAppLock = runtimeLocks.find((lock) => lock.kind === 'app');
-                  runtimeLocks = [
-                    ...runtimeLocks.filter((lock) => lock.kind !== 'app'),
-                    nextAppLock,
-                  ];
-                  nextAppLock = undefined;
-                  await oldAppLock?.release().catch((err) =>
-                    log.warn('runtime-lock', 'old-app-release-failed', { err: String(err) }),
-                  );
-                }
-                cfg = next;
-                profileConfig = nextRuntime.profileConfig;
-                agent = nextAgent;
-                controls = nextControls;
-                console.log('✓ 已用新凭据重连');
-              } finally {
-                if (nextAppLock) {
-                  await nextAppLock.release().catch((err) =>
-                    log.warn('runtime-lock', 'new-app-release-failed', { err: String(err) }),
-                  );
-                }
-                restarting = false;
-              }
-            },
-          };
-          return currentControls;
-        };
-        controls = makeControls(appPaths, cfg, profileConfig);
-
-        bridge = await startChannel({
-          cfg,
-          agent,
-          sessions,
-          sessionCatalog,
-          workspaces,
-          controls,
-          appPaths,
-        });
-
-        // Backfill the bot's display name into the registry once WS handshake is
-        // done — future starts conflicting on this app can show it in the prompt
-        // ("bot 尼莫 (cli_xxx)") instead of just a short id.
-        const botName = bridge.channel.botIdentity?.name;
-        if (botName) {
-          await updateEntry(entry.id, { botName }, appPaths.userRegistryFile).catch((err) =>
-            log.warn('registry', 'update-failed', { step: 'botName', err: String(err) }),
-          );
-        }
-
-        process.on('SIGINT', () => void stop('SIGINT'));
-        process.on('SIGTERM', () => void stop('SIGTERM'));
-        process.on('beforeExit', () => {
-          void flushTelemetry();
-        });
-        // Last-ditch sync unregister in case something exits without going through
-        // stop() (e.g. uncaughtException with process.exit(1)).
-        process.on('exit', () => {
-          unregisterSync(entry.id, appPaths.userRegistryFile);
-          cleanupTmpFiles(appPaths.userRegistryFile);
-        });
-
-        // keep the event loop alive until a signal arrives
-          await new Promise<void>(() => {});
-        },
-      );
-      return;
-    } catch (err) {
-      const action = await handleRuntimeLockConflict(err, opts);
-      if (action === 'retry') continue;
-      if (action === 'cancel') return;
-      throw err;
-    }
-  }
-}
-
-async function checkRuntimeAgentAvailability(agent: AgentAdapter): Promise<AgentAvailability> {
-  if (agent.checkAvailability) return agent.checkAvailability();
-  const ok = await agent.isAvailable();
-  if (ok) return { ok: true };
-  const diagnostic = {
-    code: 'agent-binary-not-found' as const,
-    agentId: agent.id === 'codex' ? 'codex' as const : 'claude' as const,
-    agentName: agent.displayName,
-    command: agent.id === 'codex' ? 'codex' : 'claude',
-  };
-  return {
-    ok: false,
-    diagnostic,
-    error: new AgentPreflightError(diagnostic),
-  };
-}
-
-export function assertReconnectAgentKindUnchanged(
-  current: AgentKind | undefined,
-  next: AgentKind | undefined,
-): void {
-  const currentKind = current ?? 'claude';
-  const nextKind = next ?? 'claude';
-  if (nextKind !== currentKind) {
-    throw new Error(
-      `agent kind cannot change during reconnect (${currentKind} -> ${nextKind}); stop/start is required`,
+  // Auto-start only the active profile; others start on demand from the console.
+  try {
+    await supervisor.startProfile(appPaths.profile);
+    console.log(`✓ profile「${appPaths.profile}」已上线`);
+  } catch (err) {
+    console.warn(
+      `⚠️ active profile「${appPaths.profile}」启动失败：${err instanceof Error ? err.message : String(err)}`,
     );
+    log.warn('supervisor', 'active-start-failed', { profile: appPaths.profile, err: String(err) });
   }
+
+  await parkWithShutdown(supervisor, appPaths, uiServer, hostLock);
 }
 
-export function createRuntimeAgent(
-  profileConfig: ProfileConfig,
-  appPaths: Pick<AppPaths, 'profileDir'> &
-    Partial<Pick<AppPaths, 'rootDir' | 'profile' | 'configFile' | 'larkCliConfigDir' | 'larkCliSourceConfigFile'>> & {
-      configPath?: string;
-    },
-): AgentAdapter {
-  const larkChannelConfigPath = appPaths.configPath ?? appPaths.configFile;
-  const larkChannel =
-    appPaths.rootDir && appPaths.profile
-      ? {
-          profile: appPaths.profile,
-          rootDir: appPaths.rootDir,
-          ...(larkChannelConfigPath ? { configPath: larkChannelConfigPath } : {}),
-          ...(appPaths.larkCliConfigDir ? { larkCliConfigDir: appPaths.larkCliConfigDir } : {}),
-          ...(appPaths.larkCliSourceConfigFile
-            ? { larkCliSourceConfigFile: appPaths.larkCliSourceConfigFile }
-            : {}),
-        }
-      : undefined;
-  if (profileConfig.agentKind === 'codex') {
-    const codex = profileConfig.codex;
-    if (!codex?.binaryPath) {
-      throw new Error('codex profile requires codex.binaryPath');
+/**
+ * Install the one-time signal / exit handlers and park the process forever
+ * (until a signal triggers shutdown). Shared by both modes; console mode passes
+ * a `uiServer` + `hostLock` to also tear those down, classic mode passes
+ * neither. Returns a promise that never resolves so the caller stays parked.
+ */
+function parkWithShutdown(
+  supervisor: Supervisor,
+  appPaths: AppPaths,
+  uiServer: UiServerHandle | undefined,
+  hostLock: { release(): Promise<void> } | undefined,
+): Promise<void> {
+  let shuttingDown = false;
+  const shutdown = async (sig: string): Promise<void> => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    console.log(`\n收到 ${sig}，正在关闭...`);
+    if (uiServer) {
+      await uiServer.close().catch(() => {});
+      await removeUiSidecar(appPaths.hostUiFile);
     }
-    return new CodexAdapter({
-      binary: codex.binaryPath,
-      profileStateDir: appPaths.profileDir,
-      ...(codex.codexHome ? { codexHome: codex.codexHome } : {}),
-      inheritCodexHome: codex.inheritCodexHome === true,
-      ignoreUserConfig: codex.ignoreUserConfig === true,
-      ignoreRules: codex.ignoreRules !== false,
-      sandbox: profileConfig.sandbox.defaultMode,
-      larkChannel,
-    });
-  }
-  return new ClaudeAdapter({ larkChannel });
+    await supervisor.shutdown();
+    if (hostLock) await hostLock.release().catch(() => {});
+    await flushTelemetry();
+    process.exit(0);
+  };
+  process.on('SIGINT', () => void shutdown('SIGINT'));
+  process.on('SIGTERM', () => void shutdown('SIGTERM'));
+  process.on('beforeExit', () => {
+    void flushTelemetry();
+  });
+  process.on('exit', () => {
+    supervisor.unregisterAllSync();
+    cleanupTmpFiles(appPaths.userRegistryFile);
+  });
+
+  return new Promise<void>(() => {});
 }
+
 
 /**
  * Print the same-app conflict, then ask the user how to proceed. Returns
@@ -545,17 +377,6 @@ async function confirmStopRuntimeLockProcess(err: RuntimeLockConflictError): Pro
     return answer === 'y' || answer === 'yes';
   } finally {
     rl.close();
-  }
-}
-
-async function releaseRuntimeLocks(locks: AcquiredRuntimeLock[]): Promise<void> {
-  for (const lock of [...locks].reverse()) {
-    await lock.release().catch((err) =>
-      log.warn('runtime-lock', 'release-failed', {
-        kind: lock.kind,
-        err: err instanceof Error ? err.message : String(err),
-      }),
-    );
   }
 }
 

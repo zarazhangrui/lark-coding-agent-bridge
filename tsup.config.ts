@@ -11,6 +11,10 @@ export default defineConfig([
     sourcemap: false,
     splitting: false,
     dts: false,
+    // Inline the Vite-built console (src/ui/generated/index.html) as a string.
+    esbuildOptions(options) {
+      options.loader = { ...options.loader, '.html': 'text' };
+    },
   },
   {
     entry: { index: 'src/index.ts' },
