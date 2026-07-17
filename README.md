@@ -284,7 +284,8 @@ If you'd rather not do it inside Feishu, `/invite` and `/config` write the match
         "allowedUsers": ["ou_xxxxxxxxxxxxx"],
         "allowedChats": ["oc_xxxxxxxxxxxxx"],
         "admins": ["ou_xxxxxxxxxxxxx"],
-        "requireMentionInGroup": true
+        "requireMentionInGroup": true,
+        "mentionExemptChats": ["oc_dedicated_group"]
       }
     }
   }

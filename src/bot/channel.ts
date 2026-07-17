@@ -36,6 +36,7 @@ import {
   getMaxConcurrentRuns,
   getMessageReplyMode,
   getRequireMentionInGroup,
+  getMentionExemptChats,
   getRunIdleTimeoutMs,
   getShowToolCalls,
 } from '../config/schema';
@@ -648,7 +649,8 @@ async function intakeMessage(deps: IntakeDeps): Promise<void> {
   if (
     msg.chatType !== 'p2p' &&
     getRequireMentionInGroup(controls.cfg) &&
-    !msg.mentionedBot
+    !msg.mentionedBot &&
+    !getMentionExemptChats(controls.cfg).includes(msg.chatId)
   ) {
     log.info('intake', 'skip-no-mention', { scope, chatType: msg.chatType });
     return;

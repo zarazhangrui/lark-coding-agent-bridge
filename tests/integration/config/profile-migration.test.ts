@@ -56,6 +56,7 @@ describe('profile v2 migration', () => {
           allowedUsers: ['ou_allowed'],
           allowedChats: ['oc_allowed'],
           admins: ['ou_admin'],
+          mentionExemptChats: ['oc_exempt'],
         },
       },
     };
@@ -86,6 +87,7 @@ describe('profile v2 migration', () => {
       allowedUsers: ['ou_allowed'],
       allowedChats: ['oc_allowed'],
       admins: ['ou_admin'],
+      mentionExemptChats: ['oc_exempt'],
       requireMentionInGroup: false,
     });
     expect(next.profiles.claude?.preferences).toEqual({ messageReply: 'card' });
