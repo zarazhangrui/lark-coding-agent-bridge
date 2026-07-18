@@ -58,9 +58,9 @@ export function codexCapability(profile: Pick<ProfileConfig, 'permissions'>): Ag
 }
 
 /**
- * Phase A Devin capability. No native history (session resume not wired),
- * no structured tool events. Treated as a stdin-style prompt injection since
- * the adapter passes the prompt via `--prompt-file`.
+ * Devin capability (Phase B / ACP). Supports native history via
+ * `session/load`. Structured tool events come through ACP
+ * `session/update` notifications.
  */
 export function devinCapability(profile: Pick<ProfileConfig, 'permissions'>): AgentCapability {
   const maxAccess = profile.permissions.maxAccess ?? 'full';
@@ -69,7 +69,7 @@ export function devinCapability(profile: Pick<ProfileConfig, 'permissions'>): Ag
     sessionKind: 'devin-session',
     promptInjection: 'stdin-prefix',
     systemPrompt: BRIDGE_SYSTEM_PROMPT,
-    supportsNativeHistory: false,
+    supportsNativeHistory: true,
     callback: {
       marker: '__bridge_cb',
       legacyMarkers: [],

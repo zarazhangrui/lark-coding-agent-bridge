@@ -4,7 +4,7 @@ import { createInterface } from 'node:readline';
 import pkg from '../../../package.json';
 import { ClaudeAdapter } from '../../agent/claude/adapter';
 import { CodexAdapter } from '../../agent/codex/adapter';
-import { DevinAdapter } from '../../agent/devin/adapter';
+import { DevinAcpAdapter } from '../../agent/devin/acp-adapter';
 import {
   AgentPreflightError,
   formatAgentPreflightDiagnostic,
@@ -437,7 +437,7 @@ export function createRuntimeAgent(
     });
   }
   if (profileConfig.agentKind === 'devin') {
-    return new DevinAdapter({
+    return new DevinAcpAdapter({
       binary: process.env.LARK_CHANNEL_DEVIN_BIN ?? 'devin',
       larkChannel,
     });

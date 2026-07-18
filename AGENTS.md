@@ -1,16 +1,36 @@
-# Devin CLI Integration — Phase A (Path A: `devin -p`)
+# Devin CLI Integration — Phase B (ACP)
 
 ## Status
 
-Phase A is **complete and verified**. The Devin CLI is now a first-class agent
-kind in the bridge, alongside Claude Code and Codex CLI.
+Phase B is **complete and verified**. The Devin CLI now uses the Agent Client
+Protocol (ACP) over stdio for structured streaming, replacing the Phase A
+`devin -p` plain-text wrapper.
 
 ## What was done
 
-A new `DevinAdapter` wraps `devin -p --prompt-file <tmp> --permission-mode
-dangerous` and streams stdout as `text` deltas, then emits `final_text` +
-`done`. This is the simplest possible integration — no structured tool events,
-no session resume, no image input.
+### Phase B: ACP adapter
+
+A new `DevinAcpAdapter` speaks JSON-RPC 2.0 (NDJSON over stdio) with
+`devin acp`, following the [ACP v1 spec](https://agentclientprotocol.com/protocol/v1/overview).
+
+The full prompt turn lifecycle is implemented:
+1. `initialize` — negotiate protocol version + capabilities
+2. `session/new` (or `session/load` if resuming) — create/restore session
+3. `session/prompt` — send user message, stream `session/update` notifications
+4. `session/request_permission` — auto-approve all tool permissions
+5. `session/prompt` response — map `stopReason` to `done`/`error`
+
+ACP events are mapped to the bridge's `AgentEvent` protocol:
+- `agent_message_chunk` → `text` delta (streaming typewriter effect)
+- `tool_call` → `tool_use` (tool chip appears in Lark card)
+- `tool_call_update` (completed/failed) → `tool_result`
+- `stopReason: end_turn` → `final_text` + `done: normal`
+
+### Phase A: print-mode adapter (kept as fallback)
+
+The original `DevinAdapter` (wrapping `devin -p`) is kept in
+`src/agent/devin/adapter.ts` as a fallback. The bridge now uses
+`DevinAcpAdapter` by default.
 
 ### Files changed
 

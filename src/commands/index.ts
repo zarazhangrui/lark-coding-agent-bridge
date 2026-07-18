@@ -553,7 +553,7 @@ async function handleResume(args: string, ctx: CommandContext): Promise<void> {
   }
 
   if (ctx.controls.profileConfig.agentKind === 'devin') {
-    await reply(ctx, 'Devin CLI 暂不支持会话恢复（Phase A 限制）。');
+    await reply(ctx, 'Devin CLI 会话恢复尚在开发中（ACP session/load 已就绪，目录集成待完成）。');
     return;
   }
 
@@ -611,7 +611,7 @@ async function handleResume(args: string, ctx: CommandContext): Promise<void> {
 
 async function applyResume(sessionId: string, ctx: CommandContext): Promise<void> {
   if (ctx.controls.profileConfig.agentKind === 'devin') {
-    await reply(ctx, 'Devin CLI 暂不支持会话恢复（Phase A 限制）。');
+    await reply(ctx, 'Devin CLI 会话恢复尚在开发中（ACP session/load 已就绪，目录集成待完成）。');
     return;
   }
   if (ctx.sessionCatalog && ctx.sessionCatalogIdentity) {
