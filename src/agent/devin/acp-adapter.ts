@@ -500,13 +500,20 @@ async function* createAcpEventStream(
       });
     }
 
-    // Clean up: close the session if supported
+    // Clean up: cancel the session and kill the process tree.
+    // We must wait for the child to fully exit before the generator
+    // returns, otherwise the next run may try to session/load before
+    // the previous devin acp process has released the session lock
+    // (causing "Session already open in another..." errors), and the
+    // run-executor's waitForExit grace period will fire a spurious
+    // post-done-exit-timeout warning.
     try {
       client.notify('session/cancel', { sessionId });
     } catch {
       // best-effort
     }
     client.kill();
+    await waitForChildExit(child, 10_000);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     const stderr = Buffer.concat(stderrChunks).toString('utf8').trim();
@@ -516,7 +523,28 @@ async function* createAcpEventStream(
       terminationReason: 'failed',
     };
     client.kill();
+    await waitForChildExit(child, 10_000);
   }
+}
+
+/**
+ * Wait for the child process to fully exit, with a timeout fallback.
+ * This ensures the OS has reaped the process and released any session
+ * locks before the caller proceeds.
+ */
+function waitForChildExit(child: DevinChild, timeoutMs: number): Promise<void> {
+  if (child.exitCode !== null || child.signalCode !== null) return Promise.resolve();
+  return new Promise<void>((resolve) => {
+    const timer = setTimeout(() => {
+      child.removeListener('exit', onExit);
+      resolve();
+    }, timeoutMs);
+    const onExit = (): void => {
+      clearTimeout(timer);
+      resolve();
+    };
+    child.once('exit', onExit);
+  });
 }
 
 function mapStopReason(reason: AcpStopReason): 'normal' | 'interrupted' | 'failed' {
