@@ -1,6 +1,6 @@
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, extname, join } from 'node:path';
 import { spawn } from 'node:child_process';
 import type { Readable, Writable } from 'node:stream';
 import { log } from '../../core/logger';
@@ -424,9 +424,29 @@ async function* createAcpEventStream(
 
     // 3. session/prompt (async — we'll await the response while streaming
     //    notifications)
+    const promptBlocks: AcpContentBlock[] = [{ type: 'text', text: opts.prompt }];
+    for (const imgPath of opts.images ?? []) {
+      try {
+        const data = readFileSync(imgPath);
+        const ext = extname(imgPath).toLowerCase();
+        const mimeType =
+          ext === '.png' ? 'image/png' :
+          ext === '.jpg' || ext === '.jpeg' ? 'image/jpeg' :
+          ext === '.gif' ? 'image/gif' :
+          ext === '.webp' ? 'image/webp' :
+          'image/png';
+        promptBlocks.push({
+          type: 'image',
+          image: { data: data.toString('base64'), mimeType },
+        });
+        log.info('acp', 'image-attached', { path: basename(imgPath), size: data.length, mimeType });
+      } catch (err) {
+        log.warn('acp', 'image-read-failed', { path: imgPath, err: String(err) });
+      }
+    }
     const promptPromise = client.call<AcpSessionPromptResult>('session/prompt', {
       sessionId,
-      prompt: [{ type: 'text', text: opts.prompt }],
+      prompt: promptBlocks,
       ...(opts.model ? { model: opts.model } : {}),
     });
 

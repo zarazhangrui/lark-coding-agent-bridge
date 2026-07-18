@@ -553,7 +553,43 @@ async function handleResume(args: string, ctx: CommandContext): Promise<void> {
   }
 
   if (ctx.controls.profileConfig.agentKind === 'devin') {
-    await reply(ctx, 'Devin CLI 会话恢复尚在开发中（ACP session/load 已就绪，目录集成待完成）。');
+    const identity = ctx.sessionCatalogIdentity;
+    const entry =
+      ctx.sessionCatalog && identity
+        ? ctx.sessionCatalog.activeFor(identity)
+        : undefined;
+    // Devin sessions are tracked in the catalog (not on disk like Claude).
+    // List all catalog entries matching the current scope+agent+cwd.
+    const history = identity && ctx.sessionCatalog
+      ? ctx.sessionCatalog.entries()
+          .filter(
+            (e) =>
+              e.agentId === 'devin' &&
+              e.scopeId === identity.scopeId &&
+              e.cwdRealpath === identity.cwdRealpath &&
+              e.status === 'active' &&
+              e.sessionId,
+          )
+          .sort((a, b) => b.updatedAt - a.updatedAt)
+          .slice(0, limit)
+      : [];
+    if (history.length > 0 && identity) {
+      const entries = history.map((e) => {
+        const nonce = issueResumeCandidate(identity, { sessionId: e.sessionId! });
+        return {
+          sessionId: nonce,
+          preview: e.lastSummary || e.sessionId || 'Devin session',
+          relTime: formatRelTime(e.updatedAt),
+          detail: `Devin · ACP`,
+          current: e.sessionId === entry?.sessionId,
+        };
+      });
+      const card = resumeCard(cwd, entries);
+      await ctx.channel.send(ctx.msg.chatId, { card }, commandReplyOptions(ctx));
+      return;
+    }
+    const card = resumeCard(cwd, []);
+    await ctx.channel.send(ctx.msg.chatId, { card }, commandReplyOptions(ctx));
     return;
   }
 
@@ -610,10 +646,6 @@ async function handleResume(args: string, ctx: CommandContext): Promise<void> {
 }
 
 async function applyResume(sessionId: string, ctx: CommandContext): Promise<void> {
-  if (ctx.controls.profileConfig.agentKind === 'devin') {
-    await reply(ctx, 'Devin CLI 会话恢复尚在开发中（ACP session/load 已就绪，目录集成待完成）。');
-    return;
-  }
   if (ctx.sessionCatalog && ctx.sessionCatalogIdentity) {
     const entry = ctx.sessionCatalog.activeFor(ctx.sessionCatalogIdentity);
     const resolved = consumeResumeCandidate(sessionId, ctx.sessionCatalogIdentity);
@@ -628,19 +660,22 @@ async function applyResume(sessionId: string, ctx: CommandContext): Promise<void
           threadId: resolved.threadId!,
         });
       } else {
+        // claude and devin both use sessionId
         ctx.sessionCatalog.upsertActive({
           scopeId: ctx.sessionCatalogIdentity.scopeId,
-          agentId: 'claude',
+          agentId: ctx.sessionCatalogIdentity.agentId,
           cwdRealpath: ctx.sessionCatalogIdentity.cwdRealpath,
           policyFingerprint: ctx.sessionCatalogIdentity.policyFingerprint,
           sessionId: resolved.sessionId!,
         });
-        ctx.sessions.set(ctx.scope, resolved.sessionId!, ctx.sessionCatalogIdentity.cwdRealpath);
+        if (ctx.sessionCatalogIdentity.agentId === 'claude') {
+          ctx.sessions.set(ctx.scope, resolved.sessionId!, ctx.sessionCatalogIdentity.cwdRealpath);
+        }
       }
       await reply(ctx, RESUME_APPLIED_REPLY);
       return;
     }
-    if (ctx.sessionCatalogIdentity.agentId === 'codex') {
+    if (ctx.sessionCatalogIdentity.agentId === 'codex' || ctx.sessionCatalogIdentity.agentId === 'devin') {
       await reply(ctx, '当前上下文不可恢复这个会话，请先用 `/resume` 重新生成恢复候选。');
       return;
     }
@@ -704,7 +739,8 @@ function consumeResumeCandidate(
     candidate.cwdRealpath !== identity.cwdRealpath ||
     candidate.policyFingerprint !== identity.policyFingerprint ||
     (identity.agentId === 'claude' && !candidate.sessionId) ||
-    (identity.agentId === 'codex' && !candidate.threadId)
+    (identity.agentId === 'codex' && !candidate.threadId) ||
+    (identity.agentId === 'devin' && !candidate.sessionId)
   ) {
     return undefined;
   }
