@@ -59,6 +59,7 @@ describe('profile-aware account and config commands', () => {
     const h = await createHarness();
 
     await h.command('/config submit', {
+      deploy_mode: 'team',
       message_reply: 'text',
       show_tool_calls: 'hide',
       max_concurrent_runs: '7',
@@ -73,6 +74,7 @@ describe('profile-aware account and config commands', () => {
     expect(root.schemaVersion).toBe(2);
     expect(root.activeProfile).toBe('claude');
     expect(root.profiles['codex-dev']).toBeDefined();
+    expect(root.profiles.claude?.mode).toBe('team');
     expect(root.profiles.claude?.preferences).toMatchObject({
       messageReply: 'text',
       messageReplyMigrated: true,
