@@ -280,6 +280,29 @@ async function bindLarkCliWithCompatibility(
   privateBinding: boolean,
   identityPreset: LarkCliIdentityPreset,
 ): Promise<RunResult> {
+  // Newer lark-cli (>=1.0.47) auto-detects the source from environment
+  // variables (LARK_CHANNEL_HOME / HERMES_HOME / OPENCLAW_HOME) and rejects
+  // an explicit --source that doesn't match the detected environment.
+  // Try without --source first (auto-detect), then fall back to the
+  // explicit --source lark-channel for older lark-cli builds.
+  const autoResult = await runCapture(
+    'lark-cli',
+    [...profileArgs, 'config', 'bind', '--identity', identityPreset],
+    BIND_TIMEOUT_MS,
+    larkChannelEnv,
+  );
+  if (autoResult.success) return autoResult;
+
+  // If auto-detect failed because lark-cli is too old to support it
+  // (unknown flag --identity without --source, or "source is required"),
+  // retry with the explicit --source lark-channel for older builds.
+  if (!isUnsupportedNoSourceMode(autoResult.output)) {
+    // Auto-detect was accepted but the bind itself failed — return as-is.
+    if (!isSourceMismatchError(autoResult.output)) return autoResult;
+    // Source mismatch (e.g. HERMES_HOME env set but bridge uses lark-channel):
+    // the auto-detected source differs. Fall through to explicit --source.
+  }
+
   const directResult = await runCapture(
     'lark-cli',
     [...profileArgs, 'config', 'bind', '--source', 'lark-channel', '--identity', identityPreset],
@@ -640,6 +663,27 @@ function isUnsupportedLarkChannelSource(output: string): boolean {
     /invalid --source[^-\n]*lark-channel/i.test(output) ||
     /unsupported source:\s*lark-channel/i.test(output) ||
     (/invalid --source[^-\n]*lark-channel/i.test(output) && /valid values:\s*\S+/i.test(output))
+  );
+}
+
+/**
+ * Detects whether lark-cli rejected the bind because the auto-detected
+ * source doesn't match the requested --source. Newer lark-cli (>=1.0.47)
+ * validates --source against env-detected environment (hermes/openclaw/etc).
+ */
+function isSourceMismatchError(output: string): boolean {
+  return /does not match detected Agent environment/i.test(output);
+}
+
+/**
+ * Detects whether lark-cli is too old to support bind without --source
+ * (i.e. it requires --source but we didn't pass it).
+ */
+function isUnsupportedNoSourceMode(output: string): boolean {
+  return (
+    /unknown flag:\s*--identity/i.test(output) ||
+    /--source is required/i.test(output) ||
+    /source is required/i.test(output)
   );
 }
 
