@@ -197,14 +197,20 @@ export async function runStart(opts: StartOptions): Promise<void> {
           }, 10_000);
           forceExitTimer.unref();
           try {
+            console.log('[stop] disconnecting bridge...');
             await bridge.disconnect();
+            console.log('[stop] bridge disconnected');
           } catch (err) {
             console.error('[disconnect-failed]', err);
           }
           // unregister is best-effort sync — we're about to exit anyway.
+          console.log('[stop] unregistering...');
           unregisterSync(entry.id, appPaths.userRegistryFile);
+          console.log('[stop] releasing locks...');
           await releaseRuntimeLocks(runtimeLocks);
+          console.log('[stop] flushing telemetry...');
           await flushTelemetry();
+          console.log('[stop] done, exiting');
           clearTimeout(forceExitTimer);
           process.exit(0);
         };
@@ -363,8 +369,22 @@ export async function runStart(opts: StartOptions): Promise<void> {
           cleanupTmpFiles(appPaths.userRegistryFile);
         });
 
-        // keep the event loop alive until a signal arrives
-          await new Promise<void>(() => {});
+        // On Windows, Ctrl+C in PowerShell/cmd may not reliably deliver
+        // SIGINT to the Node.js process (especially when launched via npm
+        // .cmd/.ps1 wrappers). Use a readline interface on stdin in
+        // terminal mode — its 'SIGINT' event fires reliably on Ctrl+C
+        // across platforms, unlike process.on('SIGINT') on Windows.
+        const keepAlive = createInterface({
+          input: process.stdin,
+          output: process.stdout,
+          terminal: true,
+        });
+        keepAlive.on('SIGINT', () => void stop('SIGINT'));
+        // Keep the event loop alive until a signal arrives.
+        await new Promise<void>((resolve) => {
+          keepAlive.on('close', () => resolve());
+        });
+        keepAlive.close();
         },
       );
       return;
