@@ -126,6 +126,9 @@ export async function startRunFlow(input: StartRunFlowInput): Promise<StartRunFl
     } else if (catalogEntry?.agentId === 'codex') {
       threadId = catalogEntry.threadId;
       resumeFrom = threadId;
+    } else if (catalogEntry?.agentId === 'devin') {
+      sessionId = catalogEntry.sessionId;
+      resumeFrom = sessionId;
     }
   }
   if (!resumeFrom && input.capability.agentId === 'claude') {
@@ -149,7 +152,7 @@ export async function startRunFlow(input: StartRunFlowInput): Promise<StartRunFl
         input.profileConfig.preferences.model,
       ),
       images:
-        input.capability.agentId === 'codex'
+        input.capability.agentId === 'codex' || input.capability.agentId === 'devin'
           ? policy.attachments
               .filter((attachment) => attachment.kind === 'image' && attachment.decision === 'accepted')
               .map((attachment) => attachment.path)
@@ -207,6 +210,17 @@ export function recordRunSessionEvent(input: RecordRunSessionEventInput): void {
       cwdRealpath: input.policy.cwdRealpath,
       policyFingerprint: input.policy.policyFingerprint,
       threadId: input.event.threadId,
+    });
+    return;
+  }
+  if (input.capability.agentId === 'devin' && input.event.sessionId) {
+    const cwdRealpath = input.event.cwd ?? input.policy.cwdRealpath;
+    input.sessionCatalog?.upsertActive({
+      scopeId: input.scopeId,
+      agentId: 'devin',
+      cwdRealpath,
+      policyFingerprint: input.policy.policyFingerprint,
+      sessionId: input.event.sessionId,
     });
   }
 }

@@ -4,6 +4,7 @@ import { createInterface } from 'node:readline';
 import pkg from '../../../package.json';
 import { ClaudeAdapter } from '../../agent/claude/adapter';
 import { CodexAdapter } from '../../agent/codex/adapter';
+import { DevinAcpAdapter } from '../../agent/devin/acp-adapter';
 import {
   AgentPreflightError,
   formatAgentPreflightDiagnostic,
@@ -188,15 +189,29 @@ export async function runStart(opts: StartOptions): Promise<void> {
           if (stopping) return;
           stopping = true;
           console.log(`\n收到 ${sig}，正在关闭...`);
+          // Safety net: if disconnect hangs (e.g. child processes keeping
+          // pipes open), force-exit after 10s so Ctrl+C always works.
+          const forceExitTimer = setTimeout(() => {
+            console.error('[force-exit] disconnect timed out, forcing exit');
+            process.exit(1);
+          }, 10_000);
+          forceExitTimer.unref();
           try {
+            console.log('[stop] disconnecting bridge...');
             await bridge.disconnect();
+            console.log('[stop] bridge disconnected');
           } catch (err) {
             console.error('[disconnect-failed]', err);
           }
           // unregister is best-effort sync — we're about to exit anyway.
+          console.log('[stop] unregistering...');
           unregisterSync(entry.id, appPaths.userRegistryFile);
+          console.log('[stop] releasing locks...');
           await releaseRuntimeLocks(runtimeLocks);
+          console.log('[stop] flushing telemetry...');
           await flushTelemetry();
+          console.log('[stop] done, exiting');
+          clearTimeout(forceExitTimer);
           process.exit(0);
         };
 
@@ -354,8 +369,22 @@ export async function runStart(opts: StartOptions): Promise<void> {
           cleanupTmpFiles(appPaths.userRegistryFile);
         });
 
-        // keep the event loop alive until a signal arrives
-          await new Promise<void>(() => {});
+        // On Windows, Ctrl+C in PowerShell/cmd may not reliably deliver
+        // SIGINT to the Node.js process (especially when launched via npm
+        // .cmd/.ps1 wrappers). Use a readline interface on stdin in
+        // terminal mode — its 'SIGINT' event fires reliably on Ctrl+C
+        // across platforms, unlike process.on('SIGINT') on Windows.
+        const keepAlive = createInterface({
+          input: process.stdin,
+          output: process.stdout,
+          terminal: true,
+        });
+        keepAlive.on('SIGINT', () => void stop('SIGINT'));
+        // Keep the event loop alive until a signal arrives.
+        await new Promise<void>((resolve) => {
+          keepAlive.on('close', () => resolve());
+        });
+        keepAlive.close();
         },
       );
       return;
@@ -372,11 +401,12 @@ async function checkRuntimeAgentAvailability(agent: AgentAdapter): Promise<Agent
   if (agent.checkAvailability) return agent.checkAvailability();
   const ok = await agent.isAvailable();
   if (ok) return { ok: true };
+  const agentId = agent.id === 'codex' ? 'codex' : agent.id === 'devin' ? 'devin' : 'claude';
   const diagnostic = {
     code: 'agent-binary-not-found' as const,
-    agentId: agent.id === 'codex' ? 'codex' as const : 'claude' as const,
+    agentId: agentId as 'codex' | 'devin' | 'claude',
     agentName: agent.displayName,
-    command: agent.id === 'codex' ? 'codex' : 'claude',
+    command: agent.id,
   };
   return {
     ok: false,
@@ -431,6 +461,12 @@ export function createRuntimeAgent(
       ignoreUserConfig: codex.ignoreUserConfig === true,
       ignoreRules: codex.ignoreRules !== false,
       sandbox: profileConfig.sandbox.defaultMode,
+      larkChannel,
+    });
+  }
+  if (profileConfig.agentKind === 'devin') {
+    return new DevinAcpAdapter({
+      binary: process.env.LARK_CHANNEL_DEVIN_BIN ?? 'devin',
       larkChannel,
     });
   }
