@@ -4,6 +4,7 @@ import { createInterface } from 'node:readline';
 import pkg from '../../../package.json';
 import { ClaudeAdapter } from '../../agent/claude/adapter';
 import { CodexAdapter } from '../../agent/codex/adapter';
+import { DevinAdapter } from '../../agent/devin/adapter';
 import {
   AgentPreflightError,
   formatAgentPreflightDiagnostic,
@@ -372,11 +373,12 @@ async function checkRuntimeAgentAvailability(agent: AgentAdapter): Promise<Agent
   if (agent.checkAvailability) return agent.checkAvailability();
   const ok = await agent.isAvailable();
   if (ok) return { ok: true };
+  const agentId = agent.id === 'codex' ? 'codex' : agent.id === 'devin' ? 'devin' : 'claude';
   const diagnostic = {
     code: 'agent-binary-not-found' as const,
-    agentId: agent.id === 'codex' ? 'codex' as const : 'claude' as const,
+    agentId: agentId as 'codex' | 'devin' | 'claude',
     agentName: agent.displayName,
-    command: agent.id === 'codex' ? 'codex' : 'claude',
+    command: agent.id,
   };
   return {
     ok: false,
@@ -431,6 +433,12 @@ export function createRuntimeAgent(
       ignoreUserConfig: codex.ignoreUserConfig === true,
       ignoreRules: codex.ignoreRules !== false,
       sandbox: profileConfig.sandbox.defaultMode,
+      larkChannel,
+    });
+  }
+  if (profileConfig.agentKind === 'devin') {
+    return new DevinAdapter({
+      binary: process.env.LARK_CHANNEL_DEVIN_BIN ?? 'devin',
       larkChannel,
     });
   }

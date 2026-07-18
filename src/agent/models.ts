@@ -43,9 +43,24 @@ const CODEX_MODELS: ModelOption[] = [
   { value: 'o3', label: 'o3' },
 ];
 
+/**
+ * Devin CLI models. Forwarded to `devin --model`. The Devin CLI accepts
+ * aliases like `opus`, `codex`, plus concrete ids — keep the list short and
+ * let "跟随默认" cover the rest.
+ */
+const DEVIN_MODELS: ModelOption[] = [
+  { value: DEFAULT_MODEL, label: '跟随默认（不指定）' },
+  { value: 'claude-sonnet-4', label: 'Claude Sonnet 4' },
+  { value: 'claude-opus-4.6', label: 'Claude Opus 4.6' },
+  { value: 'opus', label: 'Opus（别名）' },
+  { value: 'codex', label: 'Codex（别名）' },
+];
+
 /** The model picker options for a profile's agent kind. */
 export function supportedModels(agentKind: AgentKind): ModelOption[] {
-  return agentKind === 'codex' ? CODEX_MODELS : CLAUDE_MODELS;
+  if (agentKind === 'codex') return CODEX_MODELS;
+  if (agentKind === 'devin') return DEVIN_MODELS;
+  return CLAUDE_MODELS;
 }
 
 /** True when the selection means "use the agent default" (no `--model`). */
