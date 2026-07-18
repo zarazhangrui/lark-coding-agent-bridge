@@ -27,6 +27,16 @@ export function buildLarkChannelEnv(context?: LarkChannelEnvContext): NodeJS.Pro
   const larkCliConfigDir = nonEmpty(context?.larkCliConfigDir);
   if (larkCliConfigDir) env.LARKSUITE_CLI_CONFIG_DIR = larkCliConfigDir;
 
+  // When LARK_CHANNEL_HOME is set, explicitly clear HERMES_HOME and
+  // OPENCLAW_HOME so that lark-cli's auto-detection picks up the
+  // lark-channel source instead of hermes/openclaw. Without this,
+  // a HERMES_HOME inherited from the outer environment takes
+  // precedence, causing lark-cli to bind to the wrong workspace/app.
+  if (rootDir) {
+    env.HERMES_HOME = undefined;
+    env.OPENCLAW_HOME = undefined;
+  }
+
   return env;
 }
 
