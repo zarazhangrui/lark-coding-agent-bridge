@@ -507,13 +507,17 @@ async function* createAcpEventStream(
     // (causing "Session already open in another..." errors), and the
     // run-executor's waitForExit grace period will fire a spurious
     // post-done-exit-timeout warning.
+    //
+    // NOTE: This cleanup is in a finally block because the EventFanout
+    // pump breaks on terminal events (done/error), which calls
+    // generator.return() — this throws at the current yield point,
+    // skipping any code after the while loop. The finally block is
+    // guaranteed to run even when generator.return() is called.
     try {
       client.notify('session/cancel', { sessionId });
     } catch {
       // best-effort
     }
-    client.kill();
-    await waitForChildExit(child, 10_000);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     const stderr = Buffer.concat(stderrChunks).toString('utf8').trim();
@@ -522,6 +526,7 @@ async function* createAcpEventStream(
       message: stderr ? `${message}: ${stderr.slice(0, 500)}` : message,
       terminationReason: 'failed',
     };
+  } finally {
     client.kill();
     await waitForChildExit(child, 10_000);
   }
