@@ -247,14 +247,16 @@ function matchesIdentity(entry: SessionCatalogEntry, input: SessionCatalogIdenti
 }
 
 function isValidAgentEntry(entry: SessionCatalogEntry): boolean {
-  if (entry.agentId === 'claude') return Boolean(entry.sessionId) && !entry.threadId;
+  if (entry.agentId === 'claude' || entry.agentId === 'devin') {
+    return Boolean(entry.sessionId) && !entry.threadId;
+  }
   return Boolean(entry.threadId) && !entry.sessionId;
 }
 
 function assertAgentIdentity(input: UpsertSessionCatalogInput): void {
-  if (input.agentId === 'claude') {
+  if (input.agentId === 'claude' || input.agentId === 'devin') {
     if (!input.sessionId || input.threadId) {
-      throw new Error('Claude catalog entries require sessionId and must not include threadId');
+      throw new Error(`${input.agentId} catalog entries require sessionId and must not include threadId`);
     }
     return;
   }

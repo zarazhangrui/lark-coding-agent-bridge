@@ -408,6 +408,10 @@ async function* createAcpEventStream(
       log.info('acp', 'session-created', { sessionId });
     }
 
+    // Emit a system event so the bridge can record the session ID for
+    // resume on the next run (same pattern as Claude's system event).
+    enqueue({ type: 'system', sessionId, cwd: opts.cwd });
+
     // 3. session/prompt (async — we'll await the response while streaming
     //    notifications)
     const promptPromise = client.call<AcpSessionPromptResult>('session/prompt', {

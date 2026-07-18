@@ -240,9 +240,11 @@ export async function handleCommentMention(deps: CommentDeps): Promise<void> {
           })
         : undefined;
       const sessionId =
-        canResumeAgentSession && capability.agentId === 'claude'
-          ? sessions.resumeFor(docSessionScopeId, cwdRealpath) ??
-            sessions.resumeFor(legacyDocSessionScopeId, cwdRealpath)
+        canResumeAgentSession && (capability.agentId === 'claude' || capability.agentId === 'devin')
+          ? capability.agentId === 'devin'
+            ? catalogEntry?.sessionId
+            : sessions.resumeFor(docSessionScopeId, cwdRealpath) ??
+              sessions.resumeFor(legacyDocSessionScopeId, cwdRealpath)
           : undefined;
       const threadId = capability.agentId === 'codex' ? catalogEntry?.threadId : undefined;
       log.info('comment', 'session', {
