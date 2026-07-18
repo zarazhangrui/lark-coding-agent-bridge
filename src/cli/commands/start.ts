@@ -189,6 +189,13 @@ export async function runStart(opts: StartOptions): Promise<void> {
           if (stopping) return;
           stopping = true;
           console.log(`\n收到 ${sig}，正在关闭...`);
+          // Safety net: if disconnect hangs (e.g. child processes keeping
+          // pipes open), force-exit after 10s so Ctrl+C always works.
+          const forceExitTimer = setTimeout(() => {
+            console.error('[force-exit] disconnect timed out, forcing exit');
+            process.exit(1);
+          }, 10_000);
+          forceExitTimer.unref();
           try {
             await bridge.disconnect();
           } catch (err) {
@@ -198,6 +205,7 @@ export async function runStart(opts: StartOptions): Promise<void> {
           unregisterSync(entry.id, appPaths.userRegistryFile);
           await releaseRuntimeLocks(runtimeLocks);
           await flushTelemetry();
+          clearTimeout(forceExitTimer);
           process.exit(0);
         };
 

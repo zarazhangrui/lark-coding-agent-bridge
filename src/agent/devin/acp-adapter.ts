@@ -1,6 +1,7 @@
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { spawn } from 'node:child_process';
 import type { Readable, Writable } from 'node:stream';
 import { log } from '../../core/logger';
 import { mergeProcessEnv, spawnProcess, type SpawnedProcessByStdio } from '../../platform/spawn';
@@ -180,21 +181,30 @@ export class DevinAcpAdapter implements AgentAdapter {
       events: createAcpEventStream(child, opts, () => runtimeError, this.autoApprove, stderrChunks),
       async stop() {
         if (child.exitCode !== null || child.signalCode !== null) return;
-        log.info('agent', 'stop-sigterm', { pid: child.pid ?? null, graceMs: stopGraceMs, protocol: 'acp' });
-        child.kill('SIGTERM');
-        await new Promise<void>((resolve) => {
-          const timer = setTimeout(() => {
-            if (child.exitCode === null && child.signalCode === null) {
-              log.warn('agent', 'stop-sigkill', { pid: child.pid ?? null, graceMs: stopGraceMs });
-              child.kill('SIGKILL');
-            }
-            resolve();
-          }, stopGraceMs);
-          child.once('exit', () => {
-            clearTimeout(timer);
-            resolve();
+        log.info('agent', 'stop', { pid: child.pid ?? null, graceMs: stopGraceMs, protocol: 'acp' });
+        // On Windows, `child.kill('SIGTERM')` only kills the parent process,
+        // not the entire process tree. `devin acp` spawns child processes
+        // (MCP servers, etc.) that keep the stdout pipe open, preventing the
+        // event loop from exiting. Use `taskkill /T /F` to kill the whole
+        // tree. On Unix, SIGTERM → SIGKILL cascade is sufficient.
+        if (process.platform === 'win32' && child.pid) {
+          await killProcessTreeWindows(child.pid, stopGraceMs);
+        } else {
+          child.kill('SIGTERM');
+          await new Promise<void>((resolve) => {
+            const timer = setTimeout(() => {
+              if (child.exitCode === null && child.signalCode === null) {
+                log.warn('agent', 'stop-sigkill', { pid: child.pid ?? null, graceMs: stopGraceMs });
+                child.kill('SIGKILL');
+              }
+              resolve();
+            }, stopGraceMs);
+            child.once('exit', () => {
+              clearTimeout(timer);
+              resolve();
+            });
           });
-        });
+        }
       },
       waitForExit(timeoutMs: number): Promise<boolean> {
         if (child.exitCode !== null || child.signalCode !== null) return Promise.resolve(true);
@@ -521,6 +531,38 @@ function isWindowsCommandNotFoundLine(line: string): boolean {
     process.platform === 'win32' &&
     /is not recognized as an internal or external command|operable program or batch file/i.test(line)
   );
+}
+
+/**
+ * Kill a process and its entire child tree on Windows using `taskkill /T /F`.
+ * This is necessary because Node's `child.kill()` only sends a signal to the
+ * direct child; `devin acp` spawns subprocesses (MCP servers, etc.) that
+ * inherit the stdout pipe and keep the event loop alive even after the
+ * parent exits.
+ */
+function killProcessTreeWindows(pid: number, graceMs: number): Promise<void> {
+  return new Promise<void>((resolve) => {
+    const taskkill = spawn('taskkill', ['/PID', String(pid), '/T', '/F'], {
+      stdio: ['ignore', 'ignore', 'ignore'],
+      windowsHide: true,
+    });
+    let settled = false;
+    const done = (): void => {
+      if (settled) return;
+      settled = true;
+      resolve();
+    };
+    taskkill.on('exit', (code) => {
+      log.info('agent', 'taskkill-exit', { pid, code });
+      done();
+    });
+    taskkill.on('error', (err) => {
+      log.warn('agent', 'taskkill-error', { pid, err: String(err) });
+      done();
+    });
+    // Safety timeout — don't hang forever
+    setTimeout(done, graceMs + 1000);
+  });
 }
 
 // Re-export for tests

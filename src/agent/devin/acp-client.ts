@@ -1,5 +1,5 @@
 import { EventEmitter } from 'node:events';
-import type { ChildProcess } from 'node:child_process';
+import { spawn, type ChildProcess } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import type { Readable, Writable } from 'node:stream';
 import { log } from '../../core/logger';
@@ -181,10 +181,20 @@ export class AcpClient extends EventEmitter {
     return this.closed;
   }
 
-  /** Kill the underlying child process. */
+  /** Kill the underlying child process. On Windows, kills the entire
+   *  process tree via `taskkill /T /F` to ensure child processes (MCP
+   *  servers, etc.) don't keep the stdout pipe open. */
   kill(signal: NodeJS.Signals = 'SIGTERM'): void {
-    if (this.child.exitCode === null && this.child.signalCode === null) {
-      this.child.kill(signal);
+    if (this.child.exitCode !== null || this.child.signalCode !== null) return;
+    if (process.platform === 'win32' && this.child.pid) {
+      spawn('taskkill', ['/PID', String(this.child.pid), '/T', '/F'], {
+        stdio: ['ignore', 'ignore', 'ignore'],
+        windowsHide: true,
+      }).on('error', (err) => {
+        log.warn('acp', 'taskkill-error', { pid: this.child.pid, err: String(err) });
+      });
+      return;
     }
+    this.child.kill(signal);
   }
 }
