@@ -38,7 +38,9 @@ describe('Codex startup compatibility with legacy binary metadata', () => {
       target: join(h.root, 'registry', 'locks', 'profile', 'codex.lock'),
       profile: 'codex',
       agentKind: 'codex',
-      pid: 12345,
+      // Must be a live pid: dead holders now short-circuit into stale-lock
+      // cleanup and retry instead of asking for confirmation.
+      pid: process.pid,
       startedAt: '2026-06-04T09:00:00.000Z',
     };
     mocks.withProfileAndAppLocks.mockRejectedValueOnce(
@@ -66,7 +68,8 @@ describe('Codex startup compatibility with legacy binary metadata', () => {
       target: join(h.root, 'registry', 'locks', 'profile', 'codex.lock'),
       profile: 'codex',
       agentKind: 'codex',
-      pid: 12345,
+      // Live pid for the same reason as above.
+      pid: process.pid,
       startedAt: '2026-06-04T09:00:00.000Z',
     };
     mocks.withProfileAndAppLocks.mockRejectedValueOnce(

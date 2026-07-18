@@ -27,6 +27,7 @@ import { promptAndStopActiveBridgeMigrationConflict } from './migrate';
 import { stopProcessEntry, type StopProcessEntryResult } from './ps';
 import {
   cleanupTmpFiles,
+  isAlive,
   register,
   sameAppLiveOthers,
   unregisterSync,
@@ -35,6 +36,7 @@ import {
 } from '../../runtime/registry';
 import {
   acquireAppRuntimeLock,
+  cleanupStaleRuntimeLock,
   RuntimeLockConflictError,
   withProfileAndAppLocks,
   type AcquiredRuntimeLock,
@@ -506,6 +508,16 @@ async function handleRuntimeLockConflict(
   } else {
     console.error(`  lock: ${err.target}`);
     return 'unhandled';
+  }
+
+  // Holder process is gone (crash / hard kill): the lock is stale, there is
+  // nothing to stop and nobody to ask about. Clean up and retry instead of
+  // demanding confirmation — in non-interactive runs (task scheduler,
+  // systemd, watchdogs) the confirmation path would abort the start.
+  if (!isAlive(err.meta.pid)) {
+    console.log(`  holder pid ${err.meta.pid} 已不存在,自动清理陈旧锁后重试…`);
+    await cleanupStaleRuntimeLock(err.target);
+    return 'retry';
   }
 
   const confirmed = opts.confirmStopRuntimeLockProcess

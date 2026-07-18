@@ -26,10 +26,15 @@ vi.mock('../../../src/runtime/profile-runtime', () => ({
 
 vi.mock('../../../src/runtime/registry', () => ({
   readAndPrune: mocks.readAndPrune,
+  // Lock holders in these tests are simulated processes; treat them as live
+  // so the confirm/stop flows under test are exercised (dead holders now
+  // short-circuit into stale-lock cleanup).
+  isAlive: () => true,
 }));
 
 vi.mock('../../../src/runtime/locks', () => ({
   checkRuntimeLock: mocks.checkRuntimeLock,
+  cleanupStaleRuntimeLock: vi.fn(),
 }));
 
 vi.mock('../../../src/cli/commands/ps', () => ({
