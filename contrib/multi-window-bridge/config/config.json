@@ -1,0 +1,44 @@
+{
+  "feishu": {
+    "chatId": "oc_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+    "credentialFile": "~/.lark-channel/config.json",
+    "userOpenId": "ou_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+    "perWindowGroups": {
+      "enabled": false,
+      "groupNameTemplate": "claude · {windowId} · {cwdBase}"
+    }
+  },
+  "notifications": {
+    "onInput": true,
+    "onToolAuth": false,
+    "onStop": true,
+    "onWatchdog": true,
+    "toolAuthIncludes": [
+      "Bash",
+      "Edit",
+      "Write",
+      "NotebookEdit",
+      "AskUserQuestion"
+    ],
+    "minIntervalSecondsPerWindow": 5,
+    "muteLarkChannelSessions": true,
+    "muteWindowIds": [],
+    "mode": "quiet"
+  },
+  "watchdog": {
+    "intervalSeconds": 60,
+    "staleThresholdSeconds": 600,
+    "rearmAfterAlertSeconds": 1800
+  },
+  "stage2": {
+    "enabled": false,
+    "pollIntervalSeconds": 30,
+    "allowAppleScriptPaste": false,
+    "warpAppPath": "/Applications/Warp.app",
+    "killOldPidBeforeResume": true,
+    "guardBusy": true,
+    "guardBusyKinds": [
+      "PreToolUse"
+    ]
+  }
+}
