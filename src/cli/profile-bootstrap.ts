@@ -14,6 +14,7 @@ export interface BootstrapProfileInput {
   workspace?: string;
   defaultWorkspace?: string;
   codexBinaryPath?: string;
+  kimiBinaryPath?: string;
   profileDir?: string;
 }
 
@@ -29,12 +30,17 @@ export async function createBootstrapProfileConfig(
     input.agentKind === 'codex'
       ? await createBootstrapCodexConfig(input.codexBinaryPath)
       : undefined;
+  const kimi =
+    input.agentKind === 'kimi'
+      ? await createBootstrapKimiConfig(input.kimiBinaryPath)
+      : undefined;
   const profile = createDefaultProfileConfig({
     agentKind: input.agentKind,
     accounts: input.accounts,
     preferences: input.preferences,
     secrets: input.secrets,
     ...(codex ? { codex } : {}),
+    ...(kimi ? { kimi } : {}),
   });
   if (workspace) {
     profile.workspaces = {
@@ -44,6 +50,9 @@ export async function createBootstrapProfileConfig(
   }
   if (input.profileDir && profile.codex?.inheritCodexHome === false) {
     await mkdir(join(input.profileDir, 'codex-home'), { recursive: true });
+  }
+  if (input.profileDir && profile.kimi?.inheritKimiHome === false) {
+    await mkdir(join(input.profileDir, 'kimi-home'), { recursive: true });
   }
   return profile;
 }
@@ -78,7 +87,34 @@ export async function createBootstrapCodexConfig(binaryPath: string | undefined)
   return { binaryPath: resolvedBinary };
 }
 
+export async function createBootstrapKimiConfig(binaryPath: string | undefined) {
+  const command = binaryPath ?? process.env.LARK_CHANNEL_KIMI_BIN ?? 'kimi';
+  let resolvedBinary: string;
+  try {
+    resolvedBinary = await resolveExecutablePath(command);
+  } catch (err) {
+    const errno = (err as NodeJS.ErrnoException).code;
+    throw new AgentPreflightError({
+      code: kimiBootstrapBinaryErrorCode(errno),
+      agentId: 'kimi',
+      agentName: 'Kimi Code CLI',
+      command,
+      binaryPath: command,
+      errno,
+    });
+  }
+  return { binaryPath: resolvedBinary };
+}
+
 function codexBootstrapBinaryErrorCode(errno: string | undefined) {
+  if (errno === 'EACCES' || errno === 'EPERM') return 'agent-binary-not-executable';
+  if (errno === 'ELOOP' || errno === 'ENOTDIR' || errno === 'EINVAL') {
+    return 'agent-binary-resolve-failed';
+  }
+  return 'agent-binary-not-found';
+}
+
+function kimiBootstrapBinaryErrorCode(errno: string | undefined) {
   if (errno === 'EACCES' || errno === 'EPERM') return 'agent-binary-not-executable';
   if (errno === 'ELOOP' || errno === 'ENOTDIR' || errno === 'EINVAL') {
     return 'agent-binary-resolve-failed';

@@ -12,11 +12,15 @@ describe('agent model catalog', () => {
   it('offers a distinct catalog per agent kind, each led by the default sentinel', () => {
     const claude = supportedModels('claude');
     const codex = supportedModels('codex');
+    const kimi = supportedModels('kimi');
     expect(claude[0]?.value).toBe(DEFAULT_MODEL);
     expect(codex[0]?.value).toBe(DEFAULT_MODEL);
+    expect(kimi[0]?.value).toBe(DEFAULT_MODEL);
     expect(claude.map((m) => m.value)).toContain('claude-opus-4-8');
     expect(codex.map((m) => m.value)).toContain('gpt-5-codex');
+    expect(kimi.map((m) => m.value)).toContain('kimi-code/kimi-for-coding');
     expect(claude.map((m) => m.value)).not.toContain('gpt-5-codex');
+    expect(kimi.map((m) => m.value)).not.toContain('claude-opus-4-8');
   });
 
   it('treats unset and the default sentinel as "use agent default"', () => {

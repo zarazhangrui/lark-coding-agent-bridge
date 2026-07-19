@@ -64,7 +64,7 @@ describe('agent-aware session catalog', () => {
     await catalog.flush();
   });
 
-  it('rejects mismatched Claude/Codex identity fields and does not auto-resume damaged entries', async () => {
+  it('rejects mismatched Claude/Codex/Kimi identity fields and does not auto-resume damaged entries', async () => {
     const catalog = new SessionCatalog(await path());
 
     expect(() =>
@@ -87,6 +87,16 @@ describe('agent-aware session catalog', () => {
         now: 1000,
       }),
     ).toThrow(/Codex.*threadId/i);
+    expect(() =>
+      catalog.upsertActive({
+        scopeId: 'chat-1',
+        agentId: 'kimi',
+        cwdRealpath: '/repo',
+        policyFingerprint: 'fp-1',
+        threadId: 'thread-wrong',
+        now: 1000,
+      }),
+    ).toThrow(/Kimi.*sessionId/i);
 
     await catalog.replaceForTest([
       {

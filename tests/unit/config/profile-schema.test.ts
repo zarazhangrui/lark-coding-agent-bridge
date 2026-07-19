@@ -96,6 +96,36 @@ describe('profile schema', () => {
     ).toThrow(/codex/i);
   });
 
+  it('accepts kimi agent kind and normalizes kimi configuration', () => {
+    const cfg = normalizeProfileConfig({
+      schemaVersion: 2,
+      agentKind: 'kimi',
+      accounts: { app },
+      kimi: {
+        binaryPath: '/usr/local/bin/kimi',
+        realpath: '/opt/kimi/bin/kimi',
+        version: 'kimi 1.0.0',
+      },
+    });
+    expect(cfg.agentKind).toBe('kimi');
+    expect(cfg.kimi).toMatchObject({
+      binaryPath: '/usr/local/bin/kimi',
+      realpath: '/opt/kimi/bin/kimi',
+      version: 'kimi 1.0.0',
+      inheritKimiHome: true,
+    });
+  });
+
+  it('requires kimi configuration when agentKind is kimi', () => {
+    expect(() =>
+      normalizeProfileConfig({
+        schemaVersion: 2,
+        agentKind: 'kimi',
+        accounts: { app },
+      }),
+    ).toThrow(/kimi/i);
+  });
+
   it('rejects sandbox defaults that exceed max capability as a permission error', () => {
     expect(() =>
       normalizeProfileConfig({
