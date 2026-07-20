@@ -169,6 +169,10 @@ DMs do not require an @ mention. Groups and topic groups require `@bot` by defau
 - **Tool-call display**: controls whether tool blocks appear in the final card / markdown reply.
 - **COT process message**: `off` sends only the final reply; `brief` first sends a COT message with agent progress text and tool summaries; `detailed` also includes tool args and truncated output.
 
+Fresh Codex profiles default to final-only delivery: plain text, hidden tool
+calls, and COT off. Existing profiles with explicit display preferences keep
+their choices. Claude keeps the streaming message-card default.
+
 When COT is enabled, the bridge splits the process view and final answer into two messages. The COT message is for tracing what the agent did; the final answer is still generated from the agent's raw text, without heuristic bridge-side filtering. If an agent emits final-answer text as ordinary stream text, that text can also appear in the COT process message.
 
 ## lark-cli identity policy

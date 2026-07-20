@@ -324,7 +324,12 @@ async function createHarness(options: {
     codex: {
       binaryPath: '/usr/local/bin/codex',
     },
-    ...(options.messageReply ? { preferences: { messageReply: options.messageReply } } : {}),
+    preferences: {
+      // This suite exercises stream behavior explicitly. Codex profiles now
+      // default to final-only text delivery, so opt into a streaming mode.
+      messageReply: options.messageReply ?? 'markdown',
+      messageReplyMigrated: true,
+    },
   });
   const profileConfig = {
     ...baseProfileConfig,

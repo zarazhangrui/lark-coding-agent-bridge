@@ -87,7 +87,7 @@ export interface AppAccess {
 }
 
 export interface AppPreferences {
-  /** Reply rendering mode for IM (group/p2p) messages. Default 'card'. */
+  /** Reply rendering mode for IM (group/p2p) messages. */
   messageReply?: MessageReplyMode;
   /**
    * Internal marker: pre-0.1.27 the value `'text'` meant "lightweight
@@ -100,8 +100,9 @@ export interface AppPreferences {
   messageReplyMigrated?: boolean;
   /**
    * Whether to render tool-call blocks (Bash / Read / Edit / ...) in the
-   * output. Default true. Turn off if you only care about Claude's final
-   * text answer and want to hide the "工具调用过程".
+   * output. Defaults to false for Codex and true for Claude. Turn off if you
+   * only care about the agent's final text answer and want to hide the
+   * "工具调用过程".
    */
   showToolCalls?: boolean;
   /**
@@ -163,6 +164,8 @@ export interface AppPreferences {
  * belong at this top level alongside them.
  */
 export interface AppConfig {
+  /** Present on v2 profile configs; absent on legacy single-profile configs. */
+  agentKind?: 'claude' | 'codex';
   accounts: {
     app: AppCredentials;
   };
@@ -200,7 +203,8 @@ export function secretKeyForApp(appId: string): string {
  * (which sets `messageReplyMigrated: true`), we map their `text` →
  * `markdown` so the behavior stays the same after upgrade.
  *
- * Default for fresh configs (no `messageReply` set) is `'markdown'`.
+ * Fresh Codex profiles default to `'text'` so verbose progress and command
+ * execution stay out of Lark. Claude and legacy configs keep `'markdown'`.
  */
 export function getMessageReplyMode(cfg: AppConfig): MessageReplyMode {
   const raw = cfg.preferences?.messageReply;
@@ -208,12 +212,14 @@ export function getMessageReplyMode(cfg: AppConfig): MessageReplyMode {
     return 'markdown';
   }
   if (raw === 'card' || raw === 'markdown' || raw === 'text') return raw;
-  return 'markdown';
+  return cfg.agentKind === 'codex' ? 'text' : 'markdown';
 }
 
 /** Resolve the show-tool-calls preference with default fallback. */
 export function getShowToolCalls(cfg: AppConfig): boolean {
-  return cfg.preferences?.showToolCalls !== false;
+  const configured = cfg.preferences?.showToolCalls;
+  if (configured !== undefined) return configured;
+  return cfg.agentKind !== 'codex';
 }
 
 export function getCotMessages(cfg: AppConfig): CotMessagesMode {
