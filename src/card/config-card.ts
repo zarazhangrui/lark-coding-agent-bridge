@@ -174,7 +174,7 @@ export function configFormCard(opts: ConfigFormOpts): object {
               initial_option: opts.messageReply === 'card' ? 'markdown' : opts.messageReply,
               options: [
                 { text: { tag: 'plain_text', content: '纯文本' }, value: 'text' },
-                { text: { tag: 'plain_text', content: '消息卡片(默认)' }, value: 'markdown' },
+                { text: { tag: 'plain_text', content: '消息卡片' }, value: 'markdown' },
               ],
             },
             {
@@ -189,7 +189,7 @@ export function configFormCard(opts: ConfigFormOpts): object {
               name: 'show_tool_calls',
               initial_option: opts.showToolCalls ? 'show' : 'hide',
               options: [
-                { text: { tag: 'plain_text', content: '显示(默认)' }, value: 'show' },
+                { text: { tag: 'plain_text', content: '显示' }, value: 'show' },
                 { text: { tag: 'plain_text', content: '隐藏' }, value: 'hide' },
               ],
             },
