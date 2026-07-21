@@ -30,6 +30,7 @@ describe('bridge system prompt bot collaboration rules', () => {
 
   it('documents the senderType and mentions context fields', () => {
     expect(BRIDGE_SYSTEM_PROMPT).toContain('senderType');
+    expect(BRIDGE_SYSTEM_PROMPT).toContain('mentionedSelf');
     expect(BRIDGE_SYSTEM_PROMPT).toContain('mentions');
   });
 

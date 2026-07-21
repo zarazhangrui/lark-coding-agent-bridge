@@ -81,6 +81,16 @@ describe('bot identity injection into the agent adapter', () => {
 });
 
 describe('sender identity in bridge_context', () => {
+  it('enables sender-name resolution on the channel SDK', async () => {
+    const h = await createHarness();
+
+    await startTestBridge(h);
+
+    expect(sdkMock.createLarkChannel).toHaveBeenCalledWith(
+      expect.objectContaining({ resolveSenderNames: true }),
+    );
+  });
+
   it('marks a bot sender via raw sender_type and injects botOpenId and mentions', async () => {
     const h = await createHarness();
     await startTestBridge(h);
@@ -103,10 +113,12 @@ describe('sender identity in bridge_context', () => {
     const context = readSection(h.agent.runOptions[0]?.prompt ?? '', 'bridge_context') as {
       senderType?: string;
       botOpenId?: string;
+      mentionedSelf?: boolean;
       mentions?: Array<{ openId?: string; name?: string; isBot?: boolean }>;
     };
     expect(context.senderType).toBe('bot');
     expect(context.botOpenId).toBe('ou_bot');
+    expect(context.mentionedSelf).toBe(true);
     expect(context.mentions).toEqual([
       { openId: 'ou_bot', name: 'Bridge', isBot: true },
       { openId: 'ou_human', name: '张三', isBot: false },
@@ -130,6 +142,33 @@ describe('sender identity in bridge_context', () => {
       senderType?: string;
     };
     expect(context.senderType).toBe('user');
+  });
+
+  it('sets mentionedSelf when any message in a batch mentions the bot', async () => {
+    const h = await createHarness();
+    await startTestBridge(h);
+
+    await h.channel.handlers.message?.(
+      message({
+        messageId: 'om_not_mentioned',
+        content: '先补一条上下文',
+        mentionedBot: false,
+        mentions: [],
+      }),
+    );
+    await h.channel.handlers.message?.(
+      message({
+        messageId: 'om_mentioned',
+        content: '@Bridge 请处理',
+        mentionedBot: true,
+      }),
+    );
+    await waitFor(() => h.agent.runOptions.length === 1);
+
+    const context = readSection(h.agent.runOptions[0]?.prompt ?? '', 'bridge_context') as {
+      mentionedSelf?: boolean;
+    };
+    expect(context.mentionedSelf).toBe(true);
   });
 
   it('omits senderType when the raw event is unavailable', async () => {
@@ -366,6 +405,7 @@ function message(input: {
   senderId?: string;
   senderName?: string;
   rawSenderType?: string;
+  mentionedBot?: boolean;
   mentions?: Array<{ key: string; openId?: string; name?: string; isBot?: boolean }>;
 }): NormalizedMessage {
   return {
@@ -381,7 +421,7 @@ function message(input: {
       { key: '@_user_1', openId: 'ou_bot', name: 'Bridge', isBot: true },
     ],
     mentionAll: false,
-    mentionedBot: true,
+    mentionedBot: input.mentionedBot ?? true,
     createTime: 1760000001000,
     ...(input.rawSenderType
       ? {
