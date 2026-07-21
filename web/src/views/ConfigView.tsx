@@ -1,6 +1,13 @@
 import { useEffect, useState, type ReactNode } from "react";
+import { QRCodeSVG } from "qrcode.react";
 import { apiGet, apiPost } from "@/lib/api";
-import type { ConfigView as ConfigData, KnownChat } from "@/lib/types";
+import type {
+  ConfigView as ConfigData,
+  DeviceLogin,
+  KnownChat,
+  UserAuthStatus,
+  UserChat,
+} from "@/lib/types";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -15,6 +22,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   Select,
   SelectContent,
@@ -28,6 +36,9 @@ export function ConfigView({ profile }: { profile: string }) {
   const [cfg, setCfg] = useState<ConfigData | null>(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // chat_id → display name, for the allowed-chats list. Seeded from the bot's
+  // known chats and topped up with names captured when adding from the picker.
+  const [chatNames, setChatNames] = useState<Record<string, string>>({});
 
   const load = () =>
     apiGet<ConfigData>(`/api/config?profile=${encodeURIComponent(profile)}`)
@@ -37,9 +48,16 @@ export function ConfigView({ profile }: { profile: string }) {
       })
       .catch((e) => setError(String(e.message ?? e)));
 
+  const loadChatNames = () =>
+    apiGet<{ chats: { id: string; name: string }[] }>(`/api/chats?profile=${encodeURIComponent(profile)}`)
+      .then((r) => setChatNames((m) => ({ ...m, ...Object.fromEntries(r.chats.map((c) => [c.id, c.name])) })))
+      .catch(() => {});
+
   useEffect(() => {
     setCfg(null);
+    setChatNames({});
     load();
+    void loadChatNames();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [profile]);
 
@@ -177,8 +195,12 @@ export function ConfigView({ profile }: { profile: string }) {
             profile={profile}
             ids={cfg.access.allowedChats}
             chatRequireMention={cfg.access.chatRequireMention}
+            chatNames={chatNames}
             globalRequire={cfg.requireMentionInGroup}
-            onAdd={(id) => access("add", "chat", id)}
+            onAdd={(id, name) => {
+              void access("add", "chat", id);
+              if (name) setChatNames((m) => ({ ...m, [id]: name }));
+            }}
             onRemove={(id) => access("remove", "chat", id)}
             onSetMention={setMention}
           />
@@ -239,6 +261,7 @@ function AllowedChats({
   profile,
   ids,
   chatRequireMention,
+  chatNames,
   globalRequire,
   onAdd,
   onRemove,
@@ -247,14 +270,14 @@ function AllowedChats({
   profile: string;
   ids: string[];
   chatRequireMention: Record<string, boolean>;
+  chatNames: Record<string, string>;
   globalRequire: boolean;
-  onAdd: (id: string) => void;
+  onAdd: (id: string, name?: string) => void;
   onRemove: (id: string) => void;
   onSetMention: (id: string, requireMention: boolean | null) => void;
 }) {
   const [pickerOpen, setPickerOpen] = useState(false);
   const [draft, setDraft] = useState("");
-  const [names, setNames] = useState<Record<string, string>>({});
 
   return (
     <div className="space-y-2">
@@ -267,7 +290,7 @@ function AllowedChats({
           return (
             <div key={id} className="flex items-center gap-2 px-3 py-2">
               <div className="min-w-0 flex-1">
-                {names[id] && <div className="truncate text-sm">{names[id]}</div>}
+                {chatNames[id] && <div className="truncate text-sm">{chatNames[id]}</div>}
                 <div className="truncate font-mono text-xs text-muted-foreground">{id}</div>
               </div>
               <Select
@@ -287,7 +310,7 @@ function AllowedChats({
         })}
       </div>
       <div className="flex gap-2">
-        <Button variant="outline" onClick={() => setPickerOpen(true)}>从 bot 所在群选择</Button>
+        <Button variant="outline" onClick={() => setPickerOpen(true)}>选择群</Button>
         <Input placeholder="或手动输入 oc_..." value={draft} onChange={(e) => setDraft(e.target.value)} />
         <Button variant="outline" onClick={() => { onAdd(draft); setDraft(""); }}>添加</Button>
       </div>
@@ -299,22 +322,50 @@ function AllowedChats({
         open={pickerOpen}
         onOpenChange={setPickerOpen}
         added={ids}
-        onPick={(id) => onAdd(id)}
-        onLoaded={(chats) =>
-          setNames(Object.fromEntries(chats.map((c) => [c.id, c.name])))
-        }
+        onPick={onAdd}
       />
     </div>
   );
 }
 
-function GroupPicker({ profile, open, onOpenChange, added, onPick, onLoaded }: {
+function GroupPicker({ profile, open, onOpenChange, added, onPick }: {
   profile: string;
   open: boolean;
   onOpenChange: (open: boolean) => void;
   added: string[];
-  onPick: (id: string) => void;
-  onLoaded: (chats: KnownChat[]) => void;
+  onPick: (id: string, name?: string) => void;
+}) {
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-2xl">
+        <DialogHeader>
+          <DialogTitle>选择群</DialogTitle>
+          <DialogDescription>
+            从 bot 已加入的群里选，或用你的飞书身份从「我的群」里选（可把 bot 拉进去）。
+          </DialogDescription>
+        </DialogHeader>
+        <Tabs defaultValue="bot" className="min-w-0">
+          <TabsList className="grid w-full grid-cols-2">
+            <TabsTrigger value="bot">bot 所在的群</TabsTrigger>
+            <TabsTrigger value="mine">我的群</TabsTrigger>
+          </TabsList>
+          <TabsContent value="bot" className="min-w-0">
+            <BotChatsPane profile={profile} open={open} added={added} onPick={onPick} />
+          </TabsContent>
+          <TabsContent value="mine" className="min-w-0">
+            <MyChatsPane profile={profile} open={open} added={added} onPick={onPick} />
+          </TabsContent>
+        </Tabs>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function BotChatsPane({ profile, open, added, onPick }: {
+  profile: string;
+  open: boolean;
+  added: string[];
+  onPick: (id: string, name?: string) => void;
 }) {
   const [chats, setChats] = useState<KnownChat[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -324,48 +375,245 @@ function GroupPicker({ profile, open, onOpenChange, added, onPick, onLoaded }: {
     setChats(null);
     setError(null);
     apiGet<{ chats: KnownChat[] }>(`/api/chats?profile=${encodeURIComponent(profile)}`)
-      .then((r) => { setChats(r.chats); onLoaded(r.chats); })
+      .then((r) => setChats(r.chats))
       .catch((e) => setError(String((e as Error).message ?? e)));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, profile]);
 
   const addedSet = new Set(added);
+  return (
+    <div className="space-y-2 py-2">
+      <p className="text-xs text-muted-foreground">只列出 bot 已加入的群（需要该 profile 在线）。</p>
+      {error && <p className="text-sm text-destructive">加载失败：{error}</p>}
+      {!error && chats === null && <p className="text-sm text-muted-foreground">加载中…</p>}
+      {chats && chats.length === 0 && (
+        <p className="text-sm text-muted-foreground">没有找到群。确认该 profile 在线，且 bot 已被拉进群聊。</p>
+      )}
+      {chats && chats.length > 0 && (
+        <div className="max-h-[46vh] divide-y overflow-y-auto rounded-md border">
+          {chats.map((c) => (
+            <div key={c.id} className="flex items-center gap-2 px-3 py-2">
+              <div className="min-w-0 flex-1">
+                <div className="truncate text-sm">{c.name}</div>
+                <div className="truncate font-mono text-xs text-muted-foreground">{c.id}</div>
+              </div>
+              {addedSet.has(c.id) ? (
+                <Badge variant="secondary">已添加</Badge>
+              ) : (
+                <Button size="sm" variant="outline" onClick={() => { onPick(c.id, c.name); toast.success("添加成功"); }}>添加</Button>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Minimal scopes, matching the backend. Listing needs only view; adding a
+// member additionally needs the write scope (requested on demand).
+const LIST_SCOPES = ["im:chat:read"];
+const ADD_BOT_SCOPES = ["im:chat:read", "im:chat.members:write_only"];
+
+function MyChatsPane({ profile, open, added, onPick }: {
+  profile: string;
+  open: boolean;
+  added: string[];
+  onPick: (id: string, name?: string) => void;
+}) {
+  const [status, setStatus] = useState<UserAuthStatus | null>(null);
+  const [chats, setChats] = useState<UserChat[] | null>(null);
+  const [nextToken, setNextToken] = useState<string | undefined>(undefined);
+  const [query, setQuery] = useState("");
+  const [listing, setListing] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [login, setLogin] = useState<DeviceLogin | null>(null);
+  const [busy, setBusy] = useState(false);
+  // A chat we couldn't add yet because the add-member scope was missing; retried
+  // after the user grants it. Also drives the authorize-prompt wording.
+  const [pendingPull, setPendingPull] = useState<string | null>(null);
+  const addedSet = new Set(added);
+
+  const canList = Boolean(status?.loggedIn && status?.scopes.includes("im:chat:read"));
+
+  const loadStatus = () =>
+    apiGet<UserAuthStatus>(`/api/auth/status?profile=${encodeURIComponent(profile)}`)
+      .then((s) => { setStatus(s); return s; })
+      .catch((e) => { setError(String((e as Error).message ?? e)); return null; });
+
+  // Fetch a page of chats (8 at a time). reset=true starts over with the current
+  // search query; otherwise it appends the next page via the pagination token.
+  async function fetchChats(reset: boolean) {
+    setListing(true);
+    setError(null);
+    if (reset) setChats(null);
+    try {
+      const params = new URLSearchParams({ profile });
+      if (query.trim()) params.set("query", query.trim());
+      if (!reset && nextToken) params.set("pageToken", nextToken);
+      const r = await apiGet<{ chats: UserChat[]; nextPageToken?: string }>(`/api/user-chats?${params.toString()}`);
+      setChats((prev) => (reset || !prev ? r.chats : [...prev, ...r.chats]));
+      setNextToken(r.nextPageToken);
+    } catch (e) {
+      setError(String((e as Error).message ?? e));
+    } finally {
+      setListing(false);
+    }
+  }
+
+  useEffect(() => {
+    if (!open) return;
+    setChats(null); setNextToken(undefined); setQuery("");
+    setLogin(null); setError(null); setStatus(null); setPendingPull(null);
+    void loadStatus().then((s) => {
+      if (s?.loggedIn && s.scopes.includes("im:chat:read")) void fetchChats(true);
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, profile]);
+
+  async function startAuth(scopes: string[]) {
+    setBusy(true); setError(null);
+    try {
+      setLogin(await apiPost<DeviceLogin>("/api/auth/login/start", { profile, scopes }));
+    } catch (e) {
+      setError(String((e as Error).message ?? e));
+    } finally { setBusy(false); }
+  }
+
+  async function completeAuth() {
+    if (!login) return;
+    setBusy(true);
+    try {
+      await apiPost("/api/auth/login/complete", { profile, deviceCode: login.deviceCode });
+      setLogin(null);
+      toast.success("授权成功");
+      const s = await loadStatus();
+      const pull = pendingPull;
+      setPendingPull(null);
+      if (pull) {
+        await pullBot(pull);
+      } else if (s?.loggedIn && s.scopes.includes("im:chat:read")) {
+        await fetchChats(true);
+      }
+    } catch (e) {
+      toast.error(String((e as Error).message ?? e));
+    } finally { setBusy(false); }
+  }
+
+  async function pullBot(id: string) {
+    setBusy(true);
+    try {
+      const r = await apiPost<{ ok: boolean; pending?: boolean; needAuth?: boolean; message?: string }>(
+        "/api/chats/add-bot",
+        { profile, chatId: id },
+      );
+      if (r.needAuth) {
+        // Missing the add-member scope → grant it, then retry this pull.
+        setPendingPull(id);
+        toast.message("拉bot进群需要额外授权（添加群成员）");
+        await startAuth(ADD_BOT_SCOPES);
+        return;
+      }
+      if (!r.ok) {
+        toast.error(r.message ?? "把 bot 拉进群失败");
+        return;
+      }
+      if (r.pending) {
+        toast.success("已申请，等待群主/管理员通过");
+      } else {
+        onPick(id, chats?.find((c) => c.id === id)?.name);
+        toast.success("已把 bot 拉进群，并加入允许列表");
+      }
+      // Mark it in-place so the row updates without losing the current page.
+      setChats((prev) => prev?.map((c) => (c.id === id ? { ...c, botInIt: true } : c)) ?? prev);
+    } catch (e) {
+      toast.error(String((e as Error).message ?? e));
+    } finally { setBusy(false); }
+  }
+
+  // Device flow in progress (either the initial view-groups grant, or the
+  // on-demand add-member grant) → show the QR / completion UI.
+  if (login) {
+    return (
+      <div className="space-y-3 py-2">
+        <p className="text-sm text-muted-foreground">
+          {pendingPull ? "把 bot 拉进群需要授权「添加群成员」权限。" : "列出「我的群」需要授权「查看群」权限。"}
+        </p>
+        <div className="flex flex-col items-center gap-2">
+          <div className="rounded-lg border bg-white p-3"><QRCodeSVG value={login.verificationUrl} size={160} /></div>
+          <a href={login.verificationUrl} target="_blank" rel="noreferrer" className="break-all text-sm text-primary underline">
+            在浏览器打开授权
+          </a>
+          {login.userCode && (
+            <p className="text-xs text-muted-foreground">验证码：<span className="font-mono">{login.userCode}</span></p>
+          )}
+        </div>
+        <p className="text-xs text-muted-foreground">在浏览器里同意授权后，点下面按钮完成。</p>
+        <div className="flex gap-2">
+          <Button className="flex-1" onClick={completeAuth} disabled={busy}>{busy ? "确认中…" : "我已完成授权"}</Button>
+          <Button variant="outline" onClick={() => { setLogin(null); setPendingPull(null); }} disabled={busy}>取消</Button>
+        </div>
+      </div>
+    );
+  }
+
+  // Authorized for listing? If not, prompt the view-only grant.
+  if (status && !canList) {
+    return (
+      <div className="space-y-3 py-2">
+        <p className="text-sm text-muted-foreground">列出「我的群」需要用你的飞书身份授权一次（只需「查看群」权限）。</p>
+        {error && <p className="text-sm text-destructive">{error}</p>}
+        <Button onClick={() => startAuth(LIST_SCOPES)} disabled={busy}>{busy ? "请稍候…" : "去授权（查看群）"}</Button>
+      </div>
+    );
+  }
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent>
-        <DialogHeader>
-          <DialogTitle>选择 bot 所在的群</DialogTitle>
-          <DialogDescription>
-            只列出 bot 已加入的群（需要该 profile 在线）。添加后可为每个群单独设置是否需要 @。
-          </DialogDescription>
-        </DialogHeader>
-        {error && <p className="text-sm text-destructive">加载失败：{error}</p>}
-        {!error && chats === null && <p className="text-sm text-muted-foreground">加载中…</p>}
-        {chats && chats.length === 0 && (
-          <p className="text-sm text-muted-foreground">
-            没有找到群。确认该 profile 在线，且 bot 已被拉进群聊。
-          </p>
-        )}
-        {chats && chats.length > 0 && (
-          <div className="max-h-[50vh] divide-y overflow-y-auto rounded-md border">
-            {chats.map((c) => (
-              <div key={c.id} className="flex items-center gap-2 px-3 py-2">
-                <div className="min-w-0 flex-1">
-                  <div className="truncate text-sm">{c.name}</div>
-                  <div className="truncate font-mono text-xs text-muted-foreground">{c.id}</div>
-                </div>
-                {addedSet.has(c.id) ? (
-                  <Badge variant="secondary">已添加</Badge>
-                ) : (
-                  <Button size="sm" variant="outline" onClick={() => onPick(c.id)}>添加</Button>
-                )}
+    <div className="space-y-2 py-2">
+      {status?.userName && <p className="text-xs text-muted-foreground">已授权：{status.userName}</p>}
+      <div className="flex gap-2">
+        <Input
+          placeholder="按群名搜索…"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          onKeyDown={(e) => { if (e.key === "Enter") void fetchChats(true); }}
+        />
+        <Button variant="outline" disabled={listing} onClick={() => void fetchChats(true)}>搜索</Button>
+      </div>
+      {error && <p className="text-sm text-destructive">{error}</p>}
+      {!error && chats === null && listing && <p className="text-sm text-muted-foreground">加载中…</p>}
+      {chats && chats.length === 0 && (
+        <p className="text-sm text-muted-foreground">{query.trim() ? "没搜到匹配的群。" : "没找到你所在的群。"}</p>
+      )}
+      {chats && chats.length > 0 && (
+        <div className="max-h-[46vh] divide-y overflow-y-auto rounded-md border">
+          {chats.map((c) => (
+            <div key={c.id} className="flex items-center gap-2 px-3 py-2">
+              <div className="min-w-0 flex-1">
+                <div className="truncate text-sm">{c.name}</div>
+                <div className="truncate font-mono text-xs text-muted-foreground">{c.id}</div>
               </div>
-            ))}
-          </div>
-        )}
-      </DialogContent>
-    </Dialog>
+              {!c.botInIt && (
+                <Button size="sm" variant="ghost" disabled={busy} onClick={() => pullBot(c.id)}>拉bot进群</Button>
+              )}
+              {addedSet.has(c.id) ? (
+                <Badge variant="secondary">已添加</Badge>
+              ) : (
+                <Button size="sm" variant="outline" onClick={() => { onPick(c.id, c.name); toast.success("添加成功"); }}>添加</Button>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+      {nextToken && (
+        <Button variant="ghost" size="sm" className="w-full" disabled={listing} onClick={() => void fetchChats(false)}>
+          {listing ? "加载中…" : "加载更多"}
+        </Button>
+      )}
+      <p className="text-xs text-muted-foreground">
+        bot 不在的群，先「拉bot进群」它才能在群里响应；「添加」只是把群加入允许列表。
+      </p>
+    </div>
   );
 }
 

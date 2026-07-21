@@ -6,12 +6,17 @@ import { readActiveProfile } from '../config/profile-store';
 import type { MutableProfileState } from '../config/config-ops';
 import consoleHtml from './generated/index.html';
 import {
+  addBotToChatView,
   applyConfig,
   applyConfigToDisk,
   buildConfigView,
   listChats,
   loadProfileState,
   mutateAccess,
+  userAuthStatus,
+  userChatsView,
+  userLoginComplete,
+  userLoginStart,
 } from './api';
 import { activateProfile, listBots, listProfiles } from './fleet';
 import { onboardCreate, onboardState, onboardValidate } from './onboard';
@@ -214,6 +219,46 @@ async function route(
   if (path === '/api/chats' && g) {
     const profile = url.searchParams.get('profile') ?? (await readActiveProfile(deps.rootDir));
     sendJson(res, 200, await listChats(profile ? sup.channelFor(profile) : undefined));
+    return;
+  }
+
+  // --- "我的群": owner's groups via user identity (lark-cli device-flow auth) ---
+  if (path === '/api/auth/status' && g) {
+    const profile = url.searchParams.get('profile') ?? (await readActiveProfile(deps.rootDir));
+    if (!profile) throw new HttpError(400, 'no profile');
+    sendJson(res, 200, await userAuthStatus(profile, deps.rootDir));
+    return;
+  }
+  if (path === '/api/auth/login/start' && p) {
+    const body = (await readJsonBody(req)) as { profile?: string; scopes?: unknown };
+    const profile = body.profile ?? (await readActiveProfile(deps.rootDir));
+    if (!profile) throw new HttpError(400, 'profile is required');
+    const scopes = Array.isArray(body.scopes)
+      ? body.scopes.filter((s): s is string => typeof s === 'string')
+      : undefined;
+    sendJson(res, 200, await userLoginStart(profile, deps.rootDir, scopes));
+    return;
+  }
+  if (path === '/api/auth/login/complete' && p) {
+    const body = (await readJsonBody(req)) as { profile?: string; deviceCode?: string };
+    const profile = body.profile ?? (await readActiveProfile(deps.rootDir));
+    if (!profile) throw new HttpError(400, 'profile is required');
+    sendJson(res, 200, await userLoginComplete(profile, deps.rootDir, body));
+    return;
+  }
+  if (path === '/api/user-chats' && g) {
+    const profile = url.searchParams.get('profile') ?? (await readActiveProfile(deps.rootDir));
+    if (!profile) throw new HttpError(400, 'no profile');
+    const query = url.searchParams.get('query') ?? undefined;
+    const pageToken = url.searchParams.get('pageToken') ?? undefined;
+    sendJson(res, 200, await userChatsView(profile, deps.rootDir, sup.channelFor(profile), { query, pageToken }));
+    return;
+  }
+  if (path === '/api/chats/add-bot' && p) {
+    const body = (await readJsonBody(req)) as { profile?: string; chatId?: string };
+    const profile = body.profile ?? (await readActiveProfile(deps.rootDir));
+    if (!profile) throw new HttpError(400, 'profile is required');
+    sendJson(res, 200, await addBotToChatView(profile, deps.rootDir, body));
     return;
   }
 

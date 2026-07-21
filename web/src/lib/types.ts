@@ -65,6 +65,29 @@ export interface KnownChat {
   name: string;
 }
 
+/** Owner user-identity auth status (for the "我的群" picker). */
+export interface UserAuthStatus {
+  loggedIn: boolean;
+  userName?: string;
+  openId?: string;
+  scopes: string[];
+}
+
+/** OAuth device-flow start response. */
+export interface DeviceLogin {
+  verificationUrl: string;
+  userCode?: string;
+  deviceCode: string;
+  expiresIn?: number;
+}
+
+/** A group the owner is in (for the "我的群" picker). */
+export interface UserChat {
+  id: string;
+  name: string;
+  botInIt: boolean;
+}
+
 export interface OnboardState {
   hasConfig: boolean;
   activeProfile?: string;

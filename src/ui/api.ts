@@ -1,5 +1,16 @@
 import type { LarkChannel } from '@larksuite/channel';
 import { fetchKnownChats } from '../bot/lark-info';
+import {
+  ADD_BOT_SCOPES,
+  addBotToChat,
+  completeDeviceLogin,
+  getUserAuthStatus,
+  hasScope,
+  listUserChats,
+  searchUserChats,
+  startDeviceLogin,
+  type AddBotResult,
+} from '../lark-cli/user-im';
 import { resolveAppPaths } from '../config/app-paths';
 import { loadRootConfig, runtimeProfileConfig } from '../config/profile-store';
 import {
@@ -347,4 +358,92 @@ export async function listChats(channel: LarkChannel | undefined) {
   if (!channel) return { chats: [] };
   const chats = await fetchKnownChats(channel).catch(() => []);
   return { chats };
+}
+
+// ── user-identity group picker (lark-cli, owner's authorization) ─────────────
+
+/** Auth status for the owner's user identity (for the "我的群" flow). */
+export async function userAuthStatus(profile: string, rootDir?: string) {
+  return getUserAuthStatus({ profile, rootDir });
+}
+
+/**
+ * Kick off the OAuth device flow; returns a URL the user opens to authorize.
+ * `scopes` defaults (in user-im) to just the view-groups scope — the caller
+ * passes the add-member scope only when the user actually needs it.
+ */
+export async function userLoginStart(profile: string, rootDir: string | undefined, scopes?: string[]) {
+  try {
+    return await startDeviceLogin({ profile, rootDir }, scopes);
+  } catch (err) {
+    throw new ApiError(400, err instanceof Error ? err.message : String(err));
+  }
+}
+
+/** Finish the device flow after the user authorized in the browser. */
+export async function userLoginComplete(profile: string, rootDir: string | undefined, body: unknown) {
+  const fv = asRecord(body);
+  const deviceCode = typeof fv.deviceCode === 'string' ? fv.deviceCode : '';
+  if (!deviceCode) throw new ApiError(400, 'deviceCode is required');
+  const r = await completeDeviceLogin({ profile, rootDir }, deviceCode);
+  if (!r.ok) throw new ApiError(400, r.message ?? '授权尚未完成');
+  return { ok: true };
+}
+
+export interface UserChatView {
+  id: string;
+  name: string;
+  /** True when the bot is already a member (allowlisting it takes effect). */
+  botInIt: boolean;
+}
+
+/**
+ * List the owner's groups (as the user) and mark which ones the bot is already
+ * in (by cross-referencing the bot's own chat list from the live channel).
+ */
+export async function userChatsView(
+  profile: string,
+  rootDir: string | undefined,
+  channel: LarkChannel | undefined,
+  opts: { query?: string; pageToken?: string } = {},
+): Promise<{ chats: UserChatView[]; nextPageToken?: string; botKnown: boolean }> {
+  const query = (opts.query ?? '').trim();
+  let page;
+  try {
+    page = query
+      ? await searchUserChats({ profile, rootDir }, { query, pageToken: opts.pageToken })
+      : await listUserChats({ profile, rootDir }, { pageToken: opts.pageToken });
+  } catch (err) {
+    throw new ApiError(400, err instanceof Error ? err.message : String(err));
+  }
+  const botChats = channel ? await fetchKnownChats(channel).catch(() => []) : [];
+  const botIds = new Set(botChats.map((c) => c.id));
+  return {
+    // botKnown=false (offline) → we can't tell membership, so don't claim "in".
+    botKnown: Boolean(channel),
+    chats: page.chats.map((c) => ({ ...c, botInIt: botIds.has(c.id) })),
+    ...(page.nextPageToken ? { nextPageToken: page.nextPageToken } : {}),
+  };
+}
+
+/** Add the bot to a group the owner is in (as the user). */
+export async function addBotToChatView(
+  profile: string,
+  rootDir: string | undefined,
+  body: unknown,
+): Promise<AddBotResult> {
+  const fv = asRecord(body);
+  const chatId = typeof fv.chatId === 'string' ? fv.chatId.trim() : '';
+  if (!chatId) throw new ApiError(400, 'chatId is required');
+  // The listing flow only asks for the view scope; adding a member needs the
+  // write scope. If it's missing, ask the UI to run a targeted re-auth rather
+  // than surfacing a confusing permission error from the API.
+  const status = await getUserAuthStatus({ profile, rootDir });
+  if (!status.loggedIn || !hasScope(status, ADD_BOT_SCOPES)) {
+    return { ok: false, pending: false, needAuth: true, message: '拉bot进群需要额外授权（添加群成员）' };
+  }
+  const state = await loadProfileState(profile, rootDir);
+  const botAppId = state.cfg.accounts?.app?.id;
+  if (!botAppId) throw new ApiError(400, 'profile 未配置 app');
+  return addBotToChat({ profile, rootDir }, chatId, botAppId);
 }
