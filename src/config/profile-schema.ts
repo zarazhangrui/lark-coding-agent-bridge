@@ -1,6 +1,7 @@
 import type {
   AppCredentials,
   AppPreferences,
+  DesktopConfig,
   MessageReplyMode,
   SecretsConfig,
 } from './schema';
@@ -98,6 +99,7 @@ export interface ProfileConfig {
   };
   secrets?: SecretsConfig;
   preferences: Omit<AppPreferences, 'access' | 'requireMentionInGroup'>;
+  desktop?: DesktopConfig;
   access: ProfileAccess;
   workspaces: {
     default?: string;
@@ -171,6 +173,7 @@ export function normalizeProfileConfig(input: unknown): ProfileConfig {
     accounts?: unknown;
     secrets?: SecretsConfig;
     preferences?: (AppPreferences & { access?: Partial<ProfileAccess> }) | undefined;
+    desktop?: unknown;
     access?: Partial<ProfileAccess>;
     workspaces?: {
       default?: unknown;
@@ -200,6 +203,7 @@ export function normalizeProfileConfig(input: unknown): ProfileConfig {
   }
 
   const preferences = normalizePreferences(raw.preferences);
+  const desktop = normalizeDesktop(raw.desktop);
   const access = normalizeAccess(
     raw.access ?? raw.preferences?.access,
     raw.preferences?.requireMentionInGroup,
@@ -220,6 +224,7 @@ export function normalizeProfileConfig(input: unknown): ProfileConfig {
     accounts,
     ...(raw.secrets ? { secrets: raw.secrets } : {}),
     preferences,
+    ...(desktop ? { desktop } : {}),
     access,
     workspaces,
     sandbox,
@@ -273,6 +278,17 @@ function normalizePreferences(
     };
   }
   return rest;
+}
+
+function normalizeDesktop(input: unknown): DesktopConfig | undefined {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return undefined;
+  const raw = input as { floatingBall?: unknown };
+  if (!raw.floatingBall || typeof raw.floatingBall !== 'object' || Array.isArray(raw.floatingBall)) {
+    return undefined;
+  }
+  const floatingBall = raw.floatingBall as { enabled?: unknown };
+  if (typeof floatingBall.enabled !== 'boolean') return undefined;
+  return { floatingBall: { enabled: floatingBall.enabled } };
 }
 
 function isMessageReply(value: unknown): value is MessageReplyMode {

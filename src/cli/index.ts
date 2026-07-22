@@ -45,6 +45,7 @@ program
   .option('--app-secret <secret>', 'App Secret for --app-id; prefer interactive input on shared machines')
   .option('--tenant <tenant>', 'tenant for --app-id (feishu or lark; default feishu)')
   .option('--skip-check-lark-cli', 'skip lark-cli pre-flight check (auto-install + bind)')
+  .option('--no-floating-ball', 'do not start the macOS desktop floating status ball')
   .action(async (opts: {
     config?: string;
     profile?: string;
@@ -54,8 +55,9 @@ program
     appSecret?: string;
     tenant?: string;
     skipCheckLarkCli?: boolean;
+    floatingBall?: boolean;
   }) => {
-    await runStart(opts);
+    await runStart({ ...opts, noFloatingBall: opts.floatingBall === false });
   });
 
 program
@@ -160,6 +162,7 @@ program
   .option('--app-secret <secret>', 'App Secret for --app-id; prefer interactive input on shared machines')
   .option('--tenant <tenant>', 'tenant for --app-id (feishu or lark; default feishu)')
   .option('--skip-check-lark-cli', 'skip lark-cli pre-flight check (auto-install + bind)')
+  .option('--no-floating-ball', 'do not start the macOS desktop floating status ball')
   .action(async (opts: {
     profile?: string;
     agent?: string;
@@ -168,8 +171,9 @@ program
     appSecret?: string;
     tenant?: string;
     skipCheckLarkCli?: boolean;
+    floatingBall?: boolean;
   }) => {
-    await runServiceStart(opts);
+    await runServiceStart({ ...opts, noFloatingBall: opts.floatingBall === false });
   });
 
 program

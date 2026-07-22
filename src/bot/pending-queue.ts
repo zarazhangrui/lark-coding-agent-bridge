@@ -62,6 +62,12 @@ export class PendingQueue {
     this.blocked.clear();
   }
 
+  totalSize(): number {
+    let count = 0;
+    for (const entry of this.map.values()) count += entry.messages.length;
+    return count;
+  }
+
   /** Pause the debounce timer; pushed messages keep accumulating. */
   block(scope: string): void {
     if (this.blocked.has(scope)) return;
