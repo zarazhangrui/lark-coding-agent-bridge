@@ -16,4 +16,11 @@ describe('CLI command registration', () => {
     const appSecretOptions = source.match(/--app-secret <secret>/g) ?? [];
     expect(appSecretOptions.length).toBeGreaterThanOrEqual(3);
   });
+
+  it('registers the Multica issue create wrapper command', async () => {
+    const source = await readFile(join(process.cwd(), 'src', 'cli', 'index.ts'), 'utf8');
+
+    expect(source).toMatch(/\.command\(['"]multica-issue-create['"]\)/);
+    expect(source).toContain('runMulticaIssueCreate');
+  });
 });
