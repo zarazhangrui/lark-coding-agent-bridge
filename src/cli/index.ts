@@ -2,6 +2,7 @@ import { Command } from 'commander';
 import pkg from '../../package.json';
 import { formatAgentPreflightDiagnostic, getAgentPreflightDiagnostic } from '../agent/preflight';
 import { runMigrate } from './commands/migrate';
+import { multicaIssueCreateArgsFromProcessArgv, runMulticaIssueCreate } from './commands/multica-issue';
 import { runKillCli, runPs } from './commands/ps';
 import {
   runSecretsGet,
@@ -66,6 +67,16 @@ program
   .option('--agent <kind>', 'agent kind for legacy v1 profile migration (claude or codex)')
   .action(async (opts: { config?: string; profile?: string; agent?: string }) => {
     await runMigrate(opts);
+  });
+
+program
+  .command('multica-issue-create')
+  .description('Create a Multica issue, automatically attaching a recent log snapshot for Bug issues')
+  .allowUnknownOption(true)
+  .allowExcessArguments(true)
+  .argument('[args...]', 'arguments passed to `multica issue create`')
+  .action(async () => {
+    process.exitCode = await runMulticaIssueCreate(multicaIssueCreateArgsFromProcessArgv(process.argv));
   });
 
 const profile = program
