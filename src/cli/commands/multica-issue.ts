@@ -38,7 +38,7 @@ export async function runMulticaIssueCreate(
     }
 
     const createArgs = ['issue', 'create', ...args];
-    if (snapshot) createArgs.push('--attachment', snapshot.path);
+    if (snapshot) createArgs.push('--attachment', snapshot.path, '--allow-external-file');
 
     const result = (deps.spawnSync ?? spawnProcessSync)('multica', createArgs, { stdio: 'inherit' });
     return typeof result.status === 'number' ? result.status : 1;

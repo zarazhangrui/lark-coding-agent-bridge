@@ -58,6 +58,7 @@ describe('runMulticaIssueCreate', () => {
     expect(status).toBe(0);
     const args = captured.mock.calls[0]![1] as string[];
     expect(args.slice(0, 4)).toEqual(['issue', 'create', '--title', 'Bug: tool call failed']);
+    expect(args).toContain('--allow-external-file');
     expect(attachmentPath).toMatch(/bug-log-snapshot-\d+-\d+\.log$/);
     expect(snapshot.startsWith('line 11\n')).toBe(true);
     expect(snapshot).toContain('line 510');
