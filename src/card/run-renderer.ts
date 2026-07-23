@@ -34,6 +34,9 @@ export function renderCard(state: RunState, options: RunCardRenderOptions = {}):
       elements.push(...renderToolGroup(group.tools, state.terminal !== 'running'));
     }
   }
+  if (state.finalText?.trim()) {
+    elements.push(markdown(state.finalText.trim()));
+  }
 
   if (state.terminal === 'interrupted') {
     elements.push(noteMd('_⏹ 已被中断_'));

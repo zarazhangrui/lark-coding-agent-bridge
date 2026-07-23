@@ -85,6 +85,16 @@ describe('run card renderer snapshots', () => {
     expect(renderText(stateFrom([{ type: 'error', message: 'process failed', terminationReason: 'failed' }]))).toMatchSnapshot();
   });
 
+  it('renders final_text-only answers as visible content', () => {
+    const state = stateFrom([
+      { type: 'final_text', content: 'hello from opencode' },
+      { type: 'done', terminationReason: 'normal' },
+    ]);
+
+    expect(renderText(state)).toBe('hello from opencode');
+    expect(JSON.stringify(renderCard(state))).toContain('hello from opencode');
+  });
+
   it('injects signed bridge callback values for managed run controls', () => {
     const card = renderCard(initialState, {
       signCallback: (action) => `token-for-${action}`,

@@ -111,6 +111,26 @@ describe('listAllProfiles', () => {
       { name: 'codex-dev', active: true },
     ]);
   });
+
+  it('does not treat a malformed configured profile dropped during normalization as orphan state', async () => {
+    const root = await makeRoot();
+    await writeRootConfig(root, {
+      activeProfile: 'claude',
+      profiles: {
+        claude: profile('claude', 'cli_claude'),
+        opencode: {
+          ...profile('claude', 'cli_opencode'),
+          agentKind: 'opencode',
+        },
+      },
+    } as Pick<RootConfig, 'activeProfile' | 'profiles'>);
+    await mkdir(join(root, 'profiles', 'claude'), { recursive: true });
+    await mkdir(join(root, 'profiles', 'opencode'), { recursive: true });
+
+    await expect(listAllProfiles(root)).resolves.toMatchObject([
+      { name: 'claude', active: true },
+    ]);
+  });
 });
 
 function profile(agentKind: AgentKind, appId: string) {

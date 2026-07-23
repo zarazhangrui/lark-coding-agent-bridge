@@ -14,6 +14,7 @@ export interface BootstrapProfileInput {
   workspace?: string;
   defaultWorkspace?: string;
   codexBinaryPath?: string;
+  opencodeBinaryPath?: string;
   profileDir?: string;
 }
 
@@ -29,12 +30,17 @@ export async function createBootstrapProfileConfig(
     input.agentKind === 'codex'
       ? await createBootstrapCodexConfig(input.codexBinaryPath)
       : undefined;
+  const opencode =
+    input.agentKind === 'opencode'
+      ? await createBootstrapOpencodeConfig(input.opencodeBinaryPath)
+      : undefined;
   const profile = createDefaultProfileConfig({
     agentKind: input.agentKind,
     accounts: input.accounts,
     preferences: input.preferences,
     secrets: input.secrets,
     ...(codex ? { codex } : {}),
+    ...(opencode ? { opencode } : {}),
   });
   if (workspace) {
     profile.workspaces = {
@@ -44,6 +50,9 @@ export async function createBootstrapProfileConfig(
   }
   if (input.profileDir && profile.codex?.inheritCodexHome === false) {
     await mkdir(join(input.profileDir, 'codex-home'), { recursive: true });
+  }
+  if (input.profileDir && profile.opencode?.inheritConfig === false) {
+    await mkdir(join(input.profileDir, 'opencode-config'), { recursive: true });
   }
   return profile;
 }
@@ -79,6 +88,33 @@ export async function createBootstrapCodexConfig(binaryPath: string | undefined)
 }
 
 function codexBootstrapBinaryErrorCode(errno: string | undefined) {
+  if (errno === 'EACCES' || errno === 'EPERM') return 'agent-binary-not-executable';
+  if (errno === 'ELOOP' || errno === 'ENOTDIR' || errno === 'EINVAL') {
+    return 'agent-binary-resolve-failed';
+  }
+  return 'agent-binary-not-found';
+}
+
+export async function createBootstrapOpencodeConfig(binaryPath: string | undefined) {
+  const command = binaryPath ?? process.env.LARK_CHANNEL_OPENCODE_BIN ?? 'opencode';
+  let resolvedBinary: string;
+  try {
+    resolvedBinary = await resolveExecutablePath(command);
+  } catch (err) {
+    const errno = (err as NodeJS.ErrnoException).code;
+    throw new AgentPreflightError({
+      code: opencodeBootstrapBinaryErrorCode(errno),
+      agentId: 'opencode',
+      agentName: 'OpenCode',
+      command,
+      binaryPath: command,
+      errno,
+    });
+  }
+  return { binaryPath: resolvedBinary };
+}
+
+function opencodeBootstrapBinaryErrorCode(errno: string | undefined) {
   if (errno === 'EACCES' || errno === 'EPERM') return 'agent-binary-not-executable';
   if (errno === 'ELOOP' || errno === 'ENOTDIR' || errno === 'EINVAL') {
     return 'agent-binary-resolve-failed';

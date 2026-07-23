@@ -6,6 +6,7 @@ import {
   assertReconnectAgentKindUnchanged,
   createRuntimeAgent,
 } from '../../../src/cli/commands/start.js';
+import { OpencodeAdapter } from '../../../src/agent/opencode/adapter.js';
 import { createDefaultProfileConfig } from '../../../src/config/profile-schema.js';
 import { createRuntimeProfileConfig } from '../../../src/runtime/profile-runtime.js';
 
@@ -60,6 +61,21 @@ describe('start runtime agent factory', () => {
     expect(agent.displayName).toBe('Codex CLI');
   });
 
+  it('creates an Opencode runtime agent when an opencode profile has a binary path', () => {
+    const agent = createRuntimeAgent(
+      createDefaultProfileConfig({
+        agentKind: 'opencode',
+        accounts: appAccount(),
+        opencode: { binaryPath: '/usr/local/bin/opencode' },
+      }),
+      { profileDir: '/tmp/lark-channel-bridge/profiles/opencode-e2e' },
+    );
+
+    expect(agent.id).toBe('opencode');
+    expect(agent.displayName).toBe('OpenCode');
+    expect(agent).toBeInstanceOf(OpencodeAdapter);
+  });
+
   it('seeds a default Codex binary when bootstrapping a new Codex profile', () => {
     const profile = createRuntimeProfileConfig({
       agentKind: 'codex',
@@ -67,6 +83,15 @@ describe('start runtime agent factory', () => {
     });
 
     expect(profile.codex?.binaryPath).toBe('codex');
+  });
+
+  it('seeds a default Opencode binary when bootstrapping a new Opencode profile', () => {
+    const profile = createRuntimeProfileConfig({
+      agentKind: 'opencode',
+      accounts: appAccount(),
+    });
+
+    expect(profile.opencode?.binaryPath).toBe('opencode');
   });
 
   it('updates the process registry before releasing the old app lock during reconnect', async () => {

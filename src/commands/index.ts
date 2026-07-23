@@ -3,8 +3,8 @@ import { readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, isAbsolute } from 'node:path';
 import type { LarkChannel, NormalizedMessage } from '@larksuite/channel';
-import { claudeCapability, codexCapability } from '../agent/capability';
-import { DEFAULT_MODEL, normalizeModelSelection, supportedModels } from '../agent/models';
+import { claudeCapability, codexCapability, opencodeCapability } from '../agent/capability';
+import { DEFAULT_MODEL, fetchOpencodeModels, isValidModelSelection, normalizeModelSelection, supportedModels, type ModelOption } from '../agent/models';
 import type { AgentAdapter } from '../agent/types';
 import type { ActiveRuns } from '../bot/active-runs';
 import {
@@ -67,6 +67,10 @@ import {
   type CodexThreadHistoryEntry,
   type ListCodexThreadHistoryOptions,
 } from '../session/codex-history';
+import {
+  listOpencodeSessionHistory,
+  type OpencodeSessionHistoryEntry,
+} from '../session/opencode-history';
 import type { SessionCatalog, SessionCatalogIdentity } from '../session/catalog';
 import { isAlive, readAndPrune, resolveTarget } from '../runtime/registry';
 import { readUiSidecar } from '../ui/sidecar';
@@ -134,6 +138,9 @@ export interface CommandContext {
     options: ListCodexThreadHistoryOptions,
   ) => Promise<CodexThreadHistoryEntry[]>;
   claudeHistoryProvider?: (cwd: string, limit: number) => Promise<SessionSummary[]>;
+  opencodeHistoryProvider?: (
+    options: { binary: string; cwd: string; limit: number; profileStateDir?: string; inheritConfig?: boolean },
+  ) => Promise<OpencodeSessionHistoryEntry[]>;
   /** Set when invoked from a CardKit 2.0 form submit. Keys are input `name`s. */
   formValue?: Record<string, unknown>;
   /** True when this invocation came from a card button click rather than a
@@ -146,7 +153,7 @@ type Handler = (args: string, ctx: CommandContext) => Promise<void>;
 
 interface ResumeCandidate {
   scopeId: string;
-  agentId: 'claude' | 'codex';
+  agentId: 'claude' | 'codex' | 'opencode';
   cwdRealpath: string;
   policyFingerprint: string;
   sessionId?: string;
@@ -546,6 +553,41 @@ async function handleResume(args: string, ctx: CommandContext): Promise<void> {
     return;
   }
 
+  if (ctx.controls.profileConfig.agentKind === 'opencode') {
+    const identity = ctx.sessionCatalogIdentity;
+    const entry =
+      ctx.sessionCatalog && identity
+        ? ctx.sessionCatalog.activeFor(identity)
+        : undefined;
+    const history = await listOpencodeResumeHistory(ctx, cwd, limit);
+    if (history.length > 0 && identity) {
+      const entries = history.map((sess) => {
+        const nonce = issueResumeCandidate(identity, { sessionId: sess.sessionId });
+        return {
+          sessionId: nonce,
+          preview: sess.preview,
+          relTime: formatRelTime(sess.updatedAtMs),
+          detail: 'OpenCode',
+          current: sess.sessionId === entry?.sessionId,
+        };
+      });
+      const card = resumeCard(cwd, entries);
+      await ctx.channel.send(ctx.msg.chatId, { card }, commandReplyOptions(ctx));
+      return;
+    }
+    if (entry?.sessionId && identity) {
+      const nonce = issueResumeCandidate(identity, { sessionId: entry.sessionId });
+      await reply(
+        ctx,
+        `当前 OpenCode session 可恢复。\n使用 \`/resume use ${nonce}\` 恢复（10 分钟内有效）。`,
+      );
+      return;
+    }
+    const card = resumeCard(cwd, []);
+    await ctx.channel.send(ctx.msg.chatId, { card }, commandReplyOptions(ctx));
+    return;
+  }
+
   if (ctx.controls.profileConfig.agentKind === 'codex') {
     const identity = ctx.sessionCatalogIdentity;
     const entry =
@@ -615,7 +657,7 @@ async function applyResume(sessionId: string, ctx: CommandContext): Promise<void
       } else {
         ctx.sessionCatalog.upsertActive({
           scopeId: ctx.sessionCatalogIdentity.scopeId,
-          agentId: 'claude',
+          agentId: ctx.sessionCatalogIdentity.agentId,
           cwdRealpath: ctx.sessionCatalogIdentity.cwdRealpath,
           policyFingerprint: ctx.sessionCatalogIdentity.policyFingerprint,
           sessionId: resolved.sessionId!,
@@ -635,7 +677,7 @@ async function applyResume(sessionId: string, ctx: CommandContext): Promise<void
       return;
     }
     ctx.activeRuns.interrupt(ctx.scope);
-    if (ctx.sessionCatalogIdentity.agentId === 'claude') {
+    if (ctx.sessionCatalogIdentity.agentId === 'claude' || ctx.sessionCatalogIdentity.agentId === 'opencode') {
       ctx.sessions.set(ctx.scope, sessionId, ctx.sessionCatalogIdentity.cwdRealpath);
     }
     await reply(ctx, RESUME_APPLIED_REPLY);
@@ -644,6 +686,10 @@ async function applyResume(sessionId: string, ctx: CommandContext): Promise<void
 
   if (ctx.controls.profileConfig.agentKind === 'codex') {
     await reply(ctx, '当前上下文没有可恢复的 Codex thread，请先在当前工作区完成一次运行。');
+    return;
+  }
+  if (ctx.controls.profileConfig.agentKind === 'opencode') {
+    await reply(ctx, '当前上下文没有可恢复的 OpenCode session，请先在当前工作区完成一次运行。');
     return;
   }
 
@@ -689,6 +735,7 @@ function consumeResumeCandidate(
     candidate.cwdRealpath !== identity.cwdRealpath ||
     candidate.policyFingerprint !== identity.policyFingerprint ||
     (identity.agentId === 'claude' && !candidate.sessionId) ||
+    (identity.agentId === 'opencode' && !candidate.sessionId) ||
     (identity.agentId === 'codex' && !candidate.threadId)
   ) {
     return undefined;
@@ -734,6 +781,32 @@ async function listCodexResumeHistory(
     });
   } catch (err) {
     log.warn('session', 'codex-history-failed', {
+      message: err instanceof Error ? err.message : String(err),
+    });
+    return [];
+  }
+}
+
+async function listOpencodeResumeHistory(
+  ctx: CommandContext,
+  cwd: string,
+  limit: number,
+): Promise<OpencodeSessionHistoryEntry[]> {
+  const opencode = ctx.controls.profileConfig.opencode;
+  const binary = opencode?.binaryPath;
+  if (!binary) return [];
+
+  const provider = ctx.opencodeHistoryProvider ?? listOpencodeSessionHistory;
+  try {
+    return await provider({
+      binary,
+      cwd,
+      limit,
+      profileStateDir: commandProfilePaths(ctx).profileDir,
+      inheritConfig: opencode.inheritConfig,
+    });
+  } catch (err) {
+    log.warn('session', 'opencode-history-failed', {
       message: err instanceof Error ? err.message : String(err),
     });
     return [];
@@ -1119,7 +1192,9 @@ async function handleDoctor(args: string, ctx: CommandContext): Promise<void> {
   const capability =
     ctx.controls.profileConfig.agentKind === 'codex'
       ? codexCapability(ctx.controls.profileConfig)
-      : claudeCapability(ctx.controls.profileConfig);
+      : ctx.controls.profileConfig.agentKind === 'opencode'
+        ? opencodeCapability(ctx.controls.profileConfig)
+        : claudeCapability(ctx.controls.profileConfig);
   const policy = evaluateRunPolicy({
     scope: {
       source: 'im',
@@ -1719,6 +1794,16 @@ async function showConfigForm(ctx: CommandContext): Promise<void> {
       .catch(() => {}),
   ]);
 
+  // Pre-fetch opencode model list for the dynamic picker; failures fall back to DEFAULT_MODEL only.
+  let opencodeModelOptions: ModelOption[] | undefined;
+  if (ctx.controls.profileConfig.agentKind === 'opencode') {
+    const binaryPath = ctx.controls.profileConfig.opencode?.binaryPath;
+    if (binaryPath) {
+      const fetched = await fetchOpencodeModels(binaryPath);
+      opencodeModelOptions = [{ value: DEFAULT_MODEL, label: '跟随默认（不指定）' }, ...fetched];
+    }
+  }
+
   const ms = getRunIdleTimeoutMs(ctx.controls.cfg);
   const access = ctx.controls.profileConfig.access;
   // Surface the local web console URL when the supervisor (`--web-ui`) is
@@ -1733,6 +1818,7 @@ async function showConfigForm(ctx: CommandContext): Promise<void> {
       ctx.controls.profileConfig.agentKind,
       ctx.controls.cfg.preferences?.model,
     ),
+    modelOptions: opencodeModelOptions,
     messageReply: getMessageReplyMode(ctx.controls.cfg),
     showToolCalls: getShowToolCalls(ctx.controls.cfg),
     cotMessages: getCotMessages(ctx.controls.cfg),
@@ -1792,7 +1878,7 @@ async function submitConfig(ctx: CommandContext): Promise<void> {
   // tidy (resolveModelArg treats both the same way).
   const agentKind = ctx.controls.profileConfig.agentKind;
   const rawModel = String(fv.model ?? '').trim();
-  const modelValid = rawModel !== '' && supportedModels(agentKind).some((m) => m.value === rawModel);
+  const modelValid = isValidModelSelection(agentKind, rawModel);
   const modelSelection = modelValid
     ? rawModel
     : normalizeModelSelection(agentKind, ctx.controls.cfg.preferences?.model);
@@ -1860,6 +1946,16 @@ async function submitConfig(ctx: CommandContext): Promise<void> {
 
   const formMsgId = ctx.msg.messageId;
   const access = ctx.controls.profileConfig.access;
+
+  // Fetch opencode model options for the saved-config card label.
+  let opencodeModelOptionsForSave: ModelOption[] | undefined;
+  if (agentKind === 'opencode') {
+    const binaryPath = ctx.controls.profileConfig.opencode?.binaryPath;
+    if (binaryPath) {
+      const fetched = await fetchOpencodeModels(binaryPath);
+      opencodeModelOptionsForSave = [{ value: DEFAULT_MODEL, label: '跟随默认（不指定）' }, ...fetched];
+    }
+  }
 
   // Detach: same reason as account submit — Lark's client locks the form
   // while the cardAction handler is running. Wait out FORM_SETTLE_MS *after*
@@ -1946,6 +2042,7 @@ async function submitConfig(ctx: CommandContext): Promise<void> {
         agentKind,
         mode,
         model: modelSelection,
+        modelOptions: opencodeModelOptionsForSave,
         messageReply,
         showToolCalls,
         cotMessages,
