@@ -20,8 +20,12 @@ export interface UnitInputs {
    * tools (lark-cli, claude) can be resolved by name. systemd user units
    * inherit a minimal env otherwise. */
   envPath: string;
-  /** Profile this service instance is pinned to. */
+  /** Service id (profile name, or the reserved supervisor id) — drives the
+   * unit name and log paths. */
   profile: string;
+  /** CLI args after the entry path, e.g. `['run', '--profile', 'claude']` or
+   * `['run', '--web-ui']`. */
+  runArgs: string[];
   /** Root directory for config/profile state. */
   channelHome: string;
 }
@@ -41,6 +45,9 @@ export interface UnitInputs {
  */
 export function buildUnit(inputs: UnitInputs): string {
   const escape = (s: string): string => s.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+  // Profile names / flags are validated safe tokens (no spaces), so appending
+  // them unquoted is fine.
+  const runArgs = inputs.runArgs.join(' ');
   return `[Unit]
 Description=Lark Channel Bridge bot
 After=network-online.target
@@ -48,7 +55,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart="${escape(inputs.nodePath)}" "${escape(inputs.bridgeEntryPath)}" run --profile "${escape(inputs.profile)}"
+ExecStart="${escape(inputs.nodePath)}" "${escape(inputs.bridgeEntryPath)}" ${runArgs}
 Restart=always
 RestartSec=5
 StandardOutput=append:${daemonStdoutPath(inputs.profile)}
@@ -61,7 +68,7 @@ WantedBy=default.target
 `;
 }
 
-export async function writeUnit(profile: string): Promise<void> {
+export async function writeUnit(profile: string, runArgs: string[] = ['run']): Promise<void> {
   const bridgeEntryPath = process.argv[1];
   if (!bridgeEntryPath) {
     throw new Error('cannot determine bridge entry path (process.argv[1] is empty)');
@@ -71,6 +78,7 @@ export async function writeUnit(profile: string): Promise<void> {
     bridgeEntryPath,
     envPath: process.env.PATH ?? '',
     profile,
+    runArgs,
     channelHome: paths.rootDir,
   });
   const unitPath = systemdUnitPath(profile);

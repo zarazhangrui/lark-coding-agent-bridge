@@ -164,6 +164,57 @@ describe('profile store canonical serialization', () => {
     });
   });
 
+  it('persists deployment mode across save→load round-trip', async () => {
+    const root = await tmpRoot();
+    const configPath = join(root, 'config.json');
+    const profile = createDefaultProfileConfig({
+      agentKind: 'claude',
+      mode: 'team',
+      accounts: { app },
+    });
+
+    await saveRootConfig({
+      schemaVersion: 2,
+      activeProfile: 'claude',
+      preferences: {},
+      profiles: { claude: profile },
+    }, configPath);
+
+    // On disk: mode is written (not stripped by the serializer).
+    const saved = JSON.parse(await readFile(configPath, 'utf8'));
+    expect(saved.profiles.claude.mode).toBe('team');
+
+    // Reloaded: mode survives, so team mode is not silently lost on restart.
+    const loaded = await loadRootConfig(configPath);
+    expect(loaded?.profiles.claude?.mode).toBe('team');
+  });
+
+  it('persists per-chat @-mention overrides across save→load round-trip', async () => {
+    const root = await tmpRoot();
+    const configPath = join(root, 'config.json');
+    const profile = createDefaultProfileConfig({ agentKind: 'claude', accounts: { app } });
+    profile.access.chatRequireMention = { oc_open: false, oc_strict: true };
+
+    await saveRootConfig({
+      schemaVersion: 2,
+      activeProfile: 'claude',
+      preferences: {},
+      profiles: { claude: profile },
+    }, configPath);
+
+    const saved = JSON.parse(await readFile(configPath, 'utf8'));
+    expect(saved.profiles.claude.access.chatRequireMention).toEqual({
+      oc_open: false,
+      oc_strict: true,
+    });
+
+    const loaded = await loadRootConfig(configPath);
+    expect(loaded?.profiles.claude?.access.chatRequireMention).toEqual({
+      oc_open: false,
+      oc_strict: true,
+    });
+  });
+
   it('marks newly created roots as already evaluated for permission default migration', () => {
     const profile = createDefaultProfileConfig({
       agentKind: 'claude',

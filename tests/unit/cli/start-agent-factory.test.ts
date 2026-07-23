@@ -70,10 +70,11 @@ describe('start runtime agent factory', () => {
   });
 
   it('updates the process registry before releasing the old app lock during reconnect', async () => {
-    const source = await readFile(join(process.cwd(), 'src/cli/commands/start.ts'), 'utf8');
+    // Reconnect ordering now lives in the supervisor's ManagedProfile.restart().
+    const source = await readFile(join(process.cwd(), 'src/runtime/supervisor.ts'), 'utf8');
     const restartStart = source.indexOf('async restart()');
-    const updateIndex = source.indexOf('await updateEntry(entry.id', restartStart);
-    const releaseIndex = source.indexOf('await oldAppLock?.release()', restartStart);
+    const updateIndex = source.indexOf('updateEntry(', restartStart);
+    const releaseIndex = source.indexOf('oldAppLock?.release()', restartStart);
 
     expect(restartStart).toBeGreaterThanOrEqual(0);
     expect(updateIndex).toBeGreaterThanOrEqual(0);
@@ -81,16 +82,22 @@ describe('start runtime agent factory', () => {
     expect(updateIndex).toBeLessThan(releaseIndex);
   });
 
-  it('releases the current runtime locks during graceful shutdown', async () => {
+  it('shuts down the supervisor (releasing profile locks) before exiting', async () => {
+    // Graceful shutdown: the supervisor stops all channels (releasing each
+    // profile's locks) before the process exits.
     const source = await readFile(join(process.cwd(), 'src/cli/commands/start.ts'), 'utf8');
-    const stopStart = source.indexOf('const stop = async');
-    const releaseIndex = source.indexOf('await releaseRuntimeLocks(runtimeLocks)', stopStart);
+    const stopStart = source.indexOf('const shutdown = async');
+    const shutdownIndex = source.indexOf('await supervisor.shutdown()', stopStart);
     const exitIndex = source.indexOf('process.exit(0)', stopStart);
 
     expect(stopStart).toBeGreaterThanOrEqual(0);
-    expect(releaseIndex).toBeGreaterThanOrEqual(0);
+    expect(shutdownIndex).toBeGreaterThanOrEqual(0);
     expect(exitIndex).toBeGreaterThanOrEqual(0);
-    expect(releaseIndex).toBeLessThan(exitIndex);
+    expect(shutdownIndex).toBeLessThan(exitIndex);
+
+    // And each channel's teardown releases its runtime locks.
+    const sup = await readFile(join(process.cwd(), 'src/runtime/supervisor.ts'), 'utf8');
+    expect(sup).toContain('releaseRuntimeLocks(this.locks)');
   });
 
   it('rejects reconnect when a profile changes agent kind in place', () => {

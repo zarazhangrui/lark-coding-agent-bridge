@@ -5,9 +5,11 @@ import {
   canUseDm,
   canUseGroup,
   isCreator,
+  requireMentionForChat,
   type RuntimeControls,
 } from '../../../src/policy/access';
 import { createDefaultProfileConfig, type ProfileConfig } from '../../../src/config/profile-schema';
+import type { AppConfig } from '../../../src/config/schema';
 
 const ownerControls: RuntimeControls = {
   botOwnerId: 'ou_owner',
@@ -135,6 +137,27 @@ describe('access policy', () => {
         allowedUsers: ['ou_a'],
       }),
     );
+  });
+});
+
+describe('requireMentionForChat', () => {
+  const globalOn = { preferences: { requireMentionInGroup: true } } as AppConfig;
+  const globalOff = { preferences: { requireMentionInGroup: false } } as AppConfig;
+
+  it('follows the global setting when a chat has no override', () => {
+    const profile = profileWithAccess();
+    expect(requireMentionForChat(profile, globalOn, 'oc_x')).toBe(true);
+    expect(requireMentionForChat(profile, globalOff, 'oc_x')).toBe(false);
+  });
+
+  it('lets a per-chat override win over the global setting, both directions', () => {
+    const profile = profileWithAccess({ chatRequireMention: { oc_open: false, oc_strict: true } });
+    // Global requires @, but oc_open overrides to respond-to-all.
+    expect(requireMentionForChat(profile, globalOn, 'oc_open')).toBe(false);
+    // Global responds to all, but oc_strict overrides to require @.
+    expect(requireMentionForChat(profile, globalOff, 'oc_strict')).toBe(true);
+    // An unlisted chat still follows the global setting.
+    expect(requireMentionForChat(profile, globalOn, 'oc_other')).toBe(true);
   });
 });
 

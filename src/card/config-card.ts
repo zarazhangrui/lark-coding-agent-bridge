@@ -22,6 +22,9 @@ export interface ConfigFormOpts {
   allowedChats: string[];
   admins: string[];
   knownChats: KnownChat[];
+  /** URL of the running local web console (supervisor `--web-ui` mode). Shown
+   * at the top of the card when present; omitted when no console is running. */
+  consoleUrl?: string;
 }
 
 function collapsedAccessPanel(title: string, elements: object[]): object {
@@ -118,6 +121,16 @@ export function configFormCard(opts: ConfigFormOpts): object {
             '⚙️ **偏好设置**\n\n' +
             '调整 bot 的行为偏好。改完点提交后写入当前 profile 配置；消息和访问控制设置立即生效。',
         },
+        ...(opts.consoleUrl
+          ? [
+              {
+                tag: 'markdown',
+                content:
+                  `🖥️ **Web 控制台**（本机 127.0.0.1，可管理所有 profile 的启动/停止与配置）\n` +
+                  `[${opts.consoleUrl}](${opts.consoleUrl})`,
+              },
+            ]
+          : []),
         { tag: 'hr' },
         {
           tag: 'form',

@@ -18,8 +18,12 @@ export interface LauncherInputs {
   bridgeEntryPath: string;
   /** PATH for the child process; baked into the .cmd via `set PATH=`. */
   envPath: string;
-  /** Profile this service instance is pinned to. */
+  /** Service id (profile name, or the reserved supervisor id) — drives the
+   * task name and log paths. */
   profile: string;
+  /** CLI args after the entry path, e.g. `['run', '--profile', 'claude']` or
+   * `['run', '--web-ui']`. */
+  runArgs: string[];
   /** Root directory for config/profile state. */
   channelHome: string;
 }
@@ -37,16 +41,18 @@ export interface LauncherInputs {
  * daemon restarts.
  */
 export function buildLauncherCmd(inputs: LauncherInputs): string {
+  // Profile names / flags are validated safe tokens (no spaces).
+  const runArgs = inputs.runArgs.join(' ');
   return [
     '@echo off',
     `set "LARK_CHANNEL_HOME=${inputs.channelHome}"`,
     `set "PATH=${inputs.envPath}"`,
-    `"${inputs.nodePath}" "${inputs.bridgeEntryPath}" run --profile "${inputs.profile}" >> "${daemonStdoutPath(inputs.profile)}" 2>> "${daemonStderrPath(inputs.profile)}"`,
+    `"${inputs.nodePath}" "${inputs.bridgeEntryPath}" ${runArgs} >> "${daemonStdoutPath(inputs.profile)}" 2>> "${daemonStderrPath(inputs.profile)}"`,
     '',
   ].join('\r\n');
 }
 
-async function writeLauncherCmd(profile: string): Promise<void> {
+async function writeLauncherCmd(profile: string, runArgs: string[] = ['run']): Promise<void> {
   const bridgeEntryPath = process.argv[1];
   if (!bridgeEntryPath) {
     throw new Error('cannot determine bridge entry path (process.argv[1] is empty)');
@@ -56,6 +62,7 @@ async function writeLauncherCmd(profile: string): Promise<void> {
     bridgeEntryPath,
     envPath: process.env.PATH ?? '',
     profile,
+    runArgs,
     channelHome: paths.rootDir,
   });
   const cmdPath = windowsLauncherCmdPath(profile);
@@ -87,8 +94,11 @@ function runSchtasks(args: string[]): SchtasksResult {
  * The /TR value is the .cmd wrapper path. Schtasks treats /TR as a command
  * line, so wrapping in quotes keeps spaces in the path intact.
  */
-export async function installTask(profile: string): Promise<SchtasksResult> {
-  await writeLauncherCmd(profile);
+export async function installTask(
+  profile: string,
+  runArgs: string[] = ['run'],
+): Promise<SchtasksResult> {
+  await writeLauncherCmd(profile, runArgs);
   return runSchtasks([
     '/Create',
     '/F',
