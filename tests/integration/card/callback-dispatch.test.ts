@@ -1,5 +1,5 @@
 import type { CardActionEvent } from '@larksuite/channel';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ActiveRuns } from '../../../src/bot/active-runs.js';
 import type { ChatModeCache } from '../../../src/bot/chat-mode-cache.js';
 import { PendingQueue } from '../../../src/bot/pending-queue.js';
@@ -8,6 +8,7 @@ import { CallbackNonceStore } from '../../../src/card/callback-store.js';
 import { handleCardAction } from '../../../src/card/dispatcher.js';
 import type { Controls } from '../../../src/commands/index.js';
 import { createDefaultProfileConfig } from '../../../src/config/profile-schema.js';
+import { log } from '../../../src/core/logger.js';
 import { SessionStore } from '../../../src/session/store.js';
 import { WorkspaceStore } from '../../../src/workspace/store.js';
 import { FakeAgentAdapter, type FakeAgentRun } from '../../helpers/fake-agent.js';
@@ -18,6 +19,7 @@ const cleanups: Array<() => Promise<void>> = [];
 
 describe('signed card callback dispatch', () => {
   afterEach(async () => {
+    vi.restoreAllMocks();
     await Promise.all(cleanups.splice(0).map((cleanup) => cleanup()));
   });
 
@@ -43,6 +45,28 @@ describe('signed card callback dispatch', () => {
     });
 
     expect(deniedRun.stopped).toBe(false);
+  });
+
+  it('emits one-way identities after an authorized command callback', async () => {
+    const h = await createHarness();
+    const activeRun = h.agent.run({ runId: 'run-active', prompt: 'running' }) as FakeAgentRun;
+    h.activeRuns.register('oc_group', activeRun);
+    const info = vi.spyOn(log, 'info');
+
+    await h.dispatch({
+      cmd: 'stop',
+      __bridge_cb: true,
+      bridge_token: h.token('stop'),
+    });
+
+    expect(info).toHaveBeenCalledWith('cardAction', 'cmd', {
+      cmd: 'stop',
+      scope: 'oc_group',
+      identityFingerprintVersion: 'v1',
+      chatFingerprint: 'sha256:c0d49291450e14813b509a81e8fb672ce0794a2c7991e345170b05af4cba4ee7',
+      operatorFingerprint: 'sha256:1fd2465f8c78bd60e46eff793ca548fdfc49cbda13c849f1212cfafaa256fdfc',
+      messageFingerprint: 'sha256:92622a77472b21a43a4358ff0a12cb80e00631044d3d73d58f3c5b75c11c9bdf',
+    });
   });
 
   it('forwards signed bridge callbacks without leaking auth fields into the agent payload', async () => {
