@@ -8,6 +8,7 @@ import {
   resolveProfileRuntime,
 } from '../../../src/runtime/profile-runtime';
 import { createDefaultProfileConfig } from '../../../src/config/profile-schema';
+import { loadRootConfig } from '../../../src/config/profile-store';
 import { resolveAppPaths } from '../../../src/config/app-paths';
 import { getSecret } from '../../../src/config/keystore';
 import { secretKeyForApp } from '../../../src/config/schema';
@@ -1148,6 +1149,71 @@ describe('profile runtime resolver', () => {
       LARK_CHANNEL_HOME: root,
       LARK_CHANNEL_PROFILE: 'codex-dev',
     });
+  });
+
+  it('resolves the requested codex profile when an inactive profile has an unknown agentKind', async () => {
+    const root = await tmpRoot();
+    await writeProfileRoot(root, 'codex', {
+      codex: createDefaultProfileConfig({
+        agentKind: 'codex',
+        accounts: { app },
+        codex: { binaryPath: 'codex' },
+      }),
+      // inactive cursor profile with agentKind not in the known set
+      cursor: {
+        schemaVersion: 2,
+        agentKind: 'cursor',
+        accounts: { app },
+      },
+    });
+
+    const runtime = await resolveProfileRuntime({
+      config: join(root, 'config.json'),
+      profile: 'codex',
+      allowBootstrap: false,
+    });
+
+    expect(runtime.profile).toBe('codex');
+    expect(runtime.profileConfig.agentKind).toBe('codex');
+  });
+
+  it('rejects the requested profile when it has an unknown agentKind', async () => {
+    const root = await tmpRoot();
+    await writeProfileRoot(root, 'cursor', {
+      cursor: {
+        schemaVersion: 2,
+        agentKind: 'cursor',
+        accounts: { app },
+      },
+    });
+
+    await expect(
+      resolveProfileRuntime({
+        config: join(root, 'config.json'),
+        profile: 'cursor',
+        allowBootstrap: false,
+      }),
+    ).rejects.toThrow(/agentKind must be claude/);
+  });
+
+  it('loadRootConfig rejects unknown agentKind on any profile', async () => {
+    const root = await tmpRoot();
+    await writeProfileRoot(root, 'opencode', {
+      codex: createDefaultProfileConfig({
+        agentKind: 'codex',
+        accounts: { app },
+        codex: { binaryPath: 'codex' },
+      }),
+      cursor: {
+        schemaVersion: 2,
+        agentKind: 'cursor',
+        accounts: { app },
+      },
+    });
+
+    await expect(
+      loadRootConfig(join(root, 'config.json')),
+    ).rejects.toThrow(/agentKind must be claude/);
   });
 });
 
