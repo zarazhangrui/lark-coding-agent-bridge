@@ -247,6 +247,9 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
     // Attach raw Feishu event body to normalized events so we can read fields
     // the normalizer drops (e.g. action.form_value on CardKit 2.0 form submits).
     includeRawEvent: true,
+    // Message events only carry the sender open_id. Resolve the display name
+    // from the cached chat roster so the agent can address the sender by name.
+    resolveSenderNames: true,
     outbound: {
       streamThrottleMs: 400,
     },
@@ -1631,6 +1634,7 @@ function buildPrompt(
 
   const senderType = senderTypeOf(first);
   const mentions = mergeMentions(batch);
+  const mentionedSelf = batch.some((message) => message.mentionedBot);
 
   return buildAgentPrompt({
     context: {
@@ -1640,6 +1644,7 @@ function buildPrompt(
       ...(first.senderName ? { senderName: first.senderName } : {}),
       ...(senderType ? { senderType } : {}),
       ...(botIdentity?.openId ? { botOpenId: botIdentity.openId } : {}),
+      mentionedSelf,
       ...(mentions.length > 0 ? { mentions } : {}),
       ...(first.threadId ? { threadId: first.threadId } : {}),
       messageIds: batch.map((m) => m.messageId),
