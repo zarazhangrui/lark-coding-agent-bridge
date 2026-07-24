@@ -93,13 +93,6 @@ export async function runRegistrationWizard(): Promise<AppConfig> {
   // unconditional bypass on the very first message — no config edit needed.
   // `allowedUsers` / `allowedChats` / `admins` stay empty (= nobody outside
   // the creator) until the operator tightens via `/config`.
-  if (operatorOpenId) {
-    console.log(`  Creator: ${operatorOpenId} (Lark 应用 owner，自动豁免所有访问控制)`);
-  } else {
-    console.log(
-      '  ⚠️ 未拿到扫码用户的 open_id；首次启动时 bridge 会自行调 application/v6 API 解析当前 owner。',
-    );
-  }
 
   const cfg: AppConfig = {
     accounts: {
