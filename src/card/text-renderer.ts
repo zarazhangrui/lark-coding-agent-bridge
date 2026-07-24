@@ -18,6 +18,9 @@ export function renderText(state: RunState): string {
     const piece = renderBlock(block);
     if (piece) parts.push(piece);
   }
+  if (state.finalText?.trim()) {
+    parts.push(state.finalText.trim());
+  }
 
   if (state.terminal === 'interrupted') {
     parts.push('_⏹ 已被中断_');

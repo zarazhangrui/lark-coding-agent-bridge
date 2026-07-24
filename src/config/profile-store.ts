@@ -2,6 +2,7 @@ import { chmod, mkdir, readFile, rename, rm, rmdir, stat, writeFile } from 'node
 import { dirname, join } from 'node:path';
 import * as lockfile from 'proper-lockfile';
 import { writeFileAtomic } from '../platform/atomic-write';
+import { log } from '../core/logger';
 import { resolveAppPaths } from './app-paths';
 import {
   normalizeProfileConfig,
@@ -24,7 +25,24 @@ export async function loadRootConfig(path: string): Promise<RootConfig | undefin
 function normalizeRootConfig(root: RootConfig): RootConfig {
   const profiles: RootConfig['profiles'] = {};
   for (const [name, profile] of Object.entries(root.profiles)) {
-    profiles[name] = normalizeProfileConfig(profile);
+    // A profile saved by an older version may be malformed — e.g. an
+    // `opencode` profile missing its `opencode` block, which cannot be
+    // normalized. Drop the bad profile (with a loud log) rather than
+    // throwing for the whole root config, so one broken entry does not
+    // take down every loadRootConfig call (and the other profiles).
+    try {
+      profiles[name] = normalizeProfileConfig(profile);
+    } catch (err) {
+      log.fail('config', err, {
+        step: 'normalize-profile',
+        profile: name,
+        agentKind: (profile as { agentKind?: string })?.agentKind,
+      });
+      log.warn('config', 'dropping-malformed-profile', {
+        profile: name,
+        message: (err as Error).message,
+      });
+    }
   }
   const migrations = normalizeRootMigrations(root.migrations);
   return {
@@ -57,6 +75,7 @@ type StoredProfileConfig = Pick<
   | 'workspaces'
   | 'permissions'
   | 'codex'
+  | 'opencode'
   | 'attachments'
   | 'comments'
   | 'larkCli'
@@ -95,6 +114,7 @@ function serializeProfileConfig(profile: ProfileConfig): StoredProfileConfig {
     workspaces: profile.workspaces,
     permissions: profile.permissions,
     ...(profile.codex ? { codex: profile.codex } : {}),
+    ...(profile.opencode ? { opencode: profile.opencode } : {}),
     attachments: profile.attachments,
     comments: {},
     larkCli: profile.larkCli,
@@ -294,7 +314,7 @@ async function pathExists(path: string): Promise<boolean> {
 }
 
 export function agentKindFromString(value: string | undefined): AgentKind | undefined {
-  if (value === 'claude' || value === 'codex') return value;
+  if (value === 'claude' || value === 'codex' || value === 'opencode') return value;
   if (value === undefined) return undefined;
   throw new Error(`unsupported agent: ${value}`);
 }

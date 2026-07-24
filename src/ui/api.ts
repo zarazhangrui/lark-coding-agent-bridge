@@ -36,7 +36,7 @@ import {
   type ProfileAccess,
   type ProfileMode,
 } from '../config/profile-schema';
-import { DEFAULT_MODEL, normalizeModelSelection, supportedModels } from '../agent/models';
+import { DEFAULT_MODEL, fetchOpencodeModels, isValidModelSelection, normalizeModelSelection, supportedModels } from '../agent/models';
 import { log } from '../core/logger';
 import { HttpError } from './http';
 import type { UiRuntime } from './types';
@@ -70,15 +70,23 @@ export interface ConfigView {
   live: boolean;
 }
 
-export function buildConfigView(state: MutableProfileState, live = false): ConfigView {
+export async function buildConfigView(state: MutableProfileState, live = false): Promise<ConfigView> {
   const agentKind = state.profileConfig.agentKind;
   const ms = getRunIdleTimeoutMs(state.cfg);
+  // Fetch dynamic opencode model list; failures fall back to static DEFAULT_MODEL only.
+  let modelList = supportedModels(agentKind);
+  if (agentKind === 'opencode' && state.profileConfig.opencode?.binaryPath) {
+    const fetched = await fetchOpencodeModels(state.profileConfig.opencode.binaryPath);
+    if (fetched.length > 0) {
+      modelList = [{ value: DEFAULT_MODEL, label: '跟随默认（不指定）' }, ...fetched];
+    }
+  }
   return {
     profile: state.profile,
     agentKind,
     mode: state.profileConfig.mode,
     model: normalizeModelSelection(agentKind, state.cfg.preferences?.model),
-    models: supportedModels(agentKind),
+    models: modelList,
     messageReply: getMessageReplyMode(state.cfg),
     showToolCalls: getShowToolCalls(state.cfg),
     cotMessages: getCotMessages(state.cfg),
@@ -167,8 +175,8 @@ function parseConfigBody(state: MutableProfileState, body: unknown): ParsedConfi
       ? fv.larkCliIdentity
       : state.profileConfig.larkCli.identityPreset;
 
-  const rawModel = typeof fv.model === 'string' ? fv.model : '';
-  const modelValid = rawModel !== '' && supportedModels(agentKind).some((m) => m.value === rawModel);
+  const rawModel = (typeof fv.model === 'string' ? fv.model : '').trim();
+  const modelValid = isValidModelSelection(agentKind, rawModel);
   const modelSelection = modelValid
     ? rawModel
     : normalizeModelSelection(agentKind, state.cfg.preferences?.model);

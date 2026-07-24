@@ -202,7 +202,7 @@ async function route(
   // --- per-profile config ---
   if (path === '/api/config' && g) {
     const { state, live } = await resolveTargetState(deps, url);
-    sendJson(res, 200, buildConfigView(state, live));
+    sendJson(res, 200, await buildConfigView(state, live));
     return;
   }
   if (path === '/api/config' && p) {

@@ -1,4 +1,4 @@
-import { modelLabel, supportedModels } from '../agent/models';
+import { modelLabel, supportedModels, type ModelOption } from '../agent/models';
 import type { KnownChat } from '../bot/lark-info';
 import type { AgentKind, LarkCliIdentityPreset, ProfileMode } from '../config/profile-schema';
 import type { CotMessagesMode, MessageReplyMode } from '../config/schema';
@@ -10,6 +10,9 @@ export interface ConfigFormOpts {
   mode: ProfileMode;
   /** Current model selection (a value from {@link supportedModels}). */
   model: string;
+  /** Override model options for the picker (e.g. dynamically fetched for opencode).
+   *  When omitted, falls back to `supportedModels(agentKind)`. */
+  modelOptions?: ModelOption[];
   messageReply: MessageReplyMode;
   showToolCalls: boolean;
   cotMessages: CotMessagesMode;
@@ -64,6 +67,7 @@ function chatList(chatIds: string[], knownChats: KnownChat[]): string {
 
 /** Form card for `/config`. */
 export function configFormCard(opts: ConfigFormOpts): object {
+  const modelOpts: ModelOption[] = opts.modelOptions ?? supportedModels(opts.agentKind);
   const teamMode = opts.mode === 'team';
   const teamOverrideNote =
     '\n\n_⚠️ 团队版已开启：本项被覆盖 —— 身份强制为「只允许应用身份」、访问控制不生效。切回个人版后恢复。_';
@@ -164,7 +168,7 @@ export function configFormCard(opts: ConfigFormOpts): object {
               tag: 'select_static',
               name: 'model',
               initial_option: opts.model,
-              options: supportedModels(opts.agentKind).map((m) => ({
+              options: modelOpts.map((m) => ({
                 text: { tag: 'plain_text', content: m.label },
                 value: m.value,
               })),
@@ -348,7 +352,7 @@ export function configSavedCard(opts: ConfigFormOpts): object {
           content:
             '✅ **偏好已保存**\n\n' +
             `**运行模式**:\`${opts.mode === 'team' ? '团队版' : '个人版'}\`\n` +
-            `**模型**:\`${modelLabel(opts.agentKind, opts.model)}\`\n` +
+            `**模型**:\`${modelLabel(opts.agentKind, opts.model, opts.modelOptions)}\`\n` +
             `**消息回复方式**:${replyLabel}\n` +
             `**工具调用显示**:\`${opts.showToolCalls ? 'show' : 'hide'}\`\n` +
             `**COT 过程消息**:\`${cotLabel}\`\n` +
