@@ -55,6 +55,7 @@ import type { WorkspaceStore } from '../workspace/store';
 import { ActiveRuns, type RunHandle } from './active-runs';
 import { ChatModeCache, type ChatMode } from './chat-mode-cache';
 import { handleCommentMention } from './comments';
+import { GeneratedImageDelivery } from './generated-image-delivery';
 import { recordRunSessionEvent, startRunFlow } from './run-flow';
 import { commandSessionCatalogIdentity } from './session-catalog-identity';
 import { startKeepalive } from './keepalive';
@@ -75,6 +76,8 @@ import {
 const DEBOUNCE_MS = 600;
 const STREAM_TERMINAL_GRACE_MS = 3000;
 const REACTION_CLEANUP_GRACE_MS = 1000;
+const CODEX_GENERATED_IMAGE_INSTRUCTION =
+  '当你通过 imagegen 生成或编辑图片时，只负责完成图片生成；不要读取飞书发送技能，也不要调用 lark-cli 发送该图片。bridge 会监控 Codex generated_images 目录并自动把新图片回复到当前消息。';
 
 const BRIDGE_AGENT_INSTRUCTIONS = [
   '你在 bridge 进程中运行，普通 lark-cli 会继承 LARK_CHANNEL=1 并进入 bridge-bound 模式。',
@@ -188,6 +191,7 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
   // so /config bumps take effect for the next run.
   const pool = new ProcessPool(() => getMaxConcurrentRuns(controls.cfg));
   const executor = new RunExecutor({ agent, pool, activeRuns });
+  const generatedImagesDir = agent.getGeneratedImagesDir?.();
 
   // Resolve the App Secret to plaintext. The config field can be a literal
   // string, a "${VAR}" template, or a {source, id} SecretRef referencing
@@ -249,6 +253,7 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
     includeRawEvent: true,
     outbound: {
       streamThrottleMs: 400,
+      ...(generatedImagesDir ? { allowedFileDirs: [generatedImagesDir] } : {}),
     },
     // SDK 1.65.0-alpha.3+ knobs.
     wsConfig: {
@@ -314,6 +319,7 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
           callbackAuth,
           activePolicyFingerprints,
           lastRunModelByScope,
+          generatedImagesDir,
           scope,
           mode,
         });
@@ -701,6 +707,7 @@ interface RunBatchDeps {
   callbackAuth?: CallbackAuth;
   activePolicyFingerprints: Map<string, string>;
   lastRunModelByScope: Map<string, string>;
+  generatedImagesDir?: string;
   scope: string;
   mode: ChatMode;
 }
@@ -719,6 +726,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
     callbackAuth,
     activePolicyFingerprints,
     lastRunModelByScope,
+    generatedImagesDir,
     scope,
     mode,
   } = deps;
@@ -808,12 +816,15 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
   const prevModel = lastRunModelByScope.get(scope);
   const modelSwitched = prevModel !== undefined && prevModel !== modelSelection;
   lastRunModelByScope.set(scope, modelSelection);
-  const extraInstructions = modelSwitched
-    ? [
+  const extraInstructions = [
+    ...(modelSwitched
+      ? [
         `用户刚把本会话使用的模型切换为「${modelLabel(agentKind, modelPref)}」。` +
           '之前的对话里可能提到别的模型,请以当前模型为准;若被问到你用的是什么模型,据此回答。',
-      ]
-    : undefined;
+        ]
+      : []),
+    ...(agentKind === 'codex' && generatedImagesDir ? [CODEX_GENERATED_IMAGE_INSTRUCTION] : []),
+  ];
 
   const prompt = buildPrompt(
     batch,
@@ -821,7 +832,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
     quotes,
     topicContext,
     channel.botIdentity,
-    extraInstructions,
+    extraInstructions.length > 0 ? extraInstructions : undefined,
   );
   log.info('prompt', 'built', {
     promptChars: prompt.length,
@@ -860,6 +871,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
     controls.profileConfig.agentKind === 'codex'
       ? codexCapability(controls.profileConfig)
       : claudeCapability(controls.profileConfig);
+  const runRequestedAt = Date.now();
   const flow = await startRunFlow({
     scopeId: scope,
     scope: scopeContext,
@@ -896,6 +908,20 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
   activePolicyFingerprints.set(scope, flow.policy.policyFingerprint);
   const handle = execution.handle;
   const eventStream = execution.subscribe();
+  const generatedImageDelivery =
+    agentKind === 'codex' && generatedImagesDir
+      ? new GeneratedImageDelivery({
+          channel,
+          chatId,
+          sendOpts,
+          rootDir: generatedImagesDir,
+          runId: execution.runId,
+          startedAt: runRequestedAt,
+          imageMaxBytes: controls.profileConfig.attachments.imageMaxBytes,
+          initialThreadId: flow.resumeFrom,
+        })
+      : undefined;
+  generatedImageDelivery?.start();
   if (flow.resumeFrom) {
     log.info('session', 'resume', { sessionId: flow.resumeFrom, cwd });
   } else {
@@ -925,6 +951,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
     }
     if (evt.type === 'system' && evt.threadId) {
       log.info('session', 'set-thread', { threadId: evt.threadId });
+      generatedImageDelivery?.setThreadId(evt.threadId);
     }
   };
 
@@ -1178,6 +1205,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
   } catch (err) {
     log.fail('stream', err);
   } finally {
+    await generatedImageDelivery?.stop();
     activePolicyFingerprints.delete(scope);
     scheduleWorkingReactionCleanup(channel, lastMsg.messageId, reactionPromise);
   }
