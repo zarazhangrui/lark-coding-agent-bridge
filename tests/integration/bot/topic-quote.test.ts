@@ -394,6 +394,54 @@ describe('topic message quote handling', () => {
   });
 });
 
+describe('merge_forward fetch failure', () => {
+  it('skips the run and hints the user when the SDK could not fetch a merge_forward', async () => {
+    // @larksuite/channel >= 0.4.1 normalizes an un-fetchable merge_forward to
+    // the fetch_failed sentinel. Feeding it to the agent would look like an
+    // empty forward, so intake must reply a recoverable hint and start no run.
+    const h = await createHarness({ chatMode: 'group' });
+
+    await startTestBridge(h);
+
+    await h.channel.handlers.message?.(
+      message({
+        messageId: 'om_forward_failed',
+        rootId: 'om_forward_failed',
+        parentId: 'om_forward_failed',
+        content: '<forwarded_messages status="fetch_failed"/>',
+        rawContentType: 'merge_forward',
+      }),
+    );
+    await waitFor(() => h.channel.sent.length === 1);
+
+    expect(h.agent.runOptions).toHaveLength(0);
+    expect(h.channel.streams).toHaveLength(0);
+    const hint = h.channel.sent.at(-1);
+    expect(hint?.options).toMatchObject({ replyTo: 'om_forward_failed' });
+    expect((hint?.content as { text?: string }).text).toContain('重新转发');
+  });
+
+  it('still runs when a merge_forward was genuinely empty (not a fetch failure)', async () => {
+    const h = await createHarness({ chatMode: 'group' });
+
+    await startTestBridge(h);
+
+    await h.channel.handlers.message?.(
+      message({
+        messageId: 'om_forward_empty',
+        rootId: 'om_forward_empty',
+        parentId: 'om_forward_empty',
+        content: '<forwarded_messages/>',
+        rawContentType: 'merge_forward',
+      }),
+    );
+    await waitFor(() => h.agent.runOptions.length === 1);
+
+    expect(h.agent.runOptions).toHaveLength(1);
+    expect(h.channel.sent).toHaveLength(0);
+  });
+});
+
 async function createHarness(options: {
   chatMode?: 'group' | 'topic';
   quotedMessages?: Record<string, string>;
@@ -568,6 +616,7 @@ function message(input: {
   parentId: string;
   threadId?: string;
   content: string;
+  rawContentType?: string;
   mentionedBot?: boolean;
   mentions?: Array<{ key: string; openId: string; name: string; isBot: boolean }>;
 }): NormalizedMessage {
@@ -579,7 +628,7 @@ function message(input: {
     senderId: 'ou_user',
     senderName: 'User',
     content: input.content,
-    rawContentType: 'text',
+    rawContentType: input.rawContentType ?? 'text',
     resources: [],
     mentions:
       input.mentions ??

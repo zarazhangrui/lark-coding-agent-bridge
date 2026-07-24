@@ -84,18 +84,13 @@ export async function fetchQuotedContext(
   if (!parent || !parent.message_id) return undefined;
 
   // Reuse the already-fetched items when the SDK re-asks for sub-messages of
-  // this same id (merge_forward case). For nested merge_forwards inside, fall
-  // back to a fresh API call.
+  // this same id (merge_forward case). For nested merge_forwards inside, fetch
+  // fresh — and let a fetch failure throw so it surfaces as a fetch_failed
+  // forward rather than a silently-empty one (see fetchSubTreeItems).
   const fetchSubMessages = async (mid: string): Promise<ApiMessageItem[]> => {
     if (mid === parent.message_id) return items.map(preExpandInteractive);
-    try {
-      const subItems = await channel.fetchRawMessage(mid, {
-        cardContentType: 'user_card_content',
-      });
-      return subItems.map(preExpandInteractive);
-    } catch {
-      return [];
-    }
+    const subItems = await fetchSubTreeItems(channel, mid);
+    return subItems.map(preExpandInteractive);
   };
 
   return normalizeItemToQuoted(channel, parent, fetchSubMessages);
@@ -224,7 +219,7 @@ export async function fetchTopicContext(
   const out: QuotedContext[] = [];
   for (const item of relevant) {
     const fetchSubMessages = async (mid: string): Promise<ApiMessageItem[]> => {
-      const source = mid === item.message_id ? [item] : await safeFetchRaw(channel, mid);
+      const source = mid === item.message_id ? [item] : await fetchSubTreeItems(channel, mid);
       return source.map(preExpandInteractive);
     };
     const quoted = await normalizeItemToQuoted(channel, item, fetchSubMessages);
@@ -233,11 +228,27 @@ export async function fetchTopicContext(
   return out;
 }
 
-async function safeFetchRaw(channel: LarkChannel, messageId: string): Promise<ApiMessageItem[]> {
+/**
+ * Fetch a nested sub-message's items for merge_forward expansion. Unlike a
+ * best-effort context fetch, this RE-THROWS on failure: the SDK's
+ * convertMergeForward turns a throw into the `<forwarded_messages
+ * status="fetch_failed"/>` sentinel, so a transient fetch failure surfaces as
+ * fetch_failed instead of being silently flattened to an empty forward — the
+ * same distinction @larksuite/channel makes on the live-event path. Passed into
+ * `normalize` as `fetchSubMessages`.
+ */
+async function fetchSubTreeItems(
+  channel: LarkChannel,
+  messageId: string,
+): Promise<ApiMessageItem[]> {
   try {
     return await channel.fetchRawMessage(messageId, { cardContentType: 'user_card_content' });
-  } catch {
-    return [];
+  } catch (err) {
+    log.warn('quote', 'sub-fetch-failed', {
+      messageId,
+      err: err instanceof Error ? err.message : String(err),
+    });
+    throw err;
   }
 }
 

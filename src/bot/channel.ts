@@ -529,6 +529,40 @@ async function sendNonAllowedGroupHint(
   }
 }
 
+/**
+ * The SDK (@larksuite/channel >= 0.4.1) normalizes a merge_forward whose
+ * sub-messages it could not fetch — after its own retries — to this exact
+ * sentinel, rather than the empty `<forwarded_messages/>` it emits for a
+ * genuinely empty forward. Distinguishing the two is the whole point of that
+ * fix: pre-0.4.1 a transient Feishu 5xx/timeout on `im.v1.message.get` was
+ * silently indistinguishable from empty, so the agent saw an empty forward and
+ * replied "转发内容是空的，请重新转发一次".
+ */
+const FORWARD_FETCH_FAILED_CONTENT = '<forwarded_messages status="fetch_failed"/>';
+
+/** True when a message is a merge_forward the SDK failed to fetch (see above). */
+function isForwardFetchFailed(msg: NormalizedMessage): boolean {
+  return (
+    msg.rawContentType === 'merge_forward' &&
+    msg.content.trim() === FORWARD_FETCH_FAILED_CONTENT
+  );
+}
+
+async function sendForwardFetchFailedHint(
+  channel: LarkChannel,
+  chatId: string,
+  replyToMessageId: string,
+): Promise<void> {
+  const text =
+    '这条合并转发的内容没能从飞书拉取到（上游超时/网络抖动，已自动重试仍失败），' +
+    '所以我没收到里面的消息。麻烦稍后重新转发一次。';
+  try {
+    await channel.send(chatId, { text }, { replyTo: replyToMessageId });
+  } catch {
+    await channel.send(chatId, { text });
+  }
+}
+
 interface IntakeDeps {
   channel: LarkChannel;
   agent: AgentAdapter;
@@ -653,6 +687,23 @@ async function intakeMessage(deps: IntakeDeps): Promise<void> {
     !msg.mentionedBot
   ) {
     log.info('intake', 'skip-no-mention', { scope, chatType: msg.chatType });
+    return;
+  }
+
+  // A merge_forward whose sub-messages the SDK could not fetch (transient
+  // upstream failure, already retried inside @larksuite/channel) arrives as the
+  // fetch_failed sentinel. Feeding it to the agent would read as an empty
+  // forward, so surface a recoverable hint and skip the run — the user can
+  // resend once the upstream recovers.
+  if (isForwardFetchFailed(emsg)) {
+    log.warn('intake', 'forward-fetch-failed', {
+      scope,
+      msgId: emsg.messageId,
+      chatType: emsg.chatType,
+    });
+    await sendForwardFetchFailedHint(channel, emsg.chatId, emsg.messageId).catch((err) =>
+      log.warn('intake', 'forward-fetch-failed-hint-failed', { err: String(err) }),
+    );
     return;
   }
 

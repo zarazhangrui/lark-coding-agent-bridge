@@ -1,3 +1,4 @@
+import { deepMaskEmails } from './mask-email';
 import type { Block, FooterStatus, RunState, ToolEntry } from './run-state';
 import { toolBodyMd, toolHeaderText } from './tool-render';
 
@@ -51,14 +52,16 @@ export function renderCard(state: RunState, options: RunCardRenderOptions = {}):
     elements.push(stopButton(options));
   }
 
-  return {
+  // Mask raw emails across every text field so the Feishu tenant audit doesn't
+  // reject the (streamed) card with a 400 EMAIL_ADDRESS — see mask-email.ts.
+  return deepMaskEmails({
     schema: '2.0',
     config: {
       streaming_mode: state.terminal === 'running',
       summary: { content: summaryText(state) },
     },
     body: { elements },
-  };
+  });
 }
 
 function* groupBlocks(blocks: Block[]): Generator<Group> {
