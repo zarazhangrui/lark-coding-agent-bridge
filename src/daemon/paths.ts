@@ -95,6 +95,14 @@ export function windowsLauncherCmdPath(profile: string = paths.profile): string 
   return join(paths.appDir, 'daemon', serviceProfileId(profile), 'launcher.cmd');
 }
 
+/**
+ * The VBS wrapper that launches launcher.cmd with a hidden console window.
+ * Task Scheduler runs this instead of the .cmd directly so the daemon
+ * doesn't pop a visible console on the user's desktop.
+ */
+export function windowsLauncherVbsPath(profile: string = paths.profile): string {
+  return join(paths.appDir, 'daemon', serviceProfileId(profile), 'launcher.vbs');
+}
 // === Daemon log paths (platform-agnostic) ===
 
 /**
