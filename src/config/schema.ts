@@ -144,6 +144,13 @@ export interface AppPreferences {
    * Cloud-doc comments still require @-mention unconditionally.
    */
   requireMentionInGroup?: boolean;
+  /**
+   * Description applied to group chats created via `/new chat`. Useful as a
+   * stable marker so bridge-created groups stay identifiable (searchable in
+   * Lark, visible in chat settings) even after the group is renamed.
+   * Undefined = no description (the previous behavior).
+   */
+  newChatDescription?: string;
   /** Access control — user/chat allowlists + admin gating. See AppAccess. */
   access?: AppAccess;
   /**
