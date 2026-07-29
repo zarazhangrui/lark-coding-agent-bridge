@@ -75,6 +75,12 @@ import {
 const DEBOUNCE_MS = 600;
 const STREAM_TERMINAL_GRACE_MS = 3000;
 const REACTION_CLEANUP_GRACE_MS = 1000;
+// Most WS reconnects (ping timeout, brief keepalive blip) clear in a few
+// seconds — see keepalive's 15s ping-timeout window. Give a paused
+// submission this long to ride it out before falling back to the
+// "reconnect-in-progress" rejection, instead of dropping the message
+// on every reconnect regardless of how long it actually lasts.
+const RECONNECT_WAIT_MS = 8000;
 
 const BRIDGE_AGENT_INSTRUCTIONS = [
   '你在 bridge 进程中运行，普通 lark-cli 会继承 LARK_CHANNEL=1 并进入 bridge-bound 模式。',
@@ -187,7 +193,12 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
   // Concurrency cap — reads `preferences.maxConcurrentRuns` on each acquire,
   // so /config bumps take effect for the next run.
   const pool = new ProcessPool(() => getMaxConcurrentRuns(controls.cfg));
-  const executor = new RunExecutor({ agent, pool, activeRuns });
+  const executor = new RunExecutor({
+    agent,
+    pool,
+    activeRuns,
+    reconnectWaitMs: RECONNECT_WAIT_MS,
+  });
 
   // Resolve the App Secret to plaintext. The config field can be a literal
   // string, a "${VAR}" template, or a {source, id} SecretRef referencing
