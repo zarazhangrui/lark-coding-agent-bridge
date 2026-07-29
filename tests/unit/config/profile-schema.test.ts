@@ -131,6 +131,7 @@ describe('profile schema', () => {
       allowedUsers: [],
       allowedChats: [],
       admins: [],
+      agentUsers: [],
       requireMentionInGroup: true,
     });
   });

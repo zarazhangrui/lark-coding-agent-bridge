@@ -43,7 +43,7 @@ import type {
 } from '../config/profile-schema';
 import { effectiveLarkCliIdentity } from '../config/profile-schema';
 import { resolveAppPaths } from '../config/app-paths';
-import { accessToClaudePermissionMode } from '../config/permissions';
+import { accessToClaudePermissionMode, accessToCodexSandbox } from '../config/permissions';
 import {
   canRunAdminCommand,
   canUseDm,
@@ -72,7 +72,7 @@ import { isAlive, readAndPrune, resolveTarget } from '../runtime/registry';
 import { readUiSidecar } from '../ui/sidecar';
 import type { SessionStore } from '../session/store';
 import { resolveWorkingDirectory } from '../policy/workspace';
-import { evaluateRunPolicy } from '../policy/run-policy';
+import { evaluateRunPolicy, requestedAccessForActor } from '../policy/run-policy';
 import type { ProcessPool } from '../bot/process-pool';
 import type { RunExecutor } from '../runtime/run-executor';
 import { RunRejected } from '../runtime/errors';
@@ -750,19 +750,21 @@ function selectedResumeCwd(ctx: CommandContext): string | undefined {
 
 function runtimeAccessStatus(
   profileConfig: ProfileConfig,
+  actorId: string,
 ): { label: string; value: string } {
+  const access = requestedAccessForActor(profileConfig, actorId);
   if (profileConfig.agentKind === 'claude') {
     return {
       label: 'permission',
       value: accessToClaudePermissionMode(
-        profileConfig.permissions.defaultAccess,
+        access,
         profileConfig.permissions,
       ),
     };
   }
   return {
     label: 'sandbox',
-    value: `${profileConfig.sandbox.defaultMode}/${profileConfig.sandbox.maxMode}`,
+    value: accessToCodexSandbox(access),
   };
 }
 
@@ -813,7 +815,7 @@ async function handleStatus(_args: string, ctx: CommandContext): Promise<void> {
     emptySessionText: isCodex ? '(未建立)' : undefined,
     sessionStale: !isCodex && Boolean(cwd && sess && sess.cwd !== cwd),
     agentName: ctx.agent.displayName,
-    runtimeAccess: runtimeAccessStatus(ctx.controls.profileConfig),
+    runtimeAccess: runtimeAccessStatus(ctx.controls.profileConfig, ctx.msg.senderId),
     larkCliStatus: await larkCliStatus(ctx),
     activeRun: Boolean(ctx.activeRuns.get(ctx.scope)),
     activeScopes: ctx.activeRuns.scopes().filter((scope) => !scope.startsWith('comment:')),
@@ -1147,7 +1149,7 @@ async function handleDoctor(args: string, ctx: CommandContext): Promise<void> {
     );
     return;
   }
-  const runtimeAccess = runtimeAccessStatus(ctx.controls.profileConfig);
+  const runtimeAccess = runtimeAccessStatus(ctx.controls.profileConfig, ctx.msg.senderId);
   const doctorReport = (echoCheck: string): string =>
     buildDoctorReport(ctx, {
       workspaceCheck: `ok (${workspace.cwdRealpath})`,
@@ -1278,7 +1280,7 @@ function buildDoctorReport(
     ? `${queue.active}/${queue.cap} active, ${queue.waiting} waiting`
     : 'unknown';
   const cwd = effectiveWorkspaceCwd(ctx);
-  const runtimeAccess = runtimeAccessStatus(ctx.controls.profileConfig);
+  const runtimeAccess = runtimeAccessStatus(ctx.controls.profileConfig, ctx.msg.senderId);
   const access =
     ctx.msg.chatType === 'p2p'
       ? canUseDm(ctx.controls.profileConfig, ctx.controls, ctx.msg.senderId)

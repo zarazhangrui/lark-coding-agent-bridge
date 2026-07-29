@@ -21,6 +21,11 @@ export interface ProfileAccess {
   allowedUsers: string[];
   allowedChats: string[];
   admins: string[];
+  /**
+   * open_id allowlist for actors that receive the profile's maximum runtime
+   * access. Other allowed actors receive permissions.defaultAccess.
+   */
+  agentUsers: string[];
   requireMentionInGroup: boolean;
   /**
    * Per-chat override of {@link requireMentionInGroup}, keyed by chat_id.
@@ -295,6 +300,7 @@ function normalizeAccess(
     allowedUsers: stringArray(access?.allowedUsers),
     allowedChats: stringArray(access?.allowedChats),
     admins: stringArray(access?.admins),
+    agentUsers: stringArray(access?.agentUsers),
     requireMentionInGroup: access?.requireMentionInGroup ?? legacyRequireMentionInGroup ?? true,
     // Omit when empty so configs without per-chat overrides stay clean.
     ...(Object.keys(chatRequireMention).length > 0 ? { chatRequireMention } : {}),
