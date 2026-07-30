@@ -82,6 +82,20 @@ afterEach(async () => {
 });
 
 describe('markdown stream startup failures', () => {
+  it('adds the working reaction before the debounced agent run starts', async () => {
+    const h = await createHarness();
+    await startTestBridge(h);
+
+    await h.channel.handlers.message?.(message('om_first', 'first'));
+
+    expect(h.channel.rawClient.im.v1.messageReaction.create).toHaveBeenCalledWith({
+      path: { message_id: 'om_first' },
+      data: { reaction_type: { emoji_type: 'Typing' } },
+    });
+    expect(h.agent.runOptions).toHaveLength(0);
+    await waitFor(() => h.agent.runOptions.length === 1);
+  });
+
   it('does not leave the IM queue blocked when the agent exits before stream producer starts', async () => {
     const h = await createHarness();
     await startTestBridge(h);
