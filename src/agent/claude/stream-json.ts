@@ -15,6 +15,12 @@ interface ContentBlock {
 interface ClaudeRawEvent {
   type?: string;
   subtype?: string;
+  /**
+   * Claude sets this for messages emitted by a nested response, such as a
+   * subagent. Those messages are implementation details of the parent turn:
+   * the Agent tool returns their result to the main agent separately.
+   */
+  parent_tool_use_id?: string | null;
   session_id?: string;
   cwd?: string;
   model?: string;
@@ -30,6 +36,13 @@ interface ClaudeRawEvent {
 export function* translateEvent(raw: unknown): Generator<AgentEvent> {
   if (!raw || typeof raw !== 'object') return;
   const evt = raw as ClaudeRawEvent;
+
+  // `claude -p --output-format stream-json --verbose` includes nested
+  // assistant/user messages in the same stdout stream. Forwarding them would
+  // flatten subagent research, thinking, and tool calls into the user-visible
+  // Lark reply. Keep nested work private; the parent Agent tool result is a
+  // top-level event and remains available to the main agent for synthesis.
+  if (evt.parent_tool_use_id) return;
 
   if (evt.type === 'system' && evt.subtype === 'init') {
     yield {

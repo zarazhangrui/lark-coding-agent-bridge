@@ -41,6 +41,39 @@ describe('Claude stream-json translator', () => {
     ]);
   });
 
+  it('filters nested subagent messages while preserving top-level events', () => {
+    const nestedAssistant = {
+      type: 'assistant',
+      parent_tool_use_id: 'tool-agent-1',
+      message: {
+        content: [
+          { type: 'text', text: 'private research report' },
+          { type: 'thinking', thinking: 'private reasoning' },
+          { type: 'tool_use', id: 'tool-child-1', name: 'WebSearch', input: { query: 'x' } },
+        ],
+      },
+    };
+    const nestedToolResult = {
+      type: 'user',
+      parent_tool_use_id: 'tool-agent-1',
+      message: {
+        content: [
+          { type: 'tool_result', tool_use_id: 'tool-child-1', content: 'private result' },
+        ],
+      },
+    };
+
+    expect([...translateEvent(nestedAssistant)]).toEqual([]);
+    expect([...translateEvent(nestedToolResult)]).toEqual([]);
+    expect([
+      ...translateEvent({
+        type: 'assistant',
+        parent_tool_use_id: null,
+        message: { content: [{ type: 'text', text: 'public synthesis' }] },
+      }),
+    ]).toEqual([{ type: 'text', delta: 'public synthesis' }]);
+  });
+
   it('translates user tool_result blocks including structured output and errors', () => {
     expect([
       ...translateEvent({
