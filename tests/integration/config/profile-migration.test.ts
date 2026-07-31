@@ -393,6 +393,7 @@ describe('profile v2 migration', () => {
         config: join(root, 'config.json'),
         profile: 'codex',
         agent: 'codex',
+        codexTransport: 'app-server',
       });
     } finally {
       if (oldCodexBin === undefined) {
@@ -407,6 +408,7 @@ describe('profile v2 migration', () => {
     expect(next.profiles.codex?.agentKind).toBe('codex');
     expect(next.profiles.codex?.codex).toMatchObject({
       binaryPath: codex,
+      transport: 'app-server',
     });
     expect(next.profiles.codex?.codex?.realpath).toBeUndefined();
     expect(next.profiles.codex?.codex?.version).toBeUndefined();
@@ -416,6 +418,14 @@ describe('profile v2 migration', () => {
       maxAccess: 'full',
     });
     expect(next.profiles.codex).not.toHaveProperty('sandbox');
+
+    await expect(
+      runMigrate({
+        config: join(root, 'config.json'),
+        profile: 'codex',
+        codexTransport: 'exec',
+      }),
+    ).rejects.toThrow(/already uses Codex transport app-server/);
   });
 });
 

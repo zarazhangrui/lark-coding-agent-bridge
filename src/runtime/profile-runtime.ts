@@ -29,8 +29,11 @@ import {
   writeActiveProfile,
 } from '../config/profile-store';
 import {
+  codexTransportFromString,
   createDefaultProfileConfig,
+  effectiveCodexTransport,
   type AgentKind,
+  type CodexTransport,
   type CreateDefaultProfileConfigInput,
   type ProfileConfig,
   type RootConfig,
@@ -56,6 +59,7 @@ export interface ResolveProfileRuntimeOptions {
   config?: string;
   profile?: string;
   agent?: string;
+  codexTransport?: string;
   workspace?: string;
   appId?: string;
   appSecret?: string;
@@ -102,6 +106,7 @@ export async function resolveProfileRuntime(
     await recoverLegacyLarkCliSourceOverlay(recoveryConfigFile);
   }
   const requestedAgent = agentKindFromString(opts.agent);
+  const requestedCodexTransport = codexTransportFromString(opts.codexTransport);
   const explicitProfile = opts.profile;
   const activeProfile = explicitProfile ?? (await readActiveProfile(rootDir));
   let profile = activeProfile ?? requestedAgent;
@@ -129,6 +134,9 @@ export async function resolveProfileRuntime(
 
   const migrationAgent = resolveBootstrapAgent(requestedAgent, profile);
   const needsMigration = await hasLegacyConfig(configPath);
+  if (needsMigration) {
+    assertCodexTransportAppliesToAgent(migrationAgent ?? 'claude', requestedCodexTransport);
+  }
   await migrateV1ToV2WithActiveBridgeHandling({
     rootDir: appPaths.rootDir,
     profile: appPaths.profile,
@@ -136,7 +144,7 @@ export async function resolveProfileRuntime(
     workspace: opts.workspace,
     ...(migrationAgent ? { agentKind: migrationAgent } : {}),
     ...(needsMigration && migrationAgent === 'codex'
-      ? { codex: await createBootstrapCodexConfig(undefined) }
+      ? { codex: await createBootstrapCodexConfig(undefined, requestedCodexTransport) }
       : {}),
   }, opts.handleActiveBridgeMigrationConflict);
 
@@ -153,6 +161,7 @@ export async function resolveProfileRuntime(
           rootConfig,
           profile,
           requestedAgent,
+          requestedCodexTransport,
           opts,
           appPaths,
           configPath,
@@ -161,6 +170,11 @@ export async function resolveProfileRuntime(
       throw new Error(`profile not found: ${profile}`);
     }
     assertRequestedAgentMatchesExistingProfile(profile, profileConfig, requestedAgent);
+    assertRequestedCodexTransportMatchesExistingProfile(
+      profile,
+      profileConfig,
+      requestedCodexTransport,
+    );
     const runtimeUpgrade = upgradeLegacyRuntimeDefaults(rootConfig, profile);
     if (runtimeUpgrade.changed) {
       rootConfig = runtimeUpgrade.rootConfig;
@@ -188,11 +202,18 @@ export async function resolveProfileRuntime(
   if (isComplete(existing)) {
     assertBootstrapAppMatchesExistingConfig(opts, profile, existing);
     const cfg = await maybeMigratePlaintextSecret(existing, configPath, appPaths);
+    const legacyAgent = requestedAgent ?? 'claude';
+    assertCodexTransportAppliesToAgent(legacyAgent, requestedCodexTransport);
     const profileConfig = createRuntimeProfileConfig({
-      agentKind: requestedAgent ?? 'claude',
+      agentKind: legacyAgent,
       accounts: cfg.accounts,
       preferences: cfg.preferences,
       secrets: cfg.secrets,
+      ...(legacyAgent === 'codex'
+        ? {
+            codex: await createBootstrapCodexConfig(undefined, requestedCodexTransport),
+          }
+        : {}),
     });
     profileConfig.workspaces.default = await resolveConvertedLegacyDefaultWorkspace(opts, appPaths);
     const root = createRootConfig(profile, profileConfig, cfg.secrets);
@@ -205,6 +226,7 @@ export async function resolveProfileRuntime(
     throw new Error('config not initialized');
   }
   const bootstrapAgent = resolveBootstrapAgent(requestedAgent, profile) ?? 'claude';
+  assertCodexTransportAppliesToAgent(bootstrapAgent, requestedCodexTransport);
   const workspace = opts.workspace;
   const fresh = await resolveBootstrapAppConfig(opts);
   const encrypted = await encryptedConfigForProfile(fresh, appPaths);
@@ -213,6 +235,7 @@ export async function resolveProfileRuntime(
     accounts: encrypted.accounts,
     preferences: encrypted.preferences,
     secrets: encrypted.secrets,
+    codexTransport: requestedCodexTransport,
     workspace,
     defaultWorkspace: appPaths.defaultWorkspaceDir,
     profileDir: appPaths.profileDir,
@@ -228,12 +251,22 @@ async function bootstrapProfileIntoExistingRoot(args: {
   rootConfig: RootConfig;
   profile: string;
   requestedAgent: AgentKind | undefined;
+  requestedCodexTransport: CodexTransport | undefined;
   opts: ResolveProfileRuntimeOptions;
   appPaths: AppPaths;
   configPath: string;
 }): Promise<ProfileRuntime> {
-  const { rootConfig, profile, requestedAgent, opts, appPaths, configPath } = args;
+  const {
+    rootConfig,
+    profile,
+    requestedAgent,
+    requestedCodexTransport,
+    opts,
+    appPaths,
+    configPath,
+  } = args;
   const bootstrapAgent = resolveBootstrapAgent(requestedAgent, profile) ?? 'claude';
+  assertCodexTransportAppliesToAgent(bootstrapAgent, requestedCodexTransport);
   const workspace = opts.workspace;
   const fresh = await resolveBootstrapAppConfig(opts);
   const encrypted = await encryptedConfigForProfile(fresh, appPaths);
@@ -242,6 +275,7 @@ async function bootstrapProfileIntoExistingRoot(args: {
     accounts: encrypted.accounts,
     preferences: encrypted.preferences,
     secrets: encrypted.secrets,
+    codexTransport: requestedCodexTransport,
     workspace,
     defaultWorkspace: appPaths.defaultWorkspaceDir,
     profileDir: appPaths.profileDir,
@@ -503,6 +537,30 @@ function assertRequestedAgentMatchesExistingProfile(
       `Profile names are labels; to use the existing ${profileConfig.agentKind} profile, omit --agent. ` +
       `To recreate it as ${requestedAgent}, remove profile ${profile} first.`,
   );
+}
+
+function assertRequestedCodexTransportMatchesExistingProfile(
+  profile: string,
+  profileConfig: ProfileConfig,
+  requestedTransport: CodexTransport | undefined,
+): void {
+  if (!requestedTransport) return;
+  assertCodexTransportAppliesToAgent(profileConfig.agentKind, requestedTransport);
+  const configuredTransport = effectiveCodexTransport(profileConfig.codex);
+  if (configuredTransport === requestedTransport) return;
+  throw new Error(
+    `profile ${profile} already uses Codex transport ${configuredTransport}, ` +
+      `but this command requested --codex-transport ${requestedTransport}. ` +
+      'Update the persisted profile config and restart the profile to change transports.',
+  );
+}
+
+function assertCodexTransportAppliesToAgent(
+  agentKind: AgentKind,
+  requestedTransport: CodexTransport | undefined,
+): void {
+  if (!requestedTransport || agentKind === 'codex') return;
+  throw new Error('--codex-transport can only be used with a Codex profile');
 }
 
 function assertBootstrapAppMatchesExistingConfig(

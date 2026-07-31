@@ -4,7 +4,9 @@ import {
   clampAccess,
 } from '../../../src/config/permissions';
 import {
+  codexTransportFromString,
   createDefaultProfileConfig,
+  effectiveCodexTransport,
   effectiveLarkCliIdentity,
   normalizeProfileConfig,
 } from '../../../src/config/profile-schema';
@@ -308,6 +310,37 @@ describe('profile schema', () => {
       ignoreRules: true,
     });
     expect(cfg.codex).not.toHaveProperty('flags');
+    expect(effectiveCodexTransport(cfg.codex)).toBe('exec');
+    expect(cfg.codex).not.toHaveProperty('transport');
+  });
+
+  it('preserves an explicit Codex app-server transport and rejects invalid values', () => {
+    const cfg = normalizeProfileConfig({
+      schemaVersion: 2,
+      agentKind: 'codex',
+      accounts: { app },
+      codex: {
+        binaryPath: '/usr/local/bin/codex',
+        transport: 'app-server',
+      },
+    });
+
+    expect(cfg.codex?.transport).toBe('app-server');
+    expect(effectiveCodexTransport(cfg.codex)).toBe('app-server');
+    expect(codexTransportFromString('exec')).toBe('exec');
+    expect(codexTransportFromString('app-server')).toBe('app-server');
+    expect(() => codexTransportFromString('desktop')).toThrow(/unsupported Codex transport/);
+    expect(() =>
+      normalizeProfileConfig({
+        schemaVersion: 2,
+        agentKind: 'codex',
+        accounts: { app },
+        codex: {
+          binaryPath: '/usr/local/bin/codex',
+          transport: 'desktop',
+        },
+      }),
+    ).toThrow(/codex\.transport must be exec or app-server/);
   });
 
   it('preserves explicit Codex home isolation when configured', () => {

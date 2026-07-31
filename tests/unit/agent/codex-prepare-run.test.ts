@@ -2,6 +2,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
+import { CodexAppServerAdapter } from '../../../src/agent/codex/app-server-adapter.js';
 import { CodexAdapter } from '../../../src/agent/codex/adapter.js';
 import { writeVersionExecutable } from '../../helpers/fake-executable.js';
 
@@ -34,6 +35,42 @@ describe('CodexAdapter prepareRun', () => {
         code: 'agent-binary-not-found',
         agentId: 'codex',
         agentName: 'Codex CLI',
+      },
+    });
+  });
+});
+
+describe('CodexAppServerAdapter availability', () => {
+  afterEach(async () => {
+    await Promise.all(cleanups.splice(0).map((cleanup) => cleanup()));
+  });
+
+  it('checks that the configured binary exposes the app-server subcommand', async () => {
+    const binary = await writeCodexBinary('Run the app server');
+    const adapter = new CodexAppServerAdapter({
+      binary,
+      profileStateDir: join(tmpdir(), 'codex-app-server-profile'),
+    });
+
+    await expect(adapter.checkAvailability()).resolves.toMatchObject({
+      ok: true,
+      version: 'Run the app server',
+    });
+  });
+
+  it('includes app-server help args in a missing-binary diagnostic', async () => {
+    const adapter = new CodexAppServerAdapter({
+      binary: join(tmpdir(), 'missing-codex-app-server'),
+      profileStateDir: join(tmpdir(), 'codex-app-server-profile'),
+    });
+
+    await expect(adapter.checkAvailability()).resolves.toMatchObject({
+      ok: false,
+      diagnostic: {
+        code: 'agent-binary-not-found',
+        agentId: 'codex',
+        agentName: 'Codex App Server',
+        args: ['app-server', '--help'],
       },
     });
   });

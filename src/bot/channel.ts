@@ -62,6 +62,7 @@ import { PendingQueue } from './pending-queue';
 import { ProcessPool } from './process-pool';
 import { fetchQuotedContext, fetchTopicContext, type QuotedContext } from './quote';
 import { lookupMessageThreadId } from './thread-id';
+import { buildBridgeThreadName } from './thread-name';
 import { addWorkingReaction, removeReaction } from './reaction';
 import { fetchKnownChats } from './lark-info';
 import type { AppPaths } from '../config/app-paths';
@@ -866,9 +867,11 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
       ]
     : undefined;
 
+  const userPart = buildUserPart(batch, attachments);
   const prompt = buildPrompt(
     batch,
     attachments,
+    userPart,
     quotes,
     topicContext,
     channel.botIdentity,
@@ -915,6 +918,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
     scopeId: scope,
     scope: scopeContext,
     prompt,
+    threadName: buildBridgeThreadName('飞书', userPart),
     attachments: attachments.map(toPolicyAttachment),
     access: accessDecision,
     capability,
@@ -1755,6 +1759,7 @@ function delay(ms: number): Promise<void> {
 function buildPrompt(
   batch: NormalizedMessage[],
   attachments: LocalAttachment[],
+  userPart: string,
   quotes: QuotedContext[] = [],
   topicContext: QuotedContext[] = [],
   botIdentity?: { openId: string; name?: string },
@@ -1762,25 +1767,6 @@ function buildPrompt(
 ): string {
   const first = batch[0];
   if (!first) return '';
-
-  const fileKeys = batch.flatMap((m) => m.resources.map((r) => r.fileKey));
-  // When the debounce window merged messages (possibly from several senders —
-  // common in bot-at-bot group chats), annotate each segment with its sender
-  // so the agent can tell who said what. Single-message batches stay verbatim.
-  const annotate = batch.length > 1;
-  const texts = batch
-    .map((m) => {
-      const text = stripAttachmentRefs(m.content, fileKeys).trim();
-      if (!text) return '';
-      return annotate ? `${senderAnnotation(m)} ${text}` : text;
-    })
-    .filter(Boolean);
-  const userPart =
-    texts.length > 0
-      ? texts.join('\n\n')
-      : attachments.length > 0
-        ? '请看下面的附件。'
-        : '（对方发来一条没有正文的消息——通常是只 @ 了你的唤醒（ping）。请简短回应。）';
 
   const senderType = senderTypeOf(first);
   const mentions = mergeMentions(batch);
@@ -1808,6 +1794,24 @@ function buildPrompt(
     interactiveCards: batch.map(toPromptInteractiveCard).filter(isDefined),
     attachments: attachments.map(toPromptAttachment),
   });
+}
+
+function buildUserPart(batch: NormalizedMessage[], attachments: LocalAttachment[]): string {
+  const fileKeys = batch.flatMap((message) =>
+    message.resources.map((resource) => resource.fileKey),
+  );
+  // Debounced messages may come from different senders in bot-at-bot chats.
+  const annotate = batch.length > 1;
+  const texts = batch
+    .map((message) => {
+      const text = stripAttachmentRefs(message.content, fileKeys).trim();
+      if (!text) return '';
+      return annotate ? `${senderAnnotation(message)} ${text}` : text;
+    })
+    .filter(Boolean);
+  if (texts.length > 0) return texts.join('\n\n');
+  if (attachments.length > 0) return '请看下面的附件。';
+  return '（对方发来一条没有正文的消息——通常是只 @ 了你的唤醒（ping）。请简短回应。）';
 }
 
 /**

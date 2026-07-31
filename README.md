@@ -104,13 +104,81 @@ lark-channel-bridge restart --profile codex
 lark-channel-bridge status --profile codex
 ```
 
+### Codex transport
+
+Codex profiles use `codex exec --json` by default. To opt a new profile into the
+Codex app-server transport, set it during bootstrap:
+
+```bash
+lark-channel-bridge profile create codex-app --agent codex --codex-transport app-server
+# The same option is available when `run`, `start`, or `migrate` creates a Codex profile.
+```
+
+The selection is persisted as `profiles.<name>.codex.transport`; the background
+service later starts from that persisted profile rather than retaining bootstrap
+flags. To switch an existing profile, stop it, edit that field to `exec` or
+`app-server`, then run `lark-channel-bridge restart --profile <name>`. Omitting the
+field keeps the backward-compatible `exec` behavior.
+
+The app-server transport keeps the same effective `CODEX_HOME`, so it reuses the
+Codex account, provider/model routing, and durable thread store. New Bridge
+threads are persistent, use readable `Feishu · ...` names, and can be discovered
+and resumed from the Codex Desktop sidebar. Codex App runs in a separate
+app-server process, so an inventory refresh, window refocus, or restart may be
+needed before a newly-created thread appears; there is no cross-process live
+`thread/started` broadcast. Hand off a thread sequentially between the Bridge and
+Codex App—do not let both processes write the same thread at the same time.
+
+Each Bridge app-server child uses process-local lean overrides: user MCP servers,
+MCP Apps, plugins, Browser/Computer Use, permission prompts, hooks, and desktop
+`notify` commands are disabled for that child. The Bridge does not rewrite the
+user's global Codex config. `codex.ignoreUserConfig` and `codex.ignoreRules`
+remain exec-only flags; app-server runs continue to use the normal account,
+provider, instructions, and rules from the shared Codex home.
+
+### Fixed controller workspace and worker tasks (MVP)
+
+An App Server profile can keep `workspaces.default` fixed to a dedicated
+controller directory and install a workspace-scoped `codex-task-controller`
+Skill. Initialization only writes the profile's configured default workspace;
+when `--workspace` is supplied it must resolve to that same directory:
+
+```bash
+lark-channel-bridge codex-task init --profile codex
+```
+
+Initialization creates `<default-workspace>/AGENTS.md` and
+`<default-workspace>/.agents/skills/codex-task-controller/SKILL.md` without
+overwriting existing files. Only an explicit `--force` replaces them. Runtime
+task state stays outside the workspace in
+`~/.lark-channel/profiles/<profile>/codex-tasks.json`.
+
+```bash
+lark-channel-bridge codex-task list --profile codex --json
+lark-channel-bridge codex-task create --profile codex --title "CI check" --cwd /absolute/project --json
+lark-channel-bridge codex-task create --profile codex --title "CI check" --cwd /absolute/project --message "Run the tests" --json
+lark-channel-bridge codex-task read T-A1B2C3 --profile codex --json
+lark-channel-bridge codex-task send T-A1B2C3 --profile codex --message "Continue with CI" --json
+```
+
+`list` returns only workers registered by that profile. `read` uses
+`thread/read` without resuming the task and returns filtered task metadata,
+status, and user/agent text rather than raw thread/tool payloads. `create` uses
+persistent `thread/start` plus `thread/name/set`; `send` performs
+`thread/resume` plus `turn/start` in a short-lived app-server and waits for a
+terminal event. A profile-local lock prevents two `codex-task send` commands
+from writing the same worker concurrently, but it cannot detect or block a
+separate Codex App process. App and Bridge must still hand off sequentially.
+This MVP intentionally omits delete/archive, background fire-and-forget,
+cross-process stop, and App-to-Lark live mirroring.
+
 ## Commands
 
 ### Host CLI
 
 ```text
-lark-channel-bridge run [--profile <name>] [--agent claude|codex] [--workspace <path>] [-c <config>]
-lark-channel-bridge migrate [--profile <name>] [--agent claude|codex]
+lark-channel-bridge run [--profile <name>] [--agent claude|codex] [--codex-transport exec|app-server] [--workspace <path>] [-c <config>]
+lark-channel-bridge migrate [--profile <name>] [--agent claude|codex] [--codex-transport exec|app-server]
 lark-channel-bridge ps
 lark-channel-bridge kill <id|#>
 lark-channel-bridge --help
@@ -121,12 +189,14 @@ lark-channel-bridge --help
 ```bash
 lark-channel-bridge profile create claude --agent claude
 lark-channel-bridge profile create codex --agent codex
+lark-channel-bridge profile create codex-app --agent codex --codex-transport app-server
 lark-channel-bridge profile list
 lark-channel-bridge profile use <name>
 lark-channel-bridge profile remove <name>
 lark-channel-bridge profile remove <name> --purge --yes
 lark-channel-bridge profile export <name> [--output ./profile.json] [--force]
 lark-channel-bridge profile export <name> --include-secrets --yes
+lark-channel-bridge codex-task init|list|create|read|send
 ```
 
 `profile remove` archives local state by default, including the active profile. If other profiles remain, the bridge switches to the next one; if it was the last profile, the root config is cleared so the same name can be created again. `--purge --yes` permanently deletes local state. `profile export` redacts app secrets by default; `--include-secrets --yes` includes sensitive config.
@@ -145,6 +215,7 @@ If a profile was created with the wrong agent kind, stop or unregister any match
 | `/ws remove <name>` | Delete a named workspace |
 | `/resume` | Resume compatible history for the same agent, working directory, and permission mode |
 | `/status` | Show profile, agent, working directory, session, lark-cli identity, and run state |
+| `/model` | Show the configured model and the latest actual model recorded for this session |
 | `/config` | Adjust presentation preferences, access settings, and lark-cli identity policy |
 | `/invite user @name` | Allow a user to use the bot in DMs |
 | `/invite admin @name` | Add an access-control admin |
@@ -159,7 +230,7 @@ If a profile was created with the wrong agent kind, stop or unregister any match
 | `/doctor [description]` | Run low-sensitive diagnostics |
 | `/help` | Help card |
 
-DMs do not require an @ mention. Groups and topic groups require `@bot` by default; `@all` is ignored. Cloud-doc comments in supported document types run when the bot is mentioned.
+DMs do not require an @ mention. Groups and topic groups require `@bot` by default; `@all` is ignored. Cloud-doc comments in supported document types run when the bot is mentioned. Messages beginning with `/` are always handled as Bridge commands; unknown commands return a help hint instead of being sent to the agent.
 
 ## Reply Display and COT
 

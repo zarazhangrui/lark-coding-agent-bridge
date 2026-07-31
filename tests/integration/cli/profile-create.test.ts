@@ -78,6 +78,7 @@ describe('profile create command', () => {
       await runProfileCreate('codex-dev', {
         rootDir: root,
         agent: 'codex',
+        codexTransport: 'app-server',
         workspace,
         appId: 'cli_codex_dev',
         appSecret: 'manual-secret',
@@ -94,6 +95,7 @@ describe('profile create command', () => {
     const configPath = join(root, 'config.json');
     const saved = JSON.parse(await readFile(configPath, 'utf8'));
     expect(saved.profiles['codex-dev']?.agentKind).toBe('codex');
+    expect(saved.profiles['codex-dev']?.codex?.transport).toBe('app-server');
     expect(saved.profiles['codex-dev']).not.toHaveProperty('sandbox');
 
     const loaded = await loadRootConfig(configPath);
@@ -115,6 +117,23 @@ describe('profile create command', () => {
         appSecret: 'manual-secret',
       }),
     ).rejects.toThrow(/profile already exists/);
+  });
+
+  it('rejects --codex-transport when creating a Claude profile', async () => {
+    const root = await makeRoot();
+    await writeProfiles(root, 'codex-dev', ['codex-dev']);
+
+    await expect(
+      runProfileCreate('claude-app-server', {
+        rootDir: root,
+        agent: 'claude',
+        codexTransport: 'app-server',
+        appId: 'cli_claude_app_server',
+        appSecret: 'manual-secret',
+        tenant: 'feishu',
+      }),
+    ).rejects.toThrow(/only be used with a Codex profile/);
+    expect(auth.validateAppCredentials).not.toHaveBeenCalled();
   });
 
   it('explains how to recover when an existing profile has the wrong agent', async () => {

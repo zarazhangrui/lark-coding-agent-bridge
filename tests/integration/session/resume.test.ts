@@ -134,7 +134,12 @@ describe('agent-aware run-flow resume', () => {
       sessionCatalog: claude.catalog,
       capability: claudeCapability(claude.profileConfig),
       policy: claudeRun.policy,
-      event: { type: 'system', sessionId: 'sess-recorded', cwd: claudeRun.cwdRealpath },
+      event: {
+        type: 'system',
+        sessionId: 'sess-recorded',
+        cwd: claudeRun.cwdRealpath,
+        model: 'claude-test',
+      },
     });
 
     expect(
@@ -144,7 +149,7 @@ describe('agent-aware run-flow resume', () => {
         cwdRealpath: claudeRun.cwdRealpath,
         policyFingerprint: claudeRun.policy.policyFingerprint,
       }),
-    ).toMatchObject({ sessionId: 'sess-recorded' });
+    ).toMatchObject({ sessionId: 'sess-recorded', model: 'claude-test' });
     expect(claude.sessions.resumeFor('chat-1', claudeRun.cwdRealpath)).toBe('sess-recorded');
 
     const codex = await createHarness('codex');
@@ -159,7 +164,7 @@ describe('agent-aware run-flow resume', () => {
       sessionCatalog: codex.catalog,
       capability: codexCapability(codex.profileConfig),
       policy: codexRun.policy,
-      event: { type: 'system', threadId: 'thread-recorded' },
+      event: { type: 'system', threadId: 'thread-recorded', model: 'gpt-test' },
     });
 
     expect(
@@ -169,7 +174,7 @@ describe('agent-aware run-flow resume', () => {
         cwdRealpath: codexRun.cwdRealpath,
         policyFingerprint: codexRun.policy.policyFingerprint,
       }),
-    ).toMatchObject({ threadId: 'thread-recorded' });
+    ).toMatchObject({ threadId: 'thread-recorded', model: 'gpt-test' });
     expect(codex.sessions.getRaw('chat-1')).toBeUndefined();
   });
 });

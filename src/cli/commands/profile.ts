@@ -29,6 +29,7 @@ export interface ProfileCommandOptions {
 
 export interface ProfileCreateOptions extends ProfileCommandOptions {
   agent?: string;
+  codexTransport?: string;
   workspace?: string;
   appId?: string;
   appSecret?: string;
@@ -126,6 +127,7 @@ export async function runProfileCreate(
       config: configFile,
       profile: name,
       agent: opts.agent,
+      codexTransport: opts.codexTransport,
       workspace: opts.workspace,
       appId: opts.appId,
       appSecret: opts.appSecret,

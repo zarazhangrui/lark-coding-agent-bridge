@@ -111,6 +111,7 @@ describe('sender identity in bridge_context', () => {
       { openId: 'ou_bot', name: 'Bridge', isBot: true },
       { openId: 'ou_human', name: '张三', isBot: false },
     ]);
+    expect(h.agent.runOptions[0]?.threadName).toBe('飞书 · @Bridge 部署完成，请验证');
   });
 
   it('marks a human sender via raw sender_type', async () => {

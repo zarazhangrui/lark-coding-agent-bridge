@@ -32,11 +32,13 @@ describe('Claude slash command visible behavior', () => {
     await Promise.all(cleanups.splice(0).map((cleanup) => cleanup()));
   });
 
-  it('lets unknown slash commands fall through as ordinary agent messages', async () => {
+  it('consumes unknown slash commands without invoking the agent', async () => {
     const h = await createHarness();
 
-    await expect(h.run('/xxx keep this as a prompt')).resolves.toBe(false);
-    expect(h.channel.sent).toEqual([]);
+    await expect(h.run('/xxx keep this as a prompt')).resolves.toBe(true);
+    expect(lastMarkdown(h.channel)).toContain('未知命令');
+    expect(lastMarkdown(h.channel)).toContain('/help');
+    expect(h.agent.runOptions).toHaveLength(0);
   });
 
   it('handles /new and /reset by clearing session state', async () => {
@@ -148,9 +150,21 @@ describe('Claude slash command visible behavior', () => {
     expect(lastContent(h.channel)).toHaveProperty('card');
     const help = JSON.stringify(lastContent(h.channel));
     expect(help).toContain('Fake Agent');
+    expect(help).toContain('/model');
     expect(help).toContain('lark-cli 身份策略');
     expect(help).not.toContain('/lark');
     expect(help).not.toContain('交给 Claude');
+  });
+
+  it('handles /model passively without starting an agent turn', async () => {
+    const h = await createHarness();
+
+    await expect(h.run('/model')).resolves.toBe(true);
+
+    expect(lastMarkdown(h.channel)).toContain('当前模型');
+    expect(lastMarkdown(h.channel)).toContain('跟随默认');
+    expect(lastMarkdown(h.channel)).toContain('尚未建立 session');
+    expect(h.agent.runOptions).toHaveLength(0);
   });
 
   it('reports lark-cli user-ready for structured user records', async () => {

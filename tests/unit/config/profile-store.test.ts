@@ -56,6 +56,7 @@ describe('profile store canonical serialization', () => {
         },
         codex: {
           binaryPath: '/usr/local/bin/codex',
+          transport: 'app-server',
           codexHome: '/tmp/codex-home',
           inheritCodexHome: false,
         },

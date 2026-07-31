@@ -4,7 +4,12 @@ import { homedir } from 'node:os';
 import { dirname, isAbsolute } from 'node:path';
 import type { LarkChannel, NormalizedMessage } from '@larksuite/channel';
 import { claudeCapability, codexCapability } from '../agent/capability';
-import { DEFAULT_MODEL, normalizeModelSelection, supportedModels } from '../agent/models';
+import {
+  DEFAULT_MODEL,
+  normalizeModelSelection,
+  resolveModelArg,
+  supportedModels,
+} from '../agent/models';
 import type { AgentAdapter } from '../agent/types';
 import type { ActiveRuns } from '../bot/active-runs';
 import {
@@ -79,6 +84,7 @@ import { RunRejected } from '../runtime/errors';
 import { validateAppCredentials } from '../utils/feishu-auth';
 import type { WorkspaceStore } from '../workspace/store';
 import { createBoundChat, defaultChatName } from '../bot/group';
+import { buildBridgeThreadName } from '../bot/thread-name';
 import { fetchKnownChats, type KnownChat } from '../bot/lark-info';
 import { hasStructuredLarkCliUserAuth } from '../lark-cli/identity-policy';
 
@@ -166,6 +172,7 @@ const handlers: Record<string, Handler> = {
   '/ws': handleWs,
   '/resume': handleResume,
   '/status': handleStatus,
+  '/model': handleModel,
   '/help': handleHelp,
   '/account': handleAccount,
   '/config': handleConfig,
@@ -209,7 +216,11 @@ export async function tryHandleCommand(ctx: CommandContext): Promise<boolean> {
   const cmd = parts[0] ?? '';
   const args = parts.slice(1).join(' ');
   const h = handlers[cmd];
-  if (!h) return false;
+  if (!h) {
+    log.info('command', 'unknown', { cmd: cmd.slice(0, 64) });
+    await reply(ctx, '未知命令。使用 `/help` 查看可用命令。');
+    return true;
+  }
   if (
     isAdminCommand(cmd) &&
     !canRunAdminCommand(ctx.controls.profileConfig, ctx.controls, ctx.msg.senderId).ok
@@ -803,9 +814,14 @@ async function handleStatus(_args: string, ctx: CommandContext): Promise<void> {
   const sess = ctx.sessions.getRaw(ctx.scope);
   const isCodex = ctx.controls.profileConfig.agentKind === 'codex';
   const catalogEntry =
-    isCodex && ctx.sessionCatalog && ctx.sessionCatalogIdentity
+    ctx.sessionCatalog && ctx.sessionCatalogIdentity
       ? ctx.sessionCatalog.activeFor(ctx.sessionCatalogIdentity)
       : undefined;
+  const requestedModel =
+    resolveModelArg(
+      ctx.controls.profileConfig.agentKind,
+      ctx.controls.profileConfig.preferences.model,
+    ) ?? 'default';
   const card = statusCard({
     profileName: ctx.controls.profile,
     cwd,
@@ -813,6 +829,8 @@ async function handleStatus(_args: string, ctx: CommandContext): Promise<void> {
     emptySessionText: isCodex ? '(未建立)' : undefined,
     sessionStale: !isCodex && Boolean(cwd && sess && sess.cwd !== cwd),
     agentName: ctx.agent.displayName,
+    requestedModel,
+    actualModel: catalogEntry?.model,
     runtimeAccess: runtimeAccessStatus(ctx.controls.profileConfig),
     larkCliStatus: await larkCliStatus(ctx),
     activeRun: Boolean(ctx.activeRuns.get(ctx.scope)),
@@ -824,6 +842,31 @@ async function handleStatus(_args: string, ctx: CommandContext): Promise<void> {
     chatMode: ctx.chatMode,
   });
   await ctx.channel.send(ctx.msg.chatId, { card }, commandReplyOptions(ctx));
+}
+
+async function handleModel(_args: string, ctx: CommandContext): Promise<void> {
+  const requested = resolveModelArg(
+    ctx.controls.profileConfig.agentKind,
+    ctx.controls.profileConfig.preferences.model,
+  );
+  const catalogEntry =
+    ctx.sessionCatalog && ctx.sessionCatalogIdentity
+      ? ctx.sessionCatalog.activeFor(ctx.sessionCatalogIdentity)
+      : undefined;
+  const configured = requested ? `\`${inlineCode(requested)}\`` : '跟随默认（未指定）';
+  const actual = catalogEntry?.model
+    ? `\`${inlineCode(catalogEntry.model)}\``
+    : catalogEntry
+      ? '当前 session 尚无实际模型记录，下一次普通消息后确认'
+      : '尚未建立 session，首次普通消息后确认';
+  await reply(
+    ctx,
+    ['🤖 **当前模型**', `- 配置：${configured}`, `- 最近实际：${actual}`].join('\n'),
+  );
+}
+
+function inlineCode(value: string): string {
+  return value.replace(/`/g, "'");
 }
 
 function formatOwnerState(ctx: CommandContext): string {
@@ -1172,6 +1215,7 @@ async function handleDoctor(args: string, ctx: CommandContext): Promise<void> {
     execution = await ctx.runExecutor.submit({
       scopeId: `${ctx.scope}:doctor`,
       policy,
+      threadName: buildBridgeThreadName('飞书诊断', 'agent echo check'),
       nowait: true,
       stopGraceMs: getAgentStopGraceMs(ctx.controls.cfg),
       observability: {

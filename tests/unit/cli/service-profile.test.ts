@@ -104,6 +104,10 @@ describe('profile-aware service commands', () => {
         },
         agentKind: 'codex',
       },
+      profileConfig: {
+        agentKind: 'codex',
+        codex: { binaryPath: '/opt/homebrew/bin/codex', transport: 'app-server' },
+      },
     });
     mocks.checkRuntimeLock.mockResolvedValue({ locked: false });
     mocks.readActiveProfile.mockResolvedValue('codex-dev');
@@ -132,13 +136,18 @@ describe('profile-aware service commands', () => {
         }),
       ]);
 
-    await runServiceStart({ profile: 'codex-dev', skipCheckLarkCli: true });
+    await runServiceStart({
+      profile: 'codex-dev',
+      codexTransport: 'app-server',
+      skipCheckLarkCli: true,
+    });
 
     // Classic per-profile service pins `run --profile <profile>`.
     expect(mocks.getServiceAdapter).toHaveBeenCalledWith('codex-dev', ['run', '--profile', 'codex-dev']);
     expect(mocks.resolveProfileRuntime).toHaveBeenNthCalledWith(1, expect.objectContaining({
       profile: 'codex-dev',
       agent: undefined,
+      codexTransport: 'app-server',
       workspace: undefined,
       appId: undefined,
       appSecret: undefined,
@@ -163,6 +172,10 @@ describe('profile-aware service commands', () => {
         },
         agentKind: 'codex',
       }),
+      profileConfig: expect.objectContaining({
+        agentKind: 'codex',
+        codex: expect.objectContaining({ transport: 'app-server' }),
+      }),
       appPaths: expect.objectContaining({
         profile: 'codex-dev',
         rootDir: '/tmp/lark-channel-home',
@@ -180,7 +193,7 @@ describe('profile-aware service commands', () => {
     expect(mocks.adapter.install).toHaveBeenCalled();
     expect(mocks.adapter.start).toHaveBeenCalled();
     expect(lines).toContain(
-      '✓ 已启动  bot: Codex Bot (cli_codex)  agent: Codex CLI (codex)  进程: p1',
+      '✓ 已启动  bot: Codex Bot (cli_codex)  agent: Codex App Server (codex)  进程: p1',
     );
   });
 

@@ -14,6 +14,7 @@ import {
 } from './permissions';
 
 export type AgentKind = 'claude' | 'codex';
+export type CodexTransport = 'exec' | 'app-server';
 export type SandboxMode = CodexSandboxMode;
 export type { AccessMode, PermissionConfig, PermissionSource };
 
@@ -40,6 +41,8 @@ export interface SandboxConfig {
 
 export interface CodexConfig {
   binaryPath: string;
+  /** Codex runtime transport. Omitted profiles retain the legacy `exec` behavior. */
+  transport?: CodexTransport;
   realpath?: string;
   version?: string;
   sha256?: string;
@@ -189,7 +192,7 @@ export function normalizeProfileConfig(input: unknown): ProfileConfig {
     };
     sandbox?: Partial<SandboxConfig>;
     permissions?: Partial<PermissionConfig>;
-    codex?: CodexConfig & { flags?: unknown };
+    codex?: Omit<CodexConfig, 'transport'> & { transport?: unknown; flags?: unknown };
     attachments?: Partial<AttachmentConfig>;
     comments?: unknown;
     larkCli?: unknown;
@@ -323,9 +326,13 @@ function normalizeWorkspaces(input: {
   return defaultWorkspace ? { default: defaultWorkspace } : {};
 }
 
-function normalizeCodex(input: CodexConfig & { flags?: unknown }): CodexConfig {
+function normalizeCodex(
+  input: Omit<CodexConfig, 'transport'> & { transport?: unknown; flags?: unknown },
+): CodexConfig {
+  const transport = normalizeCodexTransport(input.transport);
   const codex: CodexConfig = {
     binaryPath: input.binaryPath,
+    ...(transport === 'app-server' ? { transport } : {}),
     ...(typeof input.realpath === 'string' ? { realpath: input.realpath } : {}),
     ...(typeof input.version === 'string' ? { version: input.version } : {}),
     ...(typeof input.sha256 === 'string' ? { sha256: input.sha256 } : {}),
@@ -337,6 +344,26 @@ function normalizeCodex(input: CodexConfig & { flags?: unknown }): CodexConfig {
     ignoreRules: input.ignoreRules !== false,
   };
   return codex;
+}
+
+function normalizeCodexTransport(value: unknown): CodexTransport {
+  if (value === undefined || value === 'exec') return 'exec';
+  if (value === 'app-server') return value;
+  throw new Error('codex.transport must be exec or app-server');
+}
+
+export function effectiveCodexTransport(
+  codex: Pick<CodexConfig, 'transport'> | undefined,
+): CodexTransport {
+  return codex?.transport ?? 'exec';
+}
+
+export function codexTransportFromString(
+  value: string | undefined,
+): CodexTransport | undefined {
+  if (value === undefined) return undefined;
+  if (value === 'exec' || value === 'app-server') return value;
+  throw new Error(`unsupported Codex transport: ${value}`);
 }
 
 function normalizeComments(_input: unknown): CommentConfig {

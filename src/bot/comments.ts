@@ -13,6 +13,7 @@ import { resolveWorkingDirectory } from '../policy/workspace';
 import { RunRejected } from '../runtime/errors';
 import type { ActiveRuns } from './active-runs';
 import { recordRunSessionEvent } from './run-flow';
+import { buildBridgeThreadName } from './thread-name';
 import type { RunExecutor } from '../runtime/run-executor';
 import type { SessionCatalog } from '../session/catalog';
 import type { SessionStore } from '../session/store';
@@ -259,6 +260,7 @@ export async function handleCommentMention(deps: CommentDeps): Promise<void> {
       const execution = await deps.executor.submit({
         scopeId: runScopeId,
         policy,
+        threadName: buildBridgeThreadName('飞书评论', ctx.question),
         sessionId,
         threadId,
         stopGraceMs: getAgentStopGraceMs(controls.cfg),

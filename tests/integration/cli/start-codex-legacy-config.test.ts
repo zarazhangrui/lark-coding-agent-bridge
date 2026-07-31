@@ -55,9 +55,55 @@ describe('Codex startup compatibility with legacy binary metadata', () => {
       }),
     ).resolves.toBeUndefined();
   });
+
+  it('treats an older Codex profile as exec and rejects an explicit transport mismatch', async () => {
+    const h = await createLegacyCodexConfig({ codexMetadata: {} });
+
+    await expect(
+      resolveProfileRuntime({
+        config: h.configPath,
+        profile: 'codex',
+        codexTransport: 'app-server',
+        allowBootstrap: false,
+      }),
+    ).rejects.toThrow(/already uses Codex transport exec/);
+    await expect(
+      resolveProfileRuntime({
+        config: h.configPath,
+        profile: 'codex',
+        codexTransport: 'exec',
+        allowBootstrap: false,
+      }),
+    ).resolves.toMatchObject({ profile: 'codex' });
+  });
+
+  it('accepts a matching persisted app-server transport and rejects exec', async () => {
+    const h = await createLegacyCodexConfig({
+      codexMetadata: {},
+      transport: 'app-server',
+    });
+
+    await expect(
+      resolveProfileRuntime({
+        config: h.configPath,
+        profile: 'codex',
+        codexTransport: 'app-server',
+        allowBootstrap: false,
+      }),
+    ).resolves.toMatchObject({ profile: 'codex' });
+    await expect(
+      resolveProfileRuntime({
+        config: h.configPath,
+        profile: 'codex',
+        codexTransport: 'exec',
+        allowBootstrap: false,
+      }),
+    ).rejects.toThrow(/already uses Codex transport app-server/);
+  });
 });
 
 async function createLegacyCodexConfig(options: {
+  transport?: 'app-server';
   codexMetadata: {
     realpath?: string;
     version?: string;
@@ -110,6 +156,7 @@ async function createLegacyCodexConfig(options: {
     secrets,
     codex: {
       binaryPath: codex,
+      ...(options.transport ? { transport: options.transport } : {}),
       ...options.codexMetadata,
     },
   });

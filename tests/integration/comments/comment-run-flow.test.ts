@@ -57,6 +57,7 @@ describe('comment run flow', () => {
     expect(h.agent.runOptions).toHaveLength(1);
     const opts = h.agent.runOptions[0]!;
     await expect(realpath(h.tmp.workspace)).resolves.toBe(opts.cwd);
+    expect(opts.threadName).toBe('飞书评论 · @bot question');
     expect(opts.prompt).toContain('file_token：doc-token');
     expect(opts.prompt).toContain(
       'lark-cli docs +fetch --api-version v2 --doc doc-token --doc-format markdown',

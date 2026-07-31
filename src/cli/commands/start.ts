@@ -86,6 +86,7 @@ export interface StartOptions {
   config?: string;
   profile?: string;
   agent?: string;
+  codexTransport?: string;
   workspace?: string;
   appId?: string;
   appSecret?: string;

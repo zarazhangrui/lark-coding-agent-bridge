@@ -60,6 +60,20 @@ describe('start runtime agent factory', () => {
     expect(agent.displayName).toBe('Codex CLI');
   });
 
+  it('selects the App Server adapter only for an explicit Codex transport', () => {
+    const profile = createDefaultProfileConfig({
+      agentKind: 'codex',
+      accounts: appAccount(),
+      codex: { binaryPath: '/usr/local/bin/codex', transport: 'app-server' },
+    });
+    const agent = createRuntimeAgent(profile, {
+      profileDir: '/tmp/lark-channel-bridge/profiles/codex-app-server',
+    });
+
+    expect(agent.id).toBe('codex');
+    expect(agent.displayName).toBe('Codex App Server');
+  });
+
   it('seeds a default Codex binary when bootstrapping a new Codex profile', () => {
     const profile = createRuntimeProfileConfig({
       agentKind: 'codex',

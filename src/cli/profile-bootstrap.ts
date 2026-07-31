@@ -1,7 +1,12 @@
 import { mkdir, realpath } from 'node:fs/promises';
 import { join } from 'node:path';
 import { AgentPreflightError } from '../agent/preflight';
-import { createDefaultProfileConfig, type AgentKind, type ProfileConfig } from '../config/profile-schema';
+import {
+  createDefaultProfileConfig,
+  type AgentKind,
+  type CodexTransport,
+  type ProfileConfig,
+} from '../config/profile-schema';
 import type { AppConfig } from '../config/schema';
 import { resolveWorkingDirectory } from '../policy/workspace';
 import { resolveExecutablePath } from './agent-detection';
@@ -14,12 +19,16 @@ export interface BootstrapProfileInput {
   workspace?: string;
   defaultWorkspace?: string;
   codexBinaryPath?: string;
+  codexTransport?: CodexTransport;
   profileDir?: string;
 }
 
 export async function createBootstrapProfileConfig(
   input: BootstrapProfileInput,
 ): Promise<ProfileConfig> {
+  if (input.codexTransport && input.agentKind !== 'codex') {
+    throw new Error('codex transport can only be configured for a Codex profile');
+  }
   const workspace = input.workspace
     ? await resolveBootstrapWorkspace(input.workspace)
     : input.defaultWorkspace
@@ -27,7 +36,7 @@ export async function createBootstrapProfileConfig(
       : undefined;
   const codex =
     input.agentKind === 'codex'
-      ? await createBootstrapCodexConfig(input.codexBinaryPath)
+      ? await createBootstrapCodexConfig(input.codexBinaryPath, input.codexTransport)
       : undefined;
   const profile = createDefaultProfileConfig({
     agentKind: input.agentKind,
@@ -59,7 +68,10 @@ async function ensureManagedDefaultWorkspace(path: string): Promise<string> {
   return realpath(path);
 }
 
-export async function createBootstrapCodexConfig(binaryPath: string | undefined) {
+export async function createBootstrapCodexConfig(
+  binaryPath: string | undefined,
+  transport?: CodexTransport,
+) {
   const command = binaryPath ?? process.env.LARK_CHANNEL_CODEX_BIN ?? 'codex';
   let resolvedBinary: string;
   try {
@@ -75,7 +87,10 @@ export async function createBootstrapCodexConfig(binaryPath: string | undefined)
       errno,
     });
   }
-  return { binaryPath: resolvedBinary };
+  return {
+    binaryPath: resolvedBinary,
+    ...(transport === 'app-server' ? { transport } : {}),
+  };
 }
 
 function codexBootstrapBinaryErrorCode(errno: string | undefined) {

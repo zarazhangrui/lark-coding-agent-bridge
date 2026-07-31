@@ -64,6 +64,47 @@ describe('agent-aware session catalog', () => {
     await catalog.flush();
   });
 
+  it('persists the actual model for the same conversation without leaking it to another thread', async () => {
+    const catalogPath = await path();
+    const catalog = new SessionCatalog(catalogPath);
+    const identity = {
+      scopeId: 'chat-1',
+      agentId: 'codex' as const,
+      cwdRealpath: '/repo',
+      policyFingerprint: 'fp-1',
+    };
+
+    catalog.upsertActive({
+      ...identity,
+      threadId: 'thread-1',
+      model: 'gpt-5.6-luna',
+      now: 1000,
+    });
+    catalog.upsertActive({ ...identity, threadId: 'thread-1', now: 2000 });
+    expect(catalog.activeFor(identity)).toMatchObject({
+      threadId: 'thread-1',
+      model: 'gpt-5.6-luna',
+    });
+
+    catalog.upsertActive({ ...identity, threadId: 'thread-2', now: 3000 });
+    expect(catalog.activeFor(identity)).toMatchObject({ threadId: 'thread-2' });
+    expect(catalog.activeFor(identity)?.model).toBeUndefined();
+
+    catalog.upsertActive({
+      ...identity,
+      threadId: 'thread-2',
+      model: 'gpt-5.6-sol',
+      now: 4000,
+    });
+    await catalog.flush();
+    const reloaded = new SessionCatalog(catalogPath);
+    await reloaded.load();
+    expect(reloaded.activeFor(identity)).toMatchObject({
+      threadId: 'thread-2',
+      model: 'gpt-5.6-sol',
+    });
+  });
+
   it('rejects mismatched Claude/Codex identity fields and does not auto-resume damaged entries', async () => {
     const catalog = new SessionCatalog(await path());
 

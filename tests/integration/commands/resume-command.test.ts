@@ -245,16 +245,40 @@ describe('agent-aware resume commands', () => {
     let status = JSON.stringify(lastContent(h.channel));
     expect(status).toContain('**session**');
     expect(status).toContain('未建立');
+    expect(status).toContain('requested=default');
+    expect(status).toContain('actual=unconfirmed');
     expect(status).not.toContain('**thread**');
     expect(status).not.toContain('**conversation**');
 
-    h.catalog.upsertActive({ ...h.identity, threadId: 'thread-current', now: 1000 });
+    h.catalog.upsertActive({
+      ...h.identity,
+      threadId: 'thread-current',
+      model: 'gpt-5.6-luna',
+      now: 1000,
+    });
     await expect(h.run('/status')).resolves.toBe(true);
 
     status = JSON.stringify(lastContent(h.channel));
     expect(status).toContain('**session**');
     expect(status).toContain('thread-c');
+    expect(status).toContain('gpt-5.6-luna');
     expect(status).not.toContain('未建立');
+  });
+
+  it('reports the recorded Codex model without starting an agent prompt', async () => {
+    const h = await createHarness('codex');
+    h.catalog.upsertActive({
+      ...h.identity,
+      threadId: 'thread-current',
+      model: 'gpt-5.6-luna',
+      now: 1000,
+    });
+
+    await expect(h.run('/model')).resolves.toBe(true);
+
+    const output = lastMarkdown(h.channel);
+    expect(output).toContain('配置：跟随默认');
+    expect(output).toContain('最近实际：`gpt-5.6-luna`');
   });
 
   it('does not list local history from home when no workspace is bound', async () => {

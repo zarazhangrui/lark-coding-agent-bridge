@@ -68,6 +68,8 @@ export interface StatusInfo {
   emptySessionText?: string;
   sessionStale: boolean;
   agentName: string;
+  requestedModel?: string;
+  actualModel?: string;
   runtimeAccess: {
     label: string;
     value: string;
@@ -104,6 +106,11 @@ export function statusCard(info: StatusInfo): object {
     `📁 **cwd**: ${cwdLine}`,
     `🔗 **session**: ${sessionLine}`,
     `🤖 **agent**: ${escapeMd(info.agentName)}`,
+    ...(info.requestedModel
+      ? [
+          `🧠 **model**: requested=${escapeMd(info.requestedModel)}, actual=${escapeMd(info.actualModel ?? 'unconfirmed')}`,
+        ]
+      : []),
     `🛡 **${escapeMd(info.runtimeAccess.label)}**: ${escapeMd(info.runtimeAccess.value)}`,
     ...(info.larkCliStatus ? [`🔐 **lark-cli**: ${info.larkCliStatus}`] : []),
     `🏃 **active run**: ${info.activeRun ? 'yes' : 'no'}`,
@@ -192,6 +199,7 @@ export function helpCard(agentName = 'Agent'): object {
         '- `/account` — 查看当前应用；`/account change` 换 appId/secret 并重连',
         '- `/config` — 调整偏好、访问控制和 lark-cli 身份策略',
         '- `/status` — 当前状态',
+        '- `/model` — 查看配置模型和当前 session 最近实际使用的模型',
         '- `/stop` — 结束当前正在跑的任务（也可点卡片底部 ⏹ 终止 按钮）',
         '- `/stop comment:<scopeHash>` — 管理员停止云文档评论任务',
         '- `/timeout [N|off|default]` — 当前 session 的探活分钟数,`/config` 改全局默认',
@@ -202,7 +210,7 @@ export function helpCard(agentName = 'Agent'): object {
         `- \`/doctor [描述]\` — 把日志和描述交给 ${escapedAgentName} 自助诊断`,
         '- `/help` — 本帮助',
         '',
-        `其他内容直接交给 ${escapedAgentName}。`,
+        `不以 \`/\` 开头的其他内容直接交给 ${escapedAgentName}。`,
       ].join('\n'),
     ),
     HR,

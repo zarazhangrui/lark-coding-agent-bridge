@@ -31,6 +31,7 @@ describe('first-run profile bootstrap', () => {
       accounts: { app: { id: 'cli_codex', secret: '${APP_SECRET}', tenant: 'feishu' } },
       workspace,
       codexBinaryPath: codex,
+      codexTransport: 'app-server',
       profileDir,
     });
 
@@ -39,6 +40,7 @@ describe('first-run profile bootstrap', () => {
     expect(profile.workspaces).toEqual({ default: workspaceRealpath });
     expect(profile.codex).toMatchObject({
       binaryPath: codex,
+      transport: 'app-server',
       inheritCodexHome: true,
     });
     expect(profile.codex?.realpath).toBeUndefined();
@@ -67,6 +69,17 @@ describe('first-run profile bootstrap', () => {
 
     const defaultWorkspaceRealpath = await realpath(defaultWorkspace);
     expect(profile.workspaces.default).toBe(defaultWorkspaceRealpath);
+    expect(profile.codex).not.toHaveProperty('transport');
+  });
+
+  it('rejects Codex transport configuration for a Claude profile', async () => {
+    await expect(
+      createBootstrapProfileConfig({
+        agentKind: 'claude',
+        accounts: { app: { id: 'cli_claude', secret: '${APP_SECRET}', tenant: 'feishu' } },
+        codexTransport: 'app-server',
+      }),
+    ).rejects.toThrow(/Codex profile/);
   });
 
   it('reports missing Codex bootstrap binaries as agent preflight diagnostics', async () => {

@@ -11,8 +11,13 @@ import {
   type MigrateV2Result,
 } from '../../config/migrate-v2';
 import { legacyPaths, paths } from '../../config/paths';
-import { agentKindFromString } from '../../config/profile-store';
-import type { RootConfig } from '../../config/profile-schema';
+import { agentKindFromString, loadRootConfig } from '../../config/profile-store';
+import {
+  codexTransportFromString,
+  effectiveCodexTransport,
+  type CodexTransport,
+  type RootConfig,
+} from '../../config/profile-schema';
 import { isComplete, type AppCredentials, type AppConfig } from '../../config/schema';
 import { saveConfig } from '../../config/store';
 
@@ -20,6 +25,7 @@ export interface MigrateOptions {
   config?: string;
   profile?: string;
   agent?: string;
+  codexTransport?: string;
   confirmStopActiveBridgeProcesses?: (
     processes: ActiveBridgeMigrationProcess[],
   ) => Promise<boolean> | boolean;
@@ -44,14 +50,24 @@ export async function runMigrate(opts: MigrateOptions): Promise<void> {
   await migrateLegacyPaths();
   await migrateConfigShape(configPath);
   const agentKind = agentKindFromString(opts.agent) ?? (opts.profile === 'codex' ? 'codex' : undefined);
+  const codexTransport = codexTransportFromString(opts.codexTransport);
+  if (codexTransport && agentKind === 'claude') {
+    throw new Error('--codex-transport can only be used with a Codex profile');
+  }
   const needsV2Migration = await hasLegacyProfileConfig(configPath);
+  if (codexTransport && !needsV2Migration) {
+    await assertExistingCodexTransport(configPath, opts.profile, codexTransport);
+  }
+  if (codexTransport && needsV2Migration && agentKind !== 'codex') {
+    throw new Error('--codex-transport can only be used with a Codex profile');
+  }
   const result = await migrateProfileV2WithActiveBridgePrompt({
     rootDir: dirname(configPath),
     configFile: configPath,
     profile: opts.profile,
     ...(agentKind ? { agentKind } : {}),
     ...(needsV2Migration && agentKind === 'codex'
-      ? { codex: await createBootstrapCodexConfig(undefined) }
+      ? { codex: await createBootstrapCodexConfig(undefined, codexTransport) }
       : {}),
   }, opts);
   if (!result) return;
@@ -60,6 +76,28 @@ export async function runMigrate(opts: MigrateOptions): Promise<void> {
   } else {
     console.log(`✓ profile 目录结构已是最新：${result.profile}`);
   }
+}
+
+async function assertExistingCodexTransport(
+  configPath: string,
+  requestedProfile: string | undefined,
+  requestedTransport: CodexTransport,
+): Promise<void> {
+  const root = await loadRootConfig(configPath);
+  if (!root) return;
+  const profileName = requestedProfile ?? root.activeProfile;
+  const profile = root.profiles[profileName];
+  if (!profile) throw new Error(`profile not found: ${profileName}`);
+  if (profile.agentKind !== 'codex') {
+    throw new Error('--codex-transport can only be used with a Codex profile');
+  }
+  const configuredTransport = effectiveCodexTransport(profile.codex);
+  if (configuredTransport === requestedTransport) return;
+  throw new Error(
+    `profile ${profileName} already uses Codex transport ${configuredTransport}, ` +
+      `but this command requested --codex-transport ${requestedTransport}. ` +
+      'Update the persisted profile config and restart the profile to change transports.',
+  );
 }
 
 async function migrateProfileV2WithActiveBridgePrompt(

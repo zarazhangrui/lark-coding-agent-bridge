@@ -21,6 +21,7 @@ export interface SessionCatalogEntry extends SessionCatalogIdentity {
   updatedAt: number;
   sessionId?: string;
   threadId?: string;
+  model?: string;
   lastSummary?: string;
 }
 
@@ -28,6 +29,7 @@ export interface UpsertSessionCatalogInput extends SessionCatalogIdentity {
   now?: number;
   sessionId?: string;
   threadId?: string;
+  model?: string;
   lastSummary?: string;
 }
 
@@ -102,6 +104,9 @@ export class SessionCatalog {
   upsertActive(input: UpsertSessionCatalogInput): SessionCatalogEntry {
     assertAgentIdentity(input);
     const key = sessionCatalogKey(input);
+    const previous = this.data.get(key);
+    const previousModel = sameConversation(previous, input) ? previous?.model : undefined;
+    const model = input.model ?? previousModel;
     const entry: SessionCatalogEntry = {
       key,
       scopeId: input.scopeId,
@@ -112,6 +117,7 @@ export class SessionCatalog {
       updatedAt: input.now ?? Date.now(),
       ...(input.sessionId ? { sessionId: input.sessionId } : {}),
       ...(input.threadId ? { threadId: input.threadId } : {}),
+      ...(model ? { model } : {}),
       ...(input.lastSummary ? { lastSummary: input.lastSummary } : {}),
     };
     this.data.set(key, entry);
@@ -232,8 +238,18 @@ function normalizeEntry(input: unknown): SessionCatalogEntry | undefined {
     updatedAt: raw.updatedAt,
     ...(typeof raw.sessionId === 'string' ? { sessionId: raw.sessionId } : {}),
     ...(typeof raw.threadId === 'string' ? { threadId: raw.threadId } : {}),
+    ...(typeof raw.model === 'string' ? { model: raw.model } : {}),
     ...(typeof raw.lastSummary === 'string' ? { lastSummary: raw.lastSummary } : {}),
   };
+}
+
+function sameConversation(
+  entry: SessionCatalogEntry | undefined,
+  input: UpsertSessionCatalogInput,
+): boolean {
+  if (!entry) return false;
+  if (input.agentId === 'claude') return entry.sessionId === input.sessionId;
+  return entry.threadId === input.threadId;
 }
 
 function matchesIdentity(entry: SessionCatalogEntry, input: SessionCatalogIdentity): boolean {

@@ -25,6 +25,7 @@ export interface StartRunFlowInput {
   scopeId: string;
   scope: ScopeContext;
   prompt: string;
+  threadName?: string;
   attachments: AgentAttachment[];
   access: AccessDecision;
   capability: AgentCapability;
@@ -142,6 +143,7 @@ export async function startRunFlow(input: StartRunFlowInput): Promise<StartRunFl
     execution = await input.executor.submit({
       scopeId: input.scopeId,
       policy,
+      threadName: input.threadName,
       sessionId,
       threadId,
       model: resolveModelArg(
@@ -197,6 +199,7 @@ export function recordRunSessionEvent(input: RecordRunSessionEventInput): void {
       cwdRealpath,
       policyFingerprint: input.policy.policyFingerprint,
       sessionId: input.event.sessionId,
+      ...(input.event.model ? { model: input.event.model } : {}),
     });
     return;
   }
@@ -207,6 +210,7 @@ export function recordRunSessionEvent(input: RecordRunSessionEventInput): void {
       cwdRealpath: input.policy.cwdRealpath,
       policyFingerprint: input.policy.policyFingerprint,
       threadId: input.event.threadId,
+      ...(input.event.model ? { model: input.event.model } : {}),
     });
   }
 }

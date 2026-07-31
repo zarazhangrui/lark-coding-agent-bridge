@@ -104,13 +104,72 @@ lark-channel-bridge restart --profile codex
 lark-channel-bridge status --profile codex
 ```
 
+### Codex transport
+
+Codex profile 默认使用 `codex exec --json`。新建 profile 时可显式选择 Codex
+app-server transport：
+
+```bash
+lark-channel-bridge profile create codex-app --agent codex --codex-transport app-server
+# `run`、`start` 或 `migrate` 创建 Codex profile 时也支持同一选项。
+```
+
+该选择会持久化到 `profiles.<name>.codex.transport`；后台服务后续只依赖已保存的
+profile，不会保留首次启动参数。切换已有 profile 时，先停止它，把该字段改为
+`exec` 或 `app-server`，再运行 `lark-channel-bridge restart --profile <name>`。
+字段缺省时继续使用向后兼容的 `exec` 行为。
+
+app-server transport 保持同一个有效 `CODEX_HOME`，因此会复用 Codex 账号、
+provider/model routing 和持久化 thread store。Bridge 新建的 thread 会持久化，并使用
+可读的 `飞书 · ...` 名称；Codex Desktop sidebar 可以发现并恢复这些 thread。Codex App
+运行在另一个 app-server 进程中，新 thread 可能要等 inventory 刷新、窗口重新聚焦或
+App 重启后才出现，协议没有跨进程实时广播 `thread/started`。Bridge 和 Codex App 可以
+顺序交接同一个 thread，但不要让两个进程同时写它。
+
+Bridge 的每个 app-server 子进程都会应用局部 lean override：该子进程不会启动用户
+MCP、MCP Apps、plugins、Browser/Computer Use、permission prompt、hooks 或桌面
+`notify` 命令，也不会改写用户的全局 Codex 配置。`codex.ignoreUserConfig` 和
+`codex.ignoreRules` 仍然只是 exec transport 的 flag；app-server 继续使用共享 Codex
+home 中的正常账号、provider、指令和 rules。
+
+### 固定主控工作区与 worker tasks（MVP）
+
+App Server profile 可以把 `workspaces.default` 固定为专用主控目录，再安装一个
+工作区级 `codex-task-controller` Skill。初始化命令只写当前 profile 已配置的默认目录；
+如果传 `--workspace`，它也必须解析到同一个目录：
+
+```bash
+lark-channel-bridge codex-task init --profile codex
+```
+
+初始化会以 no-clobber 方式创建 `<default-workspace>/AGENTS.md` 和
+`<default-workspace>/.agents/skills/codex-task-controller/SKILL.md`；只有显式
+`--force` 才覆盖。运行时 registry 保存在
+`~/.lark-channel/profiles/<profile>/codex-tasks.json`，不会写进工作区或 Skill。
+
+```bash
+lark-channel-bridge codex-task list --profile codex --json
+lark-channel-bridge codex-task create --profile codex --title "CI 检查" --cwd /absolute/project --json
+lark-channel-bridge codex-task create --profile codex --title "CI 检查" --cwd /absolute/project --message "检查测试" --json
+lark-channel-bridge codex-task read T-A1B2C3 --profile codex --json
+lark-channel-bridge codex-task send T-A1B2C3 --profile codex --message "继续检查 CI" --json
+```
+
+`list` 只列出该 profile 注册的 worker；`read` 使用 `thread/read`，不会 resume task，
+并只返回筛选后的 task 元数据、状态和用户/agent 文本，不返回原始 thread/工具载荷。
+`create` 使用持久化 `thread/start` + `thread/name/set`；`send` 会在短生命周期
+app-server 中完成 `thread/resume` + `turn/start` 并等待终态。profile-local lock 可以
+防止两个 `codex-task send` 同时写一个 worker，但无法检测或阻止 Codex App 另一个
+进程正在写；App 与 Bridge 仍必须顺序交接。本 MVP 没有 delete/archive、后台
+fire-and-forget、跨进程 stop 或 App→飞书实时镜像。
+
 ## 命令速查
 
 ### 宿主 CLI
 
 ```text
-lark-channel-bridge run [--profile <name>] [--agent claude|codex] [--workspace <path>] [-c <config>]
-lark-channel-bridge migrate [--profile <name>] [--agent claude|codex]
+lark-channel-bridge run [--profile <name>] [--agent claude|codex] [--codex-transport exec|app-server] [--workspace <path>] [-c <config>]
+lark-channel-bridge migrate [--profile <name>] [--agent claude|codex] [--codex-transport exec|app-server]
 lark-channel-bridge ps
 lark-channel-bridge kill <id|#>
 lark-channel-bridge --help
@@ -121,12 +180,14 @@ lark-channel-bridge --help
 ```bash
 lark-channel-bridge profile create claude --agent claude
 lark-channel-bridge profile create codex --agent codex
+lark-channel-bridge profile create codex-app --agent codex --codex-transport app-server
 lark-channel-bridge profile list
 lark-channel-bridge profile use <name>
 lark-channel-bridge profile remove <name>
 lark-channel-bridge profile remove <name> --purge --yes
 lark-channel-bridge profile export <name> [--output ./profile.json] [--force]
 lark-channel-bridge profile export <name> --include-secrets --yes
+lark-channel-bridge codex-task init|list|create|read|send
 ```
 
 `profile remove` 默认归档本地状态，也可以删除当前激活的 profile。若还剩其他 profile，会自动切到下一个；若这是最后一个 profile，会清空 root config，之后可以用同名重新创建。只有加 `--purge --yes` 才会永久删除。`profile export` 默认脱敏 app secret；只有加 `--include-secrets --yes` 才会导出敏感配置。
@@ -145,6 +206,7 @@ lark-channel-bridge profile export <name> --include-secrets --yes
 | `/ws remove <name>` | 删除命名工作空间 |
 | `/resume` | 恢复同 agent、工作目录、权限模式兼容的历史会话 |
 | `/status` | 查看 profile、agent、工作目录、会话、lark-cli 身份和运行状态 |
+| `/model` | 查看配置模型和当前 session 最近记录的实际模型 |
 | `/config` | 调整展示偏好、访问控制和 lark-cli 身份策略 |
 | `/invite user @某人` | 允许用户私聊使用 bot |
 | `/invite admin @某人` | 添加访问控制管理员 |
@@ -159,7 +221,7 @@ lark-channel-bridge profile export <name> --include-secrets --yes
 | `/doctor [描述]` | 执行低敏诊断 |
 | `/help` | 帮助卡片 |
 
-私聊不需要 @。群和话题群默认必须 `@bot`；`@all` 会被忽略。支持的云文档评论里 @bot 就会触发回复。
+私聊不需要 @。群和话题群默认必须 `@bot`；`@all` 会被忽略。支持的云文档评论里 @bot 就会触发回复。以 `/` 开头的消息始终由 Bridge 命令层处理；未知命令只返回帮助提示，不会再交给 agent。
 
 ## 回复展示与 COT
 

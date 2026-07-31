@@ -26,6 +26,11 @@ describe('README runtime contract', () => {
       'pnpm test',
       'pnpm typecheck',
       'pnpm build',
+      '--codex-transport app-server',
+      'Codex Desktop sidebar',
+      'process-local lean overrides',
+      '局部 lean override',
+      '/model',
     ]) {
       expect(docs).toContain(phrase);
     }
@@ -90,6 +95,23 @@ describe('README runtime contract', () => {
     expect(docs).toContain('legacy `sandbox`');
     expect(docs).toContain('旧版 `sandbox`');
     expect(docs).not.toContain('"sandbox"');
+  });
+
+  it('documents the controller workspace task MVP in both languages', async () => {
+    const [en, zh] = await Promise.all([
+      readFile(new URL('../../../README.md', import.meta.url), 'utf8'),
+      readFile(new URL('../../../README.zh.md', import.meta.url), 'utf8'),
+    ]);
+
+    for (const docs of [en, zh]) {
+      expect(docs).toContain('lark-channel-bridge codex-task init');
+      expect(docs).toContain('.agents/skills/codex-task-controller/SKILL.md');
+      expect(docs).toContain('codex-tasks.json');
+      expect(docs).toContain('thread/read');
+      expect(docs).toContain('thread/resume');
+    }
+    expect(en).toContain('sequentially');
+    expect(zh).toContain('顺序交接');
   });
 });
 

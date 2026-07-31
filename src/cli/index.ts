@@ -25,6 +25,13 @@ import {
 } from './commands/service';
 import { runStart } from './commands/start';
 import { runUi } from './commands/ui';
+import {
+  runCodexTaskCreate,
+  runCodexTaskInit,
+  runCodexTaskList,
+  runCodexTaskRead,
+  runCodexTaskSend,
+} from './commands/codex-task';
 
 const program = new Command();
 
@@ -42,6 +49,7 @@ program
   .option('--profile <name>', 'profile name to run')
   .option('--web-ui', 'run the machine-wide supervisor + local web console (hosts all profiles); default is a single-profile headless run')
   .option('--agent <kind>', 'agent kind for a new profile (claude or codex)')
+  .option('--codex-transport <transport>', 'Codex transport for a new profile (exec or app-server; default exec)')
   .option('--workspace <path>', 'initial working directory for first-run profile bootstrap')
   .option('--app-id <id>', 'use an existing Lark/Feishu app instead of QR app creation')
   .option('--app-secret <secret>', 'App Secret for --app-id; prefer interactive input on shared machines')
@@ -52,6 +60,7 @@ program
     profile?: string;
     webUi?: boolean;
     agent?: string;
+    codexTransport?: string;
     workspace?: string;
     appId?: string;
     appSecret?: string;
@@ -67,7 +76,8 @@ program
   .option('-c, --config <path>', 'path to config file')
   .option('--profile <name>', 'target profile name for legacy v1 config migration')
   .option('--agent <kind>', 'agent kind for legacy v1 profile migration (claude or codex)')
-  .action(async (opts: { config?: string; profile?: string; agent?: string }) => {
+  .option('--codex-transport <transport>', 'Codex transport for the migrated profile (exec or app-server; default exec)')
+  .action(async (opts: { config?: string; profile?: string; agent?: string; codexTransport?: string }) => {
     await runMigrate(opts);
   });
 
@@ -82,16 +92,88 @@ profile
     await runProfileList();
   });
 
+const codexTask = program
+  .command('codex-task')
+  .description('Manage persistent Codex worker tasks for a controller workspace');
+
+codexTask
+  .command('init')
+  .description('Install the controller AGENTS.md and repo-scoped Skill into a workspace')
+  .option('--profile <name>', 'Codex profile (defaults to LARK_CHANNEL_PROFILE or active profile)')
+  .option('--workspace <path>', 'controller workspace (defaults to the profile workspace)')
+  .option('--force', 'overwrite existing controller AGENTS.md and Skill')
+  .option('--json', 'print machine-readable JSON')
+  .action(async (opts: { profile?: string; workspace?: string; force?: boolean; json?: boolean }) => {
+    await runCodexTaskInit(opts);
+  });
+
+codexTask
+  .command('list')
+  .description('List worker tasks registered by this profile')
+  .option('--profile <name>', 'Codex profile (defaults to LARK_CHANNEL_PROFILE or active profile)')
+  .option('--json', 'print machine-readable JSON')
+  .action(async (opts: { profile?: string; json?: boolean }) => {
+    await runCodexTaskList(opts);
+  });
+
+codexTask
+  .command('create')
+  .description('Create and register a persistent Codex worker task')
+  .requiredOption('--title <title>', 'user-facing task title')
+  .requiredOption('--cwd <path>', 'absolute worker working directory')
+  .option('--model <slug>', 'per-task model override')
+  .option('--message <text>', 'optional first instruction; waits for the turn to finish')
+  .option('--profile <name>', 'Codex profile (defaults to LARK_CHANNEL_PROFILE or active profile)')
+  .option('--json', 'print machine-readable JSON')
+  .action(async (opts: {
+    title: string;
+    cwd: string;
+    model?: string;
+    message?: string;
+    profile?: string;
+    json?: boolean;
+  }) => {
+    await runCodexTaskCreate(opts);
+  });
+
+codexTask
+  .command('read <handle>')
+  .description('Read a registered task without resuming it')
+  .option('--limit <count>', 'maximum recent conversation messages to print (1-50)', '5')
+  .option('--profile <name>', 'Codex profile (defaults to LARK_CHANNEL_PROFILE or active profile)')
+  .option('--json', 'print filtered machine-readable task metadata and conversation text')
+  .action(async (handle: string, opts: { limit?: string; profile?: string; json?: boolean }) => {
+    await runCodexTaskRead(handle, opts);
+  });
+
+codexTask
+  .command('send <handle>')
+  .description('Resume a registered task, send one instruction, and wait for completion')
+  .requiredOption('--message <text>', 'instruction to send')
+  .option('--model <slug>', 'per-turn model override, persisted for later sends')
+  .option('--profile <name>', 'Codex profile (defaults to LARK_CHANNEL_PROFILE or active profile)')
+  .option('--json', 'print machine-readable JSON')
+  .action(async (handle: string, opts: {
+    message: string;
+    model?: string;
+    profile?: string;
+    json?: boolean;
+  }) => {
+    await runCodexTaskSend(handle, opts);
+  });
+
 profile
   .command('create <name>')
   .description('Create a profile from QR registration or existing app credentials')
   .option('--agent <kind>', 'agent kind (claude or codex)')
+  .option('--codex-transport <transport>', 'Codex transport (exec or app-server; default exec)')
   .option('--workspace <path>', 'initial working directory for this profile')
   .option('--app-id <id>', 'use an existing Lark/Feishu app instead of QR app creation')
   .option('--app-secret <secret>', 'App Secret for --app-id; prefer interactive input on shared machines')
   .option('--tenant <tenant>', 'tenant for --app-id (feishu or lark; default feishu)')
   .action(async (name: string, opts: {
     agent?: string;
+    codexTransport?: string;
     workspace?: string;
     appId?: string;
     appSecret?: string;
@@ -168,6 +250,7 @@ program
   .option('--profile <name>', 'profile name (defaults to active profile)')
   .option('--web-ui', 'run the supervisor + web console as the background service (hosts all profiles) instead of a single profile')
   .option('--agent <kind>', 'agent kind for first-run profile bootstrap (claude or codex)')
+  .option('--codex-transport <transport>', 'Codex transport for first-run profile bootstrap (exec or app-server; default exec)')
   .option('--workspace <path>', 'initial working directory for first-run profile bootstrap')
   .option('--app-id <id>', 'use an existing Lark/Feishu app instead of QR app creation')
   .option('--app-secret <secret>', 'App Secret for --app-id; prefer interactive input on shared machines')
@@ -177,6 +260,7 @@ program
     profile?: string;
     webUi?: boolean;
     agent?: string;
+    codexTransport?: string;
     workspace?: string;
     appId?: string;
     appSecret?: string;

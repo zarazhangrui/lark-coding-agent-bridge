@@ -21,6 +21,7 @@ import { stopProcessEntry, type StopProcessEntryResult } from './ps';
 export interface ServiceStartOptions {
   profile?: string;
   agent?: string;
+  codexTransport?: string;
   workspace?: string;
   appId?: string;
   appSecret?: string;
@@ -153,6 +154,7 @@ async function ensureBridgeConfigured(
   const { cfg, profile, profileConfig, appPaths, configPath } = await resolveProfileRuntime({
     profile: opts.profile,
     agent: opts.agent,
+    codexTransport: opts.codexTransport,
     workspace: opts.workspace,
     appId: opts.appId,
     appSecret: opts.appSecret,
@@ -281,7 +283,8 @@ async function reportConnectAfter(
   profile: string,
   fn: () => ServiceResultLike,
 ): Promise<void> {
-  const { cfg } = await resolveProfileRuntime({ profile, allowBootstrap: false });
+  const runtime = await resolveProfileRuntime({ profile, allowBootstrap: false });
+  const { cfg } = runtime;
   const appId = cfg.accounts?.app?.id ?? '';
   const beforePids = new Set(
     readAndPrune()
@@ -301,7 +304,7 @@ async function reportConnectAfter(
   const entry = await waitForServiceConnect(appId, profile, beforePids);
   if (entry) {
     const verbZh = verb === 'started' ? '已启动' : '已重启';
-    const agent = agentDisplay(entry.agentKind);
+    const agent = agentDisplay(entry.agentKind, runtime.profileConfig?.codex?.transport);
     console.log(
       `✓ ${verbZh}  bot: ${entry.botName} (${entry.appId})  agent: ${agent.displayName} (${agent.id})  进程: ${entry.id}`,
     );
@@ -604,8 +607,14 @@ async function maybeResolveProfileRuntime(
   }
 }
 
-function agentDisplay(agentKind: ProcessEntry['agentKind']): { id: string; displayName: string } {
+function agentDisplay(
+  agentKind: ProcessEntry['agentKind'],
+  codexTransport?: string,
+): { id: string; displayName: string } {
   return agentKind === 'codex'
-    ? { id: 'codex', displayName: 'Codex CLI' }
+    ? {
+        id: 'codex',
+        displayName: codexTransport === 'app-server' ? 'Codex App Server' : 'Codex CLI',
+      }
     : { id: 'claude', displayName: 'Claude Code' };
 }

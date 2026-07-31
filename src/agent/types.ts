@@ -31,6 +31,8 @@ export const CLAUDE_DEFAULT_PERMISSION_MODE: ClaudePermissionMode = 'bypassPermi
 export interface AgentRunOptions {
   runId: string;
   prompt: string;
+  /** User-facing title for a newly-created persistent thread. */
+  threadName?: string;
   cwd?: string;
   sessionId?: string;
   threadId?: string;
@@ -82,6 +84,8 @@ export interface AgentAdapter {
   isAvailable(): Promise<boolean>;
   checkAvailability?(): Promise<AgentAvailability>;
   prepareRun?(opts: AgentRunOptions): Promise<void>;
+  /** Release process-local preparation state when a prepared run is cancelled before spawn. */
+  discardPreparedRun?(opts: AgentRunOptions): void;
   run(opts: AgentRunOptions): AgentRun;
   /**
    * Late-bound identity injection: the adapter is constructed before the

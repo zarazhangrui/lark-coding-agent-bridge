@@ -18,6 +18,7 @@ export interface RunExecutorDeps {
 export interface SubmitRunInput {
   scopeId: string;
   policy: RunPolicyAllow;
+  threadName?: string;
   sessionId?: string;
   threadId?: string;
   model?: string;
@@ -96,6 +97,7 @@ export class RunExecutor {
     const runOptions = {
       runId,
       prompt: input.policy.prompt,
+      threadName: input.threadName,
       cwd: input.policy.cwdRealpath,
       sessionId: input.sessionId,
       threadId: input.threadId,
@@ -115,6 +117,7 @@ export class RunExecutor {
       throw new SpawnFailed('agent prepare failed', err, 'agent-prepare-failed');
     }
     if (this.activeRuns.newRunsPaused()) {
+      this.agent.discardPreparedRun?.(runOptions);
       release();
       releaseScope();
       throw new RunRejected(
