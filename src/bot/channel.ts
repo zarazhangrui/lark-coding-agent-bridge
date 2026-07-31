@@ -77,9 +77,9 @@ const STREAM_TERMINAL_GRACE_MS = 3000;
 const REACTION_CLEANUP_GRACE_MS = 1000;
 
 const BRIDGE_AGENT_INSTRUCTIONS = [
-  '你在 bridge 进程中运行，普通 lark-cli 会继承 LARK_CHANNEL=1 并进入 bridge-bound 模式。',
-  '不要 unset LARK_CHANNEL / LARK_CHANNEL_HOME / LARK_CHANNEL_PROFILE / LARKSUITE_CLI_CONFIG_DIR，也不要用 env -u LARK_CHANNEL 绕回本机普通配置。',
-  'Codex bridge 默认使用 danger-full-access 对齐 Claude bridge 的 bypassPermissions 行为，因此 lark-cli 应能像用户本机终端一样访问 keychain。',
+  '你在 bridge 进程中运行，调用 lark-cli 必须使用 "$LARK_CHANNEL_LARK_CLI_BIN"，不要依赖可能被 login shell 重置的 PATH。',
+  '不要 unset LARK_CHANNEL / LARK_CHANNEL_HOME / LARK_CHANNEL_PROFILE / LARKSUITE_CLI_CONFIG_DIR / LARKSUITE_CLI_DATA_DIR / LARK_CHANNEL_LARK_CLI_BIN，也不要用 env -u LARK_CHANNEL 绕回本机普通配置。',
+  'bridge 已固定当前账号的 lark-cli data 目录，因此隔离 HOME 不会切断 Linux keychain。',
   '如果提示 lark-channel context detected but not bound，停止当前操作并请用户重启 bridge 或运行 bridge doctor/preflight；不要改用普通 profile，不要自行 bind，也不要直接读取 config.json 里的账号或密钥。',
 ];
 

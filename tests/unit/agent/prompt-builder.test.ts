@@ -104,10 +104,10 @@ describe('agent prompt builder', () => {
 
     expect(source).not.toContain('命令必须写成 env -u LARK_CHANNEL');
     expect(source).not.toContain('env -u LARK_CHANNEL lark-cli');
-    expect(source).toContain('danger-full-access');
-    expect(source).toContain('bypassPermissions');
     expect(source).toContain('不要 unset LARK_CHANNEL');
     expect(source).toContain('LARKSUITE_CLI_CONFIG_DIR');
+    expect(source).toContain('LARKSUITE_CLI_DATA_DIR');
+    expect(source).toContain('LARK_CHANNEL_LARK_CLI_BIN');
     expect(source).not.toContain('lark-cli config bind --source lark-channel');
   });
 
@@ -115,9 +115,10 @@ describe('agent prompt builder', () => {
     const source = readFileSync(join(process.cwd(), 'src/agent/bridge-system-prompt.ts'), 'utf8');
 
     expect(source).toContain('LARKSUITE_CLI_CONFIG_DIR');
-    expect(source).toContain('lark-cli auth login --device-code');
-    expect(source).toContain('lark-cli config strict-mode off');
-    expect(source).toContain('lark-cli config default-as auto');
+    expect(source).toContain('LARKSUITE_CLI_DATA_DIR');
+    expect(source).toContain('"$LARK_CHANNEL_LARK_CLI_BIN" auth login --device-code');
+    expect(source).toContain('"$LARK_CHANNEL_LARK_CLI_BIN" config strict-mode off');
+    expect(source).toContain('"$LARK_CHANNEL_LARK_CLI_BIN" config default-as auto');
     expect(source).not.toContain('env -u LARK_CHANNEL lark-cli auth login');
   });
 

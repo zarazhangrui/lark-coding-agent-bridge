@@ -60,6 +60,8 @@ describe('ClaudeAdapter process contract', () => {
     expect(record.systemPrompt).toContain('__bridge_cb');
     expect(record.systemPrompt).toContain('LARK_CHANNEL_PROFILE');
     expect(record.systemPrompt).toContain('LARKSUITE_CLI_CONFIG_DIR');
+    expect(record.systemPrompt).toContain('LARKSUITE_CLI_DATA_DIR');
+    expect(record.systemPrompt).toContain('LARK_CHANNEL_LARK_CLI_BIN');
     expect(record.systemPrompt).not.toContain('lark-cli config bind --source lark-channel');
     expect(record.systemPrompt).not.toContain('__claude_cb');
     expect(record.argv).not.toContain('--resume');
@@ -74,6 +76,8 @@ describe('ClaudeAdapter process contract', () => {
     const rootDir = join(fake.dir, 'channel-home');
     const configPath = join(rootDir, 'config.custom.json');
     const larkCliConfigDir = join(rootDir, 'profiles', 'codex-dev', 'lark-cli');
+    const larkCliDataDir = join(fake.dir, 'lark-cli-data');
+    const larkCliBinPath = join(fake.dir, 'bin', 'lark-cli');
     const larkCliSourceConfigFile = join(rootDir, 'profiles', 'codex-dev', 'lark-cli-source', 'config.json');
 
     const run = new ClaudeAdapter({
@@ -83,6 +87,8 @@ describe('ClaudeAdapter process contract', () => {
         rootDir,
         configPath,
         larkCliConfigDir,
+        larkCliDataDir,
+        larkCliBinPath,
         larkCliSourceConfigFile,
       },
     }).run({
@@ -100,6 +106,8 @@ describe('ClaudeAdapter process contract', () => {
       LARK_CHANNEL_HOME: rootDir,
       LARK_CHANNEL_CONFIG: larkCliSourceConfigFile,
       LARKSUITE_CLI_CONFIG_DIR: larkCliConfigDir,
+      LARKSUITE_CLI_DATA_DIR: larkCliDataDir,
+      LARK_CHANNEL_LARK_CLI_BIN: larkCliBinPath,
     });
   });
 
@@ -249,6 +257,8 @@ async function createFakeClaude(options: {
       '      LARK_CHANNEL_HOME: process.env.LARK_CHANNEL_HOME,',
       '      LARK_CHANNEL_CONFIG: process.env.LARK_CHANNEL_CONFIG,',
       '      LARKSUITE_CLI_CONFIG_DIR: process.env.LARKSUITE_CLI_CONFIG_DIR,',
+      '      LARKSUITE_CLI_DATA_DIR: process.env.LARKSUITE_CLI_DATA_DIR,',
+      '      LARK_CHANNEL_LARK_CLI_BIN: process.env.LARK_CHANNEL_LARK_CLI_BIN,',
       '    },',
       '  }));',
       `  const lines = ${JSON.stringify(options.lines)};`,
@@ -274,6 +284,8 @@ async function readRecord(path: string): Promise<{
     LARK_CHANNEL_HOME?: string;
     LARK_CHANNEL_CONFIG?: string;
     LARKSUITE_CLI_CONFIG_DIR?: string;
+    LARKSUITE_CLI_DATA_DIR?: string;
+    LARK_CHANNEL_LARK_CLI_BIN?: string;
   };
 }> {
   return JSON.parse(await readFile(path, 'utf8')) as {
@@ -287,6 +299,8 @@ async function readRecord(path: string): Promise<{
       LARK_CHANNEL_HOME?: string;
       LARK_CHANNEL_CONFIG?: string;
       LARKSUITE_CLI_CONFIG_DIR?: string;
+      LARKSUITE_CLI_DATA_DIR?: string;
+      LARK_CHANNEL_LARK_CLI_BIN?: string;
     };
   };
 }
