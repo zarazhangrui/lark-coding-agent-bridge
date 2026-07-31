@@ -8,7 +8,7 @@ import {
   type CodexAppServerProcessOptions,
 } from './app-server-process';
 import { CodexAppServerJsonRpc, type CodexAppServerIncoming } from './app-server-jsonrpc';
-import { buildLeanAppServerArgs } from './app-server-lean';
+import { assertMcpServersDisabled, buildLeanAppServerArgs } from './app-server-lean';
 
 type CodexAppServerChild = SpawnedProcessByStdio<Writable, Readable, Readable>;
 
@@ -104,6 +104,13 @@ export async function withCodexAppServerConnection<T>(
       capabilities: null,
     });
     await connection.notify('initialized');
+    const response = recordValue(await connection.request('config/read', {
+      includeLayers: false,
+      cwd: options.cwd,
+    }));
+    const config = recordValue(response?.config);
+    if (!config) throw new Error('codex app-server config/read returned no config');
+    assertMcpServersDisabled(config.mcp_servers ?? config.mcpServers);
     return await operation(connection);
   } finally {
     if (!child.stdin.destroyed && !child.stdin.writableEnded) child.stdin.end();
@@ -134,6 +141,10 @@ function receiveLine(line: string, rpc: CodexAppServerJsonRpc): void {
 
 function rejectServerRequest(rpc: CodexAppServerJsonRpc, request: CodexAppServerIncoming): void {
   if (request.kind !== 'request') return;
+  if (request.method === 'currentTime/read') {
+    void rpc.respond(request.id, { currentTimeAt: Math.floor(Date.now() / 1000) });
+    return;
+  }
   void rpc.respondError(request.id, -32601, `unsupported task-controller request: ${request.method}`);
 }
 
@@ -163,4 +174,10 @@ async function waitForPromise(promise: Promise<unknown>, timeoutMs: number): Pro
   } finally {
     if (timer) clearTimeout(timer);
   }
+}
+
+function recordValue(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined;
 }

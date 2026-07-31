@@ -26,6 +26,8 @@ export interface CodexTaskExecutionResult {
   task: CodexTaskRecord;
   output: string;
   terminationReason: CodexTaskTerminationReason;
+  registrySync: 'synced' | 'pending';
+  registryError?: string;
 }
 
 export interface CodexTaskReadResult {
@@ -53,44 +55,67 @@ export class CodexTaskController {
   }
 
   list(): Promise<CodexTaskRecord[]> {
-    return this.options.registry.list();
+    return this.reconciledList();
   }
 
   async create(input: CreateCodexTaskInput): Promise<CodexTaskRecord | CodexTaskExecutionResult> {
     const title = nonEmpty(input.title, 'title');
     const cwd = nonEmpty(input.cwd, 'cwd');
-    const response = recordValue(await withCodexAppServerConnection(
-      { ...this.options, cwd },
-      async (connection) => {
-        const started = await connection.request('thread/start', {
-          cwd,
-          approvalPolicy: 'never',
-          sandbox: this.options.sandbox ?? 'danger-full-access',
-          serviceName: 'lark-channel-bridge-task-controller',
-          threadSource: 'user',
-          ephemeral: false,
-          ...(input.model ? { model: input.model } : {}),
-        });
-        const raw = recordValue(started);
-        const threadId = stringValue(recordValue(raw?.thread)?.id);
-        if (!threadId) throw new Error('codex app-server returned no thread id');
-        await connection.request('thread/name/set', { threadId, name: title });
-        return started;
-      },
-    ));
-    const thread = recordValue(response?.thread);
-    const threadId = stringValue(thread?.id);
-    if (!threadId) throw new Error('codex app-server returned no thread id');
-    const model = stringValue(response?.model) ?? input.model;
-    const task = await this.options.registry.register({
-      threadId,
+    const pending = await this.options.registry.reserve({
       title,
       cwd,
-      ...(model ? { model } : {}),
-      status: 'idle',
+      ...(input.model ? { model: input.model } : {}),
     });
+    let threadId: string | undefined;
+    let named = false;
+    let task: CodexTaskRecord;
+    try {
+      await withCodexAppServerConnection(
+        { ...this.options, cwd },
+        async (connection) => {
+          const started = recordValue(await connection.request('thread/start', {
+            cwd,
+            approvalPolicy: 'never',
+            sandbox: this.options.sandbox ?? 'danger-full-access',
+            serviceName: 'lark-channel-bridge-task-controller',
+            threadSource: 'user',
+            ephemeral: false,
+            ...(input.model ? { model: input.model } : {}),
+          }));
+          threadId = stringValue(recordValue(started?.thread)?.id);
+          if (!threadId) throw new Error('codex app-server returned no thread id');
+          await this.options.registry.importThread(pending.handle, threadId);
+          await connection.request('thread/name/set', { threadId, name: title });
+          named = true;
+        },
+      );
+      task = await this.options.registry.update(pending.handle, { status: 'idle' });
+    } catch (err) {
+      const message = errorMessage(err);
+      const desiredStatus = named ? 'idle' : 'failed';
+      let recoveryError: string | undefined;
+      try {
+        await this.options.registry.markReconcile(pending.handle, {
+          desiredStatus,
+          error: message,
+          ...(threadId ? { threadId } : {}),
+          lastResult: truncate(message, 4_000),
+        });
+      } catch (recoveryErr) {
+        recoveryError = errorMessage(recoveryErr);
+      }
+      throw new Error([
+        `Codex task ${pending.handle} creation requires recovery`,
+        threadId ? `durable thread ${threadId}` : 'thread start was not confirmed',
+        message,
+        ...(recoveryError ? [`registry recovery record failed: ${recoveryError}`] : []),
+      ].join(': '), { cause: err });
+    }
     if (!input.message?.trim()) return task;
-    return this.send(task.handle, { message: input.message, ...(input.model ? { model: input.model } : {}) });
+    return this.send(task.handle, {
+      message: input.message,
+      ...(input.model ? { model: input.model } : {}),
+    });
   }
 
   async read(handle: string, includeTurns = true): Promise<CodexTaskReadResult> {
@@ -113,35 +138,78 @@ export class CodexTaskController {
     const runLockPath = join(this.options.profileStateDir, 'codex-task-runs', task.handle);
     return withConfigFileLock(runLockPath, async () => {
       const model = input.model ?? task.model;
-      await this.options.registry.update(task.handle, {
+      const running = await this.options.registry.update(task.handle, {
         status: 'running',
-        ...(model ? { model } : {}),
+        ...(input.model ? { model: input.model } : {}),
       });
+      let outcome: Awaited<ReturnType<CodexTaskController['executeTurn']>>;
       try {
-        const outcome = await this.executeTurn(task, message, model);
+        outcome = await this.executeTurn(task, message, model);
+      } catch (err) {
+        try {
+          await this.options.registry.update(task.handle, {
+            status: 'failed',
+            ...(input.model ? { model: input.model } : {}),
+            lastResult: truncate(errorMessage(err), 4_000),
+          });
+        } catch (registryErr) {
+          throw new Error(
+            `${errorMessage(err)}; registry failure state was not persisted: ${errorMessage(registryErr)}`,
+            { cause: err },
+          );
+        }
+        throw err;
+      }
+
+      const status = executionStatus(outcome.terminationReason);
+      const lastResult = truncate(outcome.output, 4_000);
+      try {
         const updated = await this.options.registry.update(task.handle, {
-          status: executionStatus(outcome.terminationReason),
-          ...(model ? { model } : {}),
-          lastResult: truncate(outcome.output, 4_000),
+          status,
+          ...(input.model ? { model: input.model } : {}),
+          lastResult,
         });
         return {
           task: updated,
           output: outcome.output,
           terminationReason: outcome.terminationReason,
+          registrySync: 'synced',
         };
-      } catch (err) {
-        await this.options.registry.update(task.handle, {
-          status: 'failed',
-          ...(model ? { model } : {}),
-          lastResult: truncate(err instanceof Error ? err.message : String(err), 4_000),
-        });
-        throw err;
+      } catch (registryErr) {
+        const registryError = errorMessage(registryErr);
+        const lastTurnId = await this.readLatestTurnId(task).catch(() => undefined);
+        let recoveryError: string | undefined;
+        try {
+          await this.options.registry.markReconcile(task.handle, {
+            desiredStatus: status,
+            error: registryError,
+            threadId: task.threadId,
+            ...(lastTurnId ? { lastTurnId } : {}),
+            lastResult,
+          });
+        } catch (err) {
+          recoveryError = errorMessage(err);
+        }
+        return {
+          task: {
+            ...running,
+            status,
+            lastResult,
+            ...(lastTurnId ? { lastTurnId } : {}),
+          },
+          output: outcome.output,
+          terminationReason: outcome.terminationReason,
+          registrySync: 'pending',
+          registryError: recoveryError
+            ? `${registryError}; recovery record failed: ${recoveryError}`
+            : registryError,
+        };
       }
     });
   }
 
   private async executeTurn(
-    task: CodexTaskRecord,
+    task: CodexTaskRecord & { threadId: string },
     message: string,
     model: string | undefined,
   ): Promise<{ output: string; terminationReason: CodexTaskTerminationReason }> {
@@ -181,14 +249,38 @@ export class CodexTaskController {
     return { output, terminationReason };
   }
 
-  private async requireTask(handle: string): Promise<CodexTaskRecord> {
+  private async readLatestTurnId(task: CodexTaskRecord & { threadId: string }): Promise<string | undefined> {
+    const result = recordValue(await withCodexAppServerConnection(
+      { ...this.options, cwd: task.cwd },
+      (connection) => connection.request('thread/read', {
+        threadId: task.threadId,
+        includeTurns: true,
+      }),
+    ));
+    const thread = recordValue(result?.thread);
+    const turns = Array.isArray(thread?.turns) ? thread.turns : [];
+    return stringValue(recordValue(turns.at(-1))?.id);
+  }
+
+  private async reconciledList(): Promise<CodexTaskRecord[]> {
+    await this.options.registry.reconcile();
+    return this.options.registry.list();
+  }
+
+  private async requireTask(handle: string): Promise<CodexTaskRecord & { threadId: string }> {
+    await this.options.registry.reconcile(handle);
     const task = await this.options.registry.get(handle);
     if (!task) throw new Error(`Codex task not found: ${handle.trim().toUpperCase()}`);
-    return task;
+    if (!task.threadId) {
+      throw new Error(`Codex task ${task.handle} has no imported durable thread and requires recovery`);
+    }
+    return { ...task, threadId: task.threadId };
   }
 }
 
-function executionStatus(reason: CodexTaskTerminationReason): CodexTaskStatus {
+function executionStatus(
+  reason: CodexTaskTerminationReason,
+): Exclude<CodexTaskStatus, 'pending' | 'reconcile' | 'idle' | 'running' | 'failed'> {
   if (reason === 'normal') return 'completed';
   return reason;
 }
@@ -211,6 +303,10 @@ function recordValue(value: unknown): Record<string, unknown> | undefined {
 
 function truncate(value: string, max: number): string {
   return value.length > max ? `${value.slice(0, max)}…` : value;
+}
+
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
 }
 
 export function finalAgentMessages(thread: Record<string, unknown>, limit = 5): string[] {
@@ -250,6 +346,8 @@ function contentText(value: unknown): string | undefined {
 }
 
 export function compactTaskForOutput(task: CodexTaskRecord): Omit<CodexTaskRecord, 'threadId'> {
-  const { threadId: _threadId, ...publicTask } = task;
-  return publicTask;
+  const { threadId: _threadId, reconciliation, ...publicTask } = task;
+  if (!reconciliation) return publicTask;
+  const { threadId: _recoveryThreadId, ...publicReconciliation } = reconciliation;
+  return { ...publicTask, reconciliation: publicReconciliation };
 }

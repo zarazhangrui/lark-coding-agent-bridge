@@ -4,6 +4,23 @@ import { buildLeanAppServerArgs } from '../../../src/agent/codex/app-server-lean
 describe('buildLeanAppServerArgs', () => {
   it('disables MCP, Apps, plugins, browser/computer-use, permissions, and hooks locally', () => {
     const args = buildLeanAppServerArgs({
+      features: [
+        'apps',
+        'enable_mcp_apps',
+        'plugins',
+        'remote_plugin',
+        'plugin_sharing',
+        'skill_mcp_dependency_install',
+        'tool_call_mcp_elicitation',
+        'tool_suggest',
+        'browser_use',
+        'browser_use_external',
+        'browser_use_full_cdp_access',
+        'in_app_browser',
+        'computer_use',
+        'request_permissions_tool',
+        'hooks',
+      ],
       mcp_servers: {
         'z.http': {
           url: 'https://secret.example.invalid/mcp',
@@ -59,8 +76,18 @@ describe('buildLeanAppServerArgs', () => {
       ),
     ).toBe(false);
   });
+
+  it('only disables feature flags reported by the running Codex binary', () => {
+    const args = buildLeanAppServerArgs({ features: ['apps', 'hooks', 'unrelated_feature'] });
+
+    expect(disabledFeatures(args)).toEqual(['apps', 'hooks']);
+  });
 });
 
 function hasDisabledFeature(args: string[], feature: string): boolean {
   return args.some((arg, index) => arg === '--disable' && args[index + 1] === feature);
+}
+
+function disabledFeatures(args: string[]): string[] {
+  return args.flatMap((arg, index) => arg === '--disable' ? [args[index + 1] ?? ''] : []);
 }

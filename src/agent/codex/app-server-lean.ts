@@ -1,4 +1,5 @@
 export interface CodexAppServerConfigInventory {
+  features?: readonly string[];
   mcp_servers?: unknown;
 }
 
@@ -37,11 +38,36 @@ export function buildLeanAppServerArgs(inventory?: CodexAppServerConfigInventory
     '-c',
     'include_apps_instructions=false',
   ];
-  for (const feature of DISABLED_FEATURES) args.push('--disable', feature);
+  const supportedFeatures = new Set(inventory?.features ?? []);
+  for (const feature of DISABLED_FEATURES) {
+    if (supportedFeatures.has(feature)) args.push('--disable', feature);
+  }
 
   const mcpOverride = disabledMcpServersOverride(inventory?.mcp_servers);
   if (mcpOverride) args.push('-c', mcpOverride);
   return args;
+}
+
+export function parseCodexFeatureList(output: string): string[] {
+  const features = new Set<string>();
+  for (const line of output.split(/\r?\n/)) {
+    const match = line.trim().match(/^([a-z][a-z0-9_]*)\s+.+\s+(?:true|false)$/);
+    if (match?.[1]) features.add(match[1]);
+  }
+  return [...features];
+}
+
+export function assertMcpServersDisabled(input: unknown): void {
+  if (input === undefined || input === null) return;
+  const servers = recordValue(input);
+  if (!servers) throw new Error('codex app-server returned a malformed mcp_servers inventory');
+  const enabled = Object.entries(servers)
+    .filter(([, value]) => recordValue(value)?.enabled !== false)
+    .map(([name]) => name)
+    .sort((left, right) => left.localeCompare(right));
+  if (enabled.length > 0) {
+    throw new Error(`codex app-server loaded MCP servers that are not disabled: ${enabled.join(', ')}`);
+  }
 }
 
 function disabledMcpServersOverride(input: unknown): string | undefined {

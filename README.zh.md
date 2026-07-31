@@ -147,6 +147,10 @@ lark-channel-bridge codex-task init --profile codex
 `--force` 才覆盖。运行时 registry 保存在
 `~/.lark-channel/profiles/<profile>/codex-tasks.json`，不会写进工作区或 Skill。
 
+如果 Bridge 使用自定义 `run -c/--config` 路径启动，每个 `codex-task` 子命令都接受
+同一个 `-c/--config` 选项。主控进程会通过 `LARK_CHANNEL_BRIDGE_CONFIG` 传递该精确
+路径；`LARK_CHANNEL_CONFIG` 仍只用于 lark-cli source projection。
+
 ```bash
 lark-channel-bridge codex-task list --profile codex --json
 lark-channel-bridge codex-task create --profile codex --title "CI 检查" --cwd /absolute/project --json
@@ -221,7 +225,7 @@ lark-channel-bridge codex-task init|list|create|read|send
 | `/doctor [描述]` | 执行低敏诊断 |
 | `/help` | 帮助卡片 |
 
-私聊不需要 @。群和话题群默认必须 `@bot`；`@all` 会被忽略。支持的云文档评论里 @bot 就会触发回复。以 `/` 开头的消息始终由 Bridge 命令层处理；未知命令只返回帮助提示，不会再交给 agent。
+私聊不需要 @。群和话题群默认必须 `@bot`；`@all` 会被忽略。支持的云文档评论里 @bot 就会触发回复。Bridge 只处理已注册的 `/...` 命令；无法识别的 slash-prefixed 内容仍会作为普通 prompt 交给 agent。
 
 ## 回复展示与 COT
 

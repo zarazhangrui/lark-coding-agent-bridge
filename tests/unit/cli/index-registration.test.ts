@@ -32,5 +32,6 @@ describe('CLI command registration', () => {
     for (const subcommand of ['init', 'list', 'create', 'read <handle>', 'send <handle>']) {
       expect(source).toContain(`.command('${subcommand}')`);
     }
+    expect(source.match(/\.option\('-c, --config <path>'/g)).toHaveLength(7);
   });
 });

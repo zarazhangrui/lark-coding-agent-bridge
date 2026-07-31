@@ -32,12 +32,16 @@ describe('Claude slash command visible behavior', () => {
     await Promise.all(cleanups.splice(0).map((cleanup) => cleanup()));
   });
 
-  it('consumes unknown slash commands without invoking the agent', async () => {
+  it.each([
+    '/xxx keep this as a prompt',
+    '/review inspect the current changes',
+    '/Volumes/External/project review recent changes',
+    '/Users/example/project review recent changes',
+  ])('lets non-Bridge slash-prefixed input fall through to the agent: %s', async (content) => {
     const h = await createHarness();
 
-    await expect(h.run('/xxx keep this as a prompt')).resolves.toBe(true);
-    expect(lastMarkdown(h.channel)).toContain('未知命令');
-    expect(lastMarkdown(h.channel)).toContain('/help');
+    await expect(h.run(content)).resolves.toBe(false);
+    expect(h.channel.sent).toHaveLength(0);
     expect(h.agent.runOptions).toHaveLength(0);
   });
 

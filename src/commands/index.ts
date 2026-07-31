@@ -216,11 +216,7 @@ export async function tryHandleCommand(ctx: CommandContext): Promise<boolean> {
   const cmd = parts[0] ?? '';
   const args = parts.slice(1).join(' ');
   const h = handlers[cmd];
-  if (!h) {
-    log.info('command', 'unknown', { cmd: cmd.slice(0, 64) });
-    await reply(ctx, '未知命令。使用 `/help` 查看可用命令。');
-    return true;
-  }
+  if (!h) return false;
   if (
     isAdminCommand(cmd) &&
     !canRunAdminCommand(ctx.controls.profileConfig, ctx.controls, ctx.msg.senderId).ok

@@ -101,6 +101,7 @@ describe('CodexAppServerAdapter process contract', () => {
       LARK_CHANNEL_PROFILE: 'codex-app-server',
       LARK_CHANNEL_HOME: join(fake.dir, 'channel-home'),
       LARK_CHANNEL_CONFIG: join(fake.dir, 'config.json'),
+      LARK_CHANNEL_BRIDGE_CONFIG: join(fake.dir, 'config.json'),
       LARKSUITE_CLI_CONFIG_DIR: join(fake.dir, 'lark-cli'),
       CODEX_HOME: '/outer/codex-home',
       APP_SECRET: 'inherited-secret',
@@ -108,6 +109,7 @@ describe('CodexAppServerAdapter process contract', () => {
     expect(record.messages.map((message) => message.method).filter(Boolean)).toEqual([
       'initialize',
       'initialized',
+      'config/read',
       'thread/start',
       'thread/name/set',
       'turn/start',
@@ -215,6 +217,118 @@ describe('CodexAppServerAdapter process contract', () => {
       id: 'approval-1',
       result: { decision: 'decline' },
     });
+  });
+
+  it('answers currentTime/read with whole Unix seconds', async () => {
+    const fake = await createFakeAppServer({ currentTimeRequest: true });
+    cleanup.push(fake.dir);
+    const before = Math.floor(Date.now() / 1000);
+    const run = await prepareAndRun(new CodexAppServerAdapter({
+      binary: fake.path,
+      profileStateDir: fake.dir,
+    }), {
+      runId: 'run-current-time',
+      prompt: 'time',
+      cwd: await realpath(fake.dir),
+    });
+
+    expect((await collect(run.events)).at(-1)).toMatchObject({ type: 'done' });
+    expect(await run.waitForExit(1000)).toBe(true);
+    const after = Math.floor(Date.now() / 1000);
+    const response = (await readRecord(fake.recordPath)).messages.find(
+      (message) => message.id === 'current-time-1' && message.result,
+    );
+    const currentTimeAt = (response?.result as { currentTimeAt?: unknown } | undefined)?.currentTimeAt;
+    expect(typeof currentTimeAt).toBe('number');
+    if (typeof currentTimeAt !== 'number') throw new Error('missing numeric currentTimeAt');
+    expect(Number.isInteger(currentTimeAt)).toBe(true);
+    expect(currentTimeAt).toBeGreaterThanOrEqual(before);
+    expect(currentTimeAt).toBeLessThanOrEqual(after);
+  });
+
+  it.each(['applyPatchApproval', 'execCommandApproval'] as const)(
+    'uses the official ReviewDecision wire schema for %s',
+    async (legacyApprovalMethod) => {
+      const fake = await createFakeAppServer({ legacyApprovalMethod });
+      cleanup.push(fake.dir);
+      const run = await prepareAndRun(new CodexAppServerAdapter({
+        binary: fake.path,
+        profileStateDir: fake.dir,
+      }), {
+        runId: `run-${legacyApprovalMethod}`,
+        prompt: 'legacy approval',
+        cwd: await realpath(fake.dir),
+      });
+
+      await collect(run.events);
+      expect(await run.waitForExit(1000)).toBe(true);
+      expect((await readRecord(fake.recordPath)).messages).toContainEqual({
+        id: 'legacy-approval-1',
+        result: { decision: 'denied' },
+      });
+    },
+  );
+
+  it('filters lean feature flags using the binary feature inventory', async () => {
+    const fake = await createFakeAppServer({ supportedFeatures: ['apps', 'hooks'] });
+    cleanup.push(fake.dir);
+    const adapter = new CodexAppServerAdapter({ binary: fake.path, profileStateDir: fake.dir });
+    expect((await adapter.checkAvailability()).ok).toBe(true);
+    const run = await prepareAndRun(adapter, {
+      runId: 'run-old-feature-set',
+      prompt: 'compatible',
+      cwd: await realpath(fake.dir),
+    });
+
+    await collect(run.events);
+    expect(await run.waitForExit(1000)).toBe(true);
+    expect(disabledFeatures((await readRecord(fake.recordPath)).argv)).toEqual(['apps', 'hooks']);
+  });
+
+  it('rejects an unparseable feature inventory during availability checks', async () => {
+    const fake = await createFakeAppServer({ featureListOutput: 'not a feature inventory\n' });
+    cleanup.push(fake.dir);
+    const adapter = new CodexAppServerAdapter({ binary: fake.path, profileStateDir: fake.dir });
+
+    await expect(adapter.checkAvailability()).resolves.toMatchObject({
+      ok: false,
+      diagnostic: { args: ['features', 'list'] },
+    });
+  });
+
+  it('checks feature availability with the same profile-local Codex home used by runs', async () => {
+    const fake = await createFakeAppServer({ requireProfileCodexHome: true });
+    cleanup.push(fake.dir);
+    const adapter = new CodexAppServerAdapter({
+      binary: fake.path,
+      profileStateDir: fake.dir,
+      inheritCodexHome: false,
+    });
+
+    await expect(adapter.checkAvailability()).resolves.toMatchObject({ ok: true });
+  });
+
+  it('rejects an MCP server added between the probe and the actual app-server', async () => {
+    const fake = await createFakeAppServer({ addMcpAfterProbe: true });
+    cleanup.push(fake.dir);
+    const run = await prepareAndRun(new CodexAppServerAdapter({
+      binary: fake.path,
+      profileStateDir: fake.dir,
+    }), {
+      runId: 'run-mcp-race',
+      prompt: 'must stay lean',
+      cwd: await realpath(fake.dir),
+    });
+
+    expect(await collect(run.events)).toEqual([
+      expect.objectContaining({ type: 'error', message: expect.stringContaining('late-mcp') }),
+    ]);
+    expect(await run.waitForExit(1000)).toBe(true);
+    const record = await readRecord(fake.recordPath);
+    expect(record.messages.some(
+      (message) => message.method === 'thread/start',
+    )).toBe(false);
+    expect(record.mcpStarts).toEqual([]);
   });
 
   it('buffers turn notifications that arrive before the turn/start response', async () => {
@@ -380,10 +494,16 @@ async function prepareAndRun(
 
 async function createFakeAppServer(options: {
   approvalRequest?: boolean;
+  addMcpAfterProbe?: boolean;
+  currentTimeRequest?: boolean;
+  featureListOutput?: string;
   holdTurn?: boolean;
+  legacyApprovalMethod?: 'applyPatchApproval' | 'execCommandApproval';
   failMethod?: string;
   malformedAfterInitialize?: boolean;
   notificationsBeforeTurnResponse?: boolean;
+  requireProfileCodexHome?: boolean;
+  supportedFeatures?: string[];
 } = {}): Promise<FakeAppServer> {
   const dir = await mkdtemp(join(tmpdir(), 'codex-app-server-adapter-test-'));
   const path = join(dir, 'fake-codex.mjs');
@@ -394,7 +514,37 @@ import { writeFileSync } from 'node:fs';
 
 const options = ${JSON.stringify(options)};
 const recordPath = ${JSON.stringify(recordPath)};
+const supportedFeatures = options.supportedFeatures ?? [
+  'apps', 'enable_mcp_apps', 'plugins', 'remote_plugin', 'plugin_sharing',
+  'skill_mcp_dependency_install', 'tool_call_mcp_elicitation', 'tool_suggest',
+  'browser_use', 'browser_use_external', 'browser_use_full_cdp_access',
+  'in_app_browser', 'computer_use', 'request_permissions_tool', 'hooks'
+];
+if (process.argv[2] === 'features' && process.argv[3] === 'list') {
+  if (options.requireProfileCodexHome && process.env.CODEX_HOME !== ${JSON.stringify(join(dir, 'codex-home'))}) {
+    process.stderr.write('feature inventory used the wrong CODEX_HOME\\n');
+    process.exit(3);
+  }
+  process.stdout.write(
+    options.featureListOutput
+      ?? supportedFeatures.map((name) => name + ' stable true').join('\\n') + '\\n'
+  );
+  process.exit(0);
+}
+if (process.argv.includes('--help')) {
+  process.stdout.write('fake codex app-server help\\n');
+  process.exit(0);
+}
+const requestedDisabledFeatures = process.argv.slice(2).flatMap(
+  (arg, index, argv) => arg === '--disable' ? [argv[index + 1]] : []
+);
+const unknownFeature = requestedDisabledFeatures.find((name) => !supportedFeatures.includes(name));
+if (unknownFeature) {
+  process.stderr.write('Unknown feature flag: ' + unknownFeature + '\\n');
+  process.exit(1);
+}
 const messages = [];
+const mcpStarts = [];
 let threadId = 'thread-fresh';
 let turnId = 'turn-1';
 let completed = false;
@@ -411,11 +561,13 @@ function persist() {
         LARK_CHANNEL_PROFILE: process.env.LARK_CHANNEL_PROFILE,
         LARK_CHANNEL_HOME: process.env.LARK_CHANNEL_HOME,
         LARK_CHANNEL_CONFIG: process.env.LARK_CHANNEL_CONFIG,
+        LARK_CHANNEL_BRIDGE_CONFIG: process.env.LARK_CHANNEL_BRIDGE_CONFIG,
         LARKSUITE_CLI_CONFIG_DIR: process.env.LARKSUITE_CLI_CONFIG_DIR,
         CODEX_HOME: process.env.CODEX_HOME,
         APP_SECRET: process.env.APP_SECRET,
       },
       messages,
+      mcpStarts,
     }, null, 2));
   } catch {
     // The test may already have removed its temp directory after collecting
@@ -493,20 +645,25 @@ rl.on('line', (line) => {
     process.stderr.write('initialized arrived before initialize response\\n');
     process.exit(2);
   } else if (message.method === 'config/read') {
+    const disabled = !configProbe && process.argv.some((arg) => arg.startsWith('mcp_servers={'));
     send({ id: message.id, result: { config: { mcp_servers: {
       'fake-stdio': {
-        enabled: true,
+        enabled: !disabled,
         command: 'unsafe-mcp-command',
         args: ['--token', 'fake-secret-value'],
         env: { SECRET: 'fake-secret-value' }
       },
       'fake-http': {
-        enabled: true,
+        enabled: !disabled,
         url: 'https://mcp.example.invalid',
         bearer_token_env_var: 'FAKE_MCP_TOKEN'
-      }
+      },
+      ...(options.addMcpAfterProbe && !configProbe ? {
+        'late-mcp': { enabled: true, command: 'late-unsafe-command' }
+      } : {})
     } } } });
   } else if (message.method === 'thread/start' || message.method === 'thread/resume') {
+    if (options.addMcpAfterProbe) mcpStarts.push('late-mcp');
     threadId = message.params.threadId ?? 'thread-fresh';
     send({ id: message.id, result: {
       thread: { id: threadId }, cwd: message.params.cwd,
@@ -524,6 +681,12 @@ rl.on('line', (line) => {
       send({ id: 'approval-1', method: 'item/commandExecution/requestApproval', params: {
         threadId, turnId, itemId: 'cmd-approval'
       }});
+    } else if (options.currentTimeRequest) {
+      send({ id: 'current-time-1', method: 'currentTime/read', params: { threadId } });
+    } else if (options.legacyApprovalMethod) {
+      send({ id: 'legacy-approval-1', method: options.legacyApprovalMethod, params: {
+        conversationId: threadId, callId: 'legacy-call-1'
+      }});
     } else if (!options.holdTurn) {
       finish('completed');
     }
@@ -531,6 +694,11 @@ rl.on('line', (line) => {
     send({ id: message.id, result: {} });
     finish('interrupted');
   } else if (message.id === 'approval-1' && message.result) {
+    finish('completed');
+  } else if (
+    (message.id === 'current-time-1' || message.id === 'legacy-approval-1')
+    && (message.result || message.error)
+  ) {
     finish('completed');
   }
 });
@@ -554,6 +722,7 @@ interface FakeRecord {
   argv: string[];
   cwd: string;
   env: Record<string, string | undefined>;
+  mcpStarts: string[];
   messages: Array<{
     id?: number | string;
     method?: string;
@@ -570,6 +739,10 @@ function messageByMethod(record: FakeRecord, method: string) {
   const message = record.messages.find((candidate) => candidate.method === method);
   if (!message?.params) throw new Error(`missing recorded method: ${method}`);
   return { ...message, params: message.params };
+}
+
+function disabledFeatures(args: string[]): string[] {
+  return args.flatMap((arg, index) => arg === '--disable' ? [args[index + 1] ?? ''] : []);
 }
 
 async function waitForRecordedMethod(path: string, method: string): Promise<void> {

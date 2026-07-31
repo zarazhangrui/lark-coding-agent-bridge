@@ -71,6 +71,57 @@ describe('CodexTaskRegistry', () => {
     expect(await registry.list()).toHaveLength(1);
   });
 
+  it('persists pending thread import and turn reconciliation records', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'codex-task-registry-'));
+    cleanup.push(dir);
+    const dates = [
+      new Date('2026-07-31T08:00:00.000Z'),
+      new Date('2026-07-31T08:00:01.000Z'),
+      new Date('2026-07-31T08:00:02.000Z'),
+      new Date('2026-07-31T08:00:03.000Z'),
+      new Date('2026-07-31T08:00:04.000Z'),
+    ];
+    const registry = new CodexTaskRegistry(
+      join(dir, 'codex-tasks.json'),
+      () => dates.shift()!,
+      () => 'T-C0FFEE',
+    );
+
+    const pending = await registry.reserve({ title: 'Pending worker', cwd: '/tmp/pending' });
+    expect(pending).toMatchObject({ handle: 'T-C0FFEE', status: 'pending' });
+    expect(pending.threadId).toBeUndefined();
+
+    await expect(registry.importThread(pending.handle, 'thread-durable')).resolves.toMatchObject({
+      status: 'pending',
+      threadId: 'thread-durable',
+    });
+    await expect(registry.markReconcile(pending.handle, {
+      desiredStatus: 'completed',
+      error: 'simulated final write failure',
+      threadId: 'thread-durable',
+      lastTurnId: 'turn-durable',
+      lastResult: 'done once',
+    })).resolves.toMatchObject({
+      status: 'reconcile',
+      reconciliation: {
+        desiredStatus: 'completed',
+        lastTurnId: 'turn-durable',
+      },
+    });
+    await expect(registry.reconcile(pending.handle)).resolves.toEqual([
+      expect.objectContaining({
+        status: 'completed',
+        threadId: 'thread-durable',
+        lastTurnId: 'turn-durable',
+        lastResult: 'done once',
+      }),
+    ]);
+
+    await expect(registry.update(pending.handle, { status: 'running' })).resolves.not.toHaveProperty(
+      'lastTurnId',
+    );
+  });
+
   it('serializes concurrent writers without losing updates', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'codex-task-registry-'));
     cleanup.push(dir);

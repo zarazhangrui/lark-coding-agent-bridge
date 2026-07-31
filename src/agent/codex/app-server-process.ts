@@ -7,6 +7,7 @@ import { buildLarkChannelEnv, type LarkChannelEnvContext } from '../lark-channel
 import { CodexAppServerJsonRpc } from './app-server-jsonrpc';
 import {
   buildLeanAppServerArgs,
+  parseCodexFeatureList,
   type CodexAppServerConfigInventory,
 } from './app-server-lean';
 
@@ -27,12 +28,15 @@ export interface AppServerConfigProbeInput {
 }
 
 const RPC_TIMEOUT_MS = 15_000;
+const FEATURE_LIST_TIMEOUT_MS = 5_000;
 const MAX_PROTOCOL_LINE_CHARS = 4 * 1024 * 1024;
+const MAX_FEATURE_LIST_CHARS = 1024 * 1024;
 
 export async function readAppServerConfigInventory(
   input: AppServerConfigProbeInput,
 ): Promise<CodexAppServerConfigInventory> {
-  const child = spawnProcess(input.binary, buildLeanAppServerArgs(), {
+  const features = await readAppServerFeatureInventory(input);
+  const child = spawnProcess(input.binary, buildLeanAppServerArgs({ features }), {
     cwd: input.cwd,
     env: input.env,
     stdio: ['pipe', 'pipe', 'pipe'],
@@ -115,7 +119,7 @@ export async function readAppServerConfigInventory(
     ));
     const config = recordValue(response?.config);
     if (!config) throw new Error('codex app-server config/read returned no config');
-    return { mcp_servers: config.mcp_servers ?? config.mcpServers };
+    return { features, mcp_servers: config.mcp_servers ?? config.mcpServers };
   } finally {
     if (!child.stdin.destroyed && !child.stdin.writableEnded) child.stdin.end();
     if (!(await waitForPromise(closed, 500))) {
@@ -126,6 +130,55 @@ export async function readAppServerConfigInventory(
       }
     }
   }
+}
+
+export async function readAppServerFeatureInventory(
+  input: AppServerConfigProbeInput,
+): Promise<string[]> {
+  return new Promise<string[]>((resolve, reject) => {
+    const child = spawnProcess(input.binary, ['features', 'list'], {
+      cwd: input.cwd,
+      env: input.env,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let stdout = '';
+    let stderr = '';
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) return;
+      child.kill('SIGTERM');
+      settled = true;
+      reject(new Error(`codex features list timed out after ${FEATURE_LIST_TIMEOUT_MS}ms`));
+    }, FEATURE_LIST_TIMEOUT_MS);
+    const finish = (operation: () => void): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      operation();
+    };
+    child.stdout?.on('data', (chunk: Buffer) => {
+      if (stdout.length < MAX_FEATURE_LIST_CHARS) stdout += chunk.toString('utf8');
+    });
+    child.stderr?.on('data', (chunk: Buffer) => {
+      if (stderr.length < 16 * 1024) stderr += chunk.toString('utf8');
+    });
+    child.once('error', (err) => finish(() => reject(err)));
+    child.once('close', (code, signal) => finish(() => {
+      if (code !== 0) {
+        reject(new Error(
+          stderr.trim().slice(0, 500)
+            || `codex features list exited: ${code ?? signal ?? 'unknown'}`,
+        ));
+        return;
+      }
+      const features = parseCodexFeatureList(stdout);
+      if (features.length === 0) {
+        reject(new Error('codex features list returned no parseable feature inventory'));
+        return;
+      }
+      resolve(features);
+    }));
+  });
 }
 
 export function buildAppServerProcessEnv(options: CodexAppServerProcessOptions): NodeJS.ProcessEnv {

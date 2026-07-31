@@ -153,6 +153,11 @@ overwriting existing files. Only an explicit `--force` replaces them. Runtime
 task state stays outside the workspace in
 `~/.lark-channel/profiles/<profile>/codex-tasks.json`.
 
+When the Bridge was started with a custom `run -c/--config` path, each
+`codex-task` subcommand accepts the same `-c/--config` option. Controller runs
+also expose that exact path as `LARK_CHANNEL_BRIDGE_CONFIG`;
+`LARK_CHANNEL_CONFIG` remains reserved for the lark-cli source projection.
+
 ```bash
 lark-channel-bridge codex-task list --profile codex --json
 lark-channel-bridge codex-task create --profile codex --title "CI check" --cwd /absolute/project --json
@@ -230,7 +235,7 @@ If a profile was created with the wrong agent kind, stop or unregister any match
 | `/doctor [description]` | Run low-sensitive diagnostics |
 | `/help` | Help card |
 
-DMs do not require an @ mention. Groups and topic groups require `@bot` by default; `@all` is ignored. Cloud-doc comments in supported document types run when the bot is mentioned. Messages beginning with `/` are always handled as Bridge commands; unknown commands return a help hint instead of being sent to the agent.
+DMs do not require an @ mention. Groups and topic groups require `@bot` by default; `@all` is ignored. Cloud-doc comments in supported document types run when the bot is mentioned. Known `/...` commands are handled by the Bridge; unrecognized slash-prefixed input continues to the agent as a normal prompt.
 
 ## Reply Display and COT
 

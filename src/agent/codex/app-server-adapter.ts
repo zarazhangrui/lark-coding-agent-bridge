@@ -6,7 +6,12 @@ import { log } from '../../core/logger';
 import { spawnProcess, type SpawnedProcessByStdio } from '../../platform/spawn';
 import { SpawnFailed } from '../../runtime/errors';
 import { buildBridgeSystemPrompt } from '../bridge-system-prompt';
-import { checkAgentAvailability, type AgentAvailability } from '../preflight';
+import {
+  AgentPreflightError,
+  checkAgentAvailability,
+  type AgentAvailability,
+  type AgentPreflightDiagnostic,
+} from '../preflight';
 import type {
   AgentAdapter,
   AgentBotIdentity,
@@ -20,11 +25,13 @@ import {
   type CodexAppServerIncoming,
 } from './app-server-jsonrpc';
 import {
+  assertMcpServersDisabled,
   buildLeanAppServerArgs,
 } from './app-server-lean';
 import {
   buildAppServerProcessEnv,
   readAppServerConfigInventory,
+  readAppServerFeatureInventory,
   type CodexAppServerProcessOptions,
 } from './app-server-process';
 
@@ -65,13 +72,24 @@ export class CodexAppServerAdapter implements AgentAdapter {
   }
 
   async checkAvailability(): Promise<AgentAvailability> {
-    return checkAgentAvailability({
+    const appServer = await checkAgentAvailability({
       agentId: 'codex',
       agentName: 'Codex App Server',
       command: this.options.binary,
       binaryPath: this.options.binary,
       args: ['app-server', '--help'],
     });
+    if (!appServer.ok) return appServer;
+    try {
+      await readAppServerFeatureInventory({
+        binary: this.options.binary,
+        cwd: process.cwd(),
+        env: buildAppServerProcessEnv(this.options),
+      });
+      return appServer;
+    } catch (err) {
+      return featureInventoryAvailabilityFailure(this.options.binary, err);
+    }
   }
 
   async prepareRun(options: AgentRunOptions): Promise<void> {
@@ -122,6 +140,32 @@ export class CodexAppServerAdapter implements AgentAdapter {
       argv,
     });
   }
+}
+
+function featureInventoryAvailabilityFailure(binary: string, error: unknown): AgentAvailability {
+  const message = error instanceof Error ? error.message : String(error);
+  const diagnostic: AgentPreflightDiagnostic = {
+    code: message.includes('timed out')
+      ? 'agent-version-check-timeout'
+      : message.includes('no parseable feature inventory')
+        ? 'agent-version-check-empty-output'
+        : 'agent-version-check-nonzero-exit',
+    agentId: 'codex',
+    agentName: 'Codex App Server',
+    command: binary,
+    binaryPath: binary,
+    args: ['features', 'list'],
+    ...(message.includes('timed out') ? { timeoutMs: 5_000 } : {}),
+    stderrExcerpt: message.slice(0, 500),
+  };
+  return {
+    ok: false,
+    diagnostic,
+    error: new AgentPreflightError(
+      diagnostic,
+      `Codex App Server feature inventory is unavailable: ${message}`,
+    ),
+  };
 }
 
 interface CodexAppServerRunInput {
@@ -304,6 +348,7 @@ class CodexAppServerRun implements AgentRun {
     );
     await this.rpc.notify('initialized');
     if (this.stopRequested) throw new Error('codex app-server run stopped during initialization');
+    await this.verifyLoadedMcpServers();
 
     const threadResult = await withTimeout(
       this.rpc.request(
@@ -384,6 +429,17 @@ class CodexAppServerRun implements AgentRun {
         };
   }
 
+  private async verifyLoadedMcpServers(): Promise<void> {
+    const response = recordValue(await withTimeout(
+      this.rpc.request('config/read', { includeLayers: false, cwd: this.input.run.cwd }),
+      RPC_TIMEOUT_MS,
+      'config/read',
+    ));
+    const config = recordValue(response?.config);
+    if (!config) throw new Error('codex app-server config/read returned no config');
+    assertMcpServersDisabled(config.mcp_servers ?? config.mcpServers);
+  }
+
   private receiveLine(line: string): void {
     const trimmed = line.trim();
     if (!trimmed) return;
@@ -450,13 +506,14 @@ class CodexAppServerRun implements AgentRun {
       case 'item/permissions/requestApproval':
         await this.rpc.respond(request.id, { permissions: {}, scope: 'turn' });
         return;
+      case 'currentTime/read':
+        await this.rpc.respond(request.id, { currentTimeAt: Math.floor(Date.now() / 1000) });
+        return;
       case 'applyPatchApproval':
       case 'execCommandApproval':
         await this.rpc.respond(
           request.id,
-          this.stopRequested
-            ? { decision: 'abort' }
-            : { decision: { denied: { rejection: 'lark-channel-bridge approval policy is never' } } },
+          { decision: this.stopRequested ? 'abort' : 'denied' },
         );
         return;
       default:

@@ -8,6 +8,7 @@ import { initializeControllerWorkspace } from '../../codex-task/workspace';
 import { resolveCodexTaskContext } from '../../codex-task/context';
 
 interface CodexTaskCommandBaseOptions {
+  config?: string;
   profile?: string;
   rootDir?: string;
 }
@@ -107,6 +108,8 @@ export async function runCodexTaskCreate(options: CodexTaskCreateOptions): Promi
       task: compactTaskForOutput(result.task),
       output: result.output,
       terminationReason: result.terminationReason,
+      registrySync: result.registrySync,
+      ...(result.registryError ? { registryError: result.registryError } : {}),
     };
     if (options.json) printJson(payload);
     else printExecution(payload);
@@ -166,6 +169,8 @@ export async function runCodexTaskSend(
     task: compactTaskForOutput(result.task),
     output: result.output,
     terminationReason: result.terminationReason,
+    registrySync: result.registrySync,
+    ...(result.registryError ? { registryError: result.registryError } : {}),
   };
   if (options.json) printJson(payload);
   else printExecution(payload);
@@ -188,11 +193,16 @@ function printExecution(payload: {
   task: ReturnType<typeof compactTaskForOutput>;
   output: string;
   terminationReason: string;
+  registrySync: 'synced' | 'pending';
+  registryError?: string;
 }): void {
   console.log(`✓ ${payload.task.handle} ${payload.task.title}`);
   console.log(`  status: ${payload.task.status}`);
   console.log(`  cwd: ${payload.task.cwd}`);
   console.log(`  model: ${payload.task.model ?? 'default'}`);
   console.log(`  termination: ${payload.terminationReason}`);
+  if (payload.registrySync === 'pending') {
+    console.error(`  registry: pending reconciliation (${payload.registryError ?? 'unknown error'})`);
+  }
   if (payload.output) console.log(`\n${payload.output}`);
 }

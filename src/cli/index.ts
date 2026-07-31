@@ -99,20 +99,22 @@ const codexTask = program
 codexTask
   .command('init')
   .description('Install the controller AGENTS.md and repo-scoped Skill into a workspace')
+  .option('-c, --config <path>', 'path to Bridge root config file')
   .option('--profile <name>', 'Codex profile (defaults to LARK_CHANNEL_PROFILE or active profile)')
   .option('--workspace <path>', 'controller workspace (defaults to the profile workspace)')
   .option('--force', 'overwrite existing controller AGENTS.md and Skill')
   .option('--json', 'print machine-readable JSON')
-  .action(async (opts: { profile?: string; workspace?: string; force?: boolean; json?: boolean }) => {
+  .action(async (opts: { config?: string; profile?: string; workspace?: string; force?: boolean; json?: boolean }) => {
     await runCodexTaskInit(opts);
   });
 
 codexTask
   .command('list')
   .description('List worker tasks registered by this profile')
+  .option('-c, --config <path>', 'path to Bridge root config file')
   .option('--profile <name>', 'Codex profile (defaults to LARK_CHANNEL_PROFILE or active profile)')
   .option('--json', 'print machine-readable JSON')
-  .action(async (opts: { profile?: string; json?: boolean }) => {
+  .action(async (opts: { config?: string; profile?: string; json?: boolean }) => {
     await runCodexTaskList(opts);
   });
 
@@ -121,6 +123,7 @@ codexTask
   .description('Create and register a persistent Codex worker task')
   .requiredOption('--title <title>', 'user-facing task title')
   .requiredOption('--cwd <path>', 'absolute worker working directory')
+  .option('-c, --config <path>', 'path to Bridge root config file')
   .option('--model <slug>', 'per-task model override')
   .option('--message <text>', 'optional first instruction; waits for the turn to finish')
   .option('--profile <name>', 'Codex profile (defaults to LARK_CHANNEL_PROFILE or active profile)')
@@ -130,6 +133,7 @@ codexTask
     cwd: string;
     model?: string;
     message?: string;
+    config?: string;
     profile?: string;
     json?: boolean;
   }) => {
@@ -139,16 +143,18 @@ codexTask
 codexTask
   .command('read <handle>')
   .description('Read a registered task without resuming it')
+  .option('-c, --config <path>', 'path to Bridge root config file')
   .option('--limit <count>', 'maximum recent conversation messages to print (1-50)', '5')
   .option('--profile <name>', 'Codex profile (defaults to LARK_CHANNEL_PROFILE or active profile)')
   .option('--json', 'print filtered machine-readable task metadata and conversation text')
-  .action(async (handle: string, opts: { limit?: string; profile?: string; json?: boolean }) => {
+  .action(async (handle: string, opts: { config?: string; limit?: string; profile?: string; json?: boolean }) => {
     await runCodexTaskRead(handle, opts);
   });
 
 codexTask
   .command('send <handle>')
   .description('Resume a registered task, send one instruction, and wait for completion')
+  .option('-c, --config <path>', 'path to Bridge root config file')
   .requiredOption('--message <text>', 'instruction to send')
   .option('--model <slug>', 'per-turn model override, persisted for later sends')
   .option('--profile <name>', 'Codex profile (defaults to LARK_CHANNEL_PROFILE or active profile)')
@@ -156,6 +162,7 @@ codexTask
   .action(async (handle: string, opts: {
     message: string;
     model?: string;
+    config?: string;
     profile?: string;
     json?: boolean;
   }) => {

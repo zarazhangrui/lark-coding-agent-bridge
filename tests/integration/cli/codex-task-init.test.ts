@@ -48,12 +48,29 @@ describe('codex-task init command', () => {
       /does not use Codex App Server transport/,
     );
   });
+
+  it('uses an explicit custom Bridge config instead of the default config.json', async () => {
+    const rootDir = await mkdtemp(join(tmpdir(), 'codex-task-init-custom-root-'));
+    const workspace = await mkdtemp(join(tmpdir(), 'codex-task-init-custom-workspace-'));
+    cleanup.push(rootDir, workspace);
+    const customConfig = join(rootDir, 'bridge.custom.json');
+    await writeCodexProfile(rootDir, workspace, 'app-server', customConfig);
+    vi.spyOn(console, 'log').mockImplementation(() => undefined);
+
+    await runCodexTaskInit({ config: customConfig, profile: 'codex', json: true });
+
+    expect(await readFile(join(workspace, 'AGENTS.md'), 'utf8')).toContain('飞书 Codex 主控工作区');
+    await expect(readFile(resolveAppPaths({ rootDir }).configFile, 'utf8')).rejects.toMatchObject({
+      code: 'ENOENT',
+    });
+  });
 });
 
 async function writeCodexProfile(
   rootDir: string,
   workspace: string,
   transport: CodexTransport,
+  configPath = resolveAppPaths({ rootDir }).configFile,
 ): Promise<void> {
   const profile = createDefaultProfileConfig({
     agentKind: 'codex',
@@ -66,5 +83,5 @@ async function writeCodexProfile(
   });
   profile.workspaces.default = workspace;
   const root = createRootConfig('codex', profile);
-  await saveRootConfig(root, resolveAppPaths({ rootDir }).configFile);
+  await saveRootConfig(root, configPath);
 }

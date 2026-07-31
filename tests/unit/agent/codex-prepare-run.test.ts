@@ -46,7 +46,7 @@ describe('CodexAppServerAdapter availability', () => {
   });
 
   it('checks that the configured binary exposes the app-server subcommand', async () => {
-    const binary = await writeCodexBinary('Run the app server');
+    const binary = await writeCodexBinary('Run the app server\napps stable true');
     const adapter = new CodexAppServerAdapter({
       binary,
       profileStateDir: join(tmpdir(), 'codex-app-server-profile'),

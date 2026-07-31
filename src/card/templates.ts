@@ -210,7 +210,7 @@ export function helpCard(agentName = 'Agent'): object {
         `- \`/doctor [描述]\` — 把日志和描述交给 ${escapedAgentName} 自助诊断`,
         '- `/help` — 本帮助',
         '',
-        `不以 \`/\` 开头的其他内容直接交给 ${escapedAgentName}。`,
+        `其他内容直接交给 ${escapedAgentName}。`,
       ].join('\n'),
     ),
     HR,
