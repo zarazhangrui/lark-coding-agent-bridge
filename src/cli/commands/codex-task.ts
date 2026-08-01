@@ -29,6 +29,7 @@ export interface CodexTaskCreateOptions extends CodexTaskCommandBaseOptions {
   model?: string;
   message?: string;
   json?: boolean;
+  signal?: AbortSignal;
 }
 
 export interface CodexTaskReadOptions extends CodexTaskCommandBaseOptions {
@@ -40,6 +41,7 @@ export interface CodexTaskSendOptions extends CodexTaskCommandBaseOptions {
   message: string;
   model?: string;
   json?: boolean;
+  signal?: AbortSignal;
 }
 
 export async function runCodexTaskInit(options: CodexTaskInitOptions): Promise<void> {
@@ -93,6 +95,13 @@ export async function runCodexTaskList(options: CodexTaskListOptions): Promise<v
 }
 
 export async function runCodexTaskCreate(options: CodexTaskCreateOptions): Promise<void> {
+  return withCodexTaskSignals(options.signal, (signal) => runCodexTaskCreateInternal(options, signal));
+}
+
+async function runCodexTaskCreateInternal(
+  options: CodexTaskCreateOptions,
+  signal: AbortSignal,
+): Promise<void> {
   const { controller } = await resolveCodexTaskContext(options);
   if (!isAbsolute(options.cwd)) throw new Error('--cwd must be an absolute path');
   const workspace = await resolveWorkingDirectory(options.cwd);
@@ -102,6 +111,7 @@ export async function runCodexTaskCreate(options: CodexTaskCreateOptions): Promi
     cwd: workspace.cwdRealpath,
     ...(options.model ? { model: options.model } : {}),
     ...(options.message ? { message: options.message } : {}),
+    signal,
   });
   if ('output' in result) {
     const payload = {
@@ -111,13 +121,22 @@ export async function runCodexTaskCreate(options: CodexTaskCreateOptions): Promi
       registrySync: result.registrySync,
       ...(result.registryError ? { registryError: result.registryError } : {}),
     };
+    setExecutionExitCode(result.terminationReason);
     if (options.json) printJson(payload);
     else printExecution(payload);
     return;
   }
   const task = compactTaskForOutput(result);
   if (options.json) printJson(task);
-  else console.log(`✓ ${task.handle} ${task.title}\n  cwd: ${task.cwd}\n  model: ${task.model ?? 'default'}`);
+  else {
+    console.log(`✓ ${task.handle} ${task.title}`);
+    console.log(`  status: ${task.status}`);
+    console.log(`  cwd: ${task.cwd}`);
+    console.log(`  model: ${task.model ?? 'default'}`);
+    if (task.status === 'pending') {
+      console.log('  thread: pending until the first codex-task send');
+    }
+  }
 }
 
 export async function runCodexTaskRead(handle: string, options: CodexTaskReadOptions): Promise<void> {
@@ -160,10 +179,22 @@ export async function runCodexTaskSend(
   handle: string,
   options: CodexTaskSendOptions,
 ): Promise<void> {
+  return withCodexTaskSignals(
+    options.signal,
+    (signal) => runCodexTaskSendInternal(handle, options, signal),
+  );
+}
+
+async function runCodexTaskSendInternal(
+  handle: string,
+  options: CodexTaskSendOptions,
+  signal: AbortSignal,
+): Promise<void> {
   const { controller } = await resolveCodexTaskContext(options);
   const result = await controller.send(handle, {
     message: options.message,
     ...(options.model ? { model: options.model } : {}),
+    signal,
   });
   const payload = {
     task: compactTaskForOutput(result.task),
@@ -172,6 +203,7 @@ export async function runCodexTaskSend(
     registrySync: result.registrySync,
     ...(result.registryError ? { registryError: result.registryError } : {}),
   };
+  setExecutionExitCode(result.terminationReason);
   if (options.json) printJson(payload);
   else printExecution(payload);
 }
@@ -196,7 +228,8 @@ function printExecution(payload: {
   registrySync: 'synced' | 'pending';
   registryError?: string;
 }): void {
-  console.log(`✓ ${payload.task.handle} ${payload.task.title}`);
+  const marker = payload.terminationReason === 'normal' ? '✓' : '✗';
+  console.log(`${marker} ${payload.task.handle} ${payload.task.title}`);
   console.log(`  status: ${payload.task.status}`);
   console.log(`  cwd: ${payload.task.cwd}`);
   console.log(`  model: ${payload.task.model ?? 'default'}`);
@@ -205,4 +238,33 @@ function printExecution(payload: {
     console.error(`  registry: pending reconciliation (${payload.registryError ?? 'unknown error'})`);
   }
   if (payload.output) console.log(`\n${payload.output}`);
+}
+
+function setExecutionExitCode(terminationReason: string): void {
+  if (terminationReason === 'normal') return;
+  if (process.exitCode === undefined || process.exitCode === 0) process.exitCode = 1;
+}
+
+async function withCodexTaskSignals<T>(
+  providedSignal: AbortSignal | undefined,
+  operation: (signal: AbortSignal) => Promise<T>,
+): Promise<T> {
+  if (providedSignal) return operation(providedSignal);
+
+  const abort = new AbortController();
+  const interrupt = (exitCode: number): void => {
+    if (abort.signal.aborted) return;
+    process.exitCode = exitCode;
+    abort.abort();
+  };
+  const onSigint = (): void => interrupt(130);
+  const onSigterm = (): void => interrupt(143);
+  process.once('SIGINT', onSigint);
+  process.once('SIGTERM', onSigterm);
+  try {
+    return await operation(abort.signal);
+  } finally {
+    process.removeListener('SIGINT', onSigint);
+    process.removeListener('SIGTERM', onSigterm);
+  }
 }

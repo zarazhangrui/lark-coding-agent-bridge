@@ -53,51 +53,45 @@ Use the local \`lark-channel-bridge codex-task\` control plane for every cross-t
 5. Never dispatch work back to the current controller task.
 6. Do not delete or archive tasks; this MVP intentionally has no destructive command.
 
-## Profile selection
+## Profile and config selection
 
-When \`LARK_CHANNEL_PROFILE\` is set, pass \`--profile "$LARK_CHANNEL_PROFILE"\`.
-Otherwise ask for the profile name instead of guessing when more than one profile exists.
+Resolve two shell-neutral placeholders before running a command:
 
-Preserve the exact Bridge root config without reusing \`LARK_CHANNEL_CONFIG\`, which belongs to
-the lark-cli source projection:
+- \`<profile-option>\` is \`--profile "<profile-name>"\`. Use \`LARK_CHANNEL_PROFILE\` when it is set; otherwise ask instead of guessing when more than one profile exists.
+- \`<config-option>\` is empty unless \`LARK_CHANNEL_BRIDGE_CONFIG\` is set, in which case it is \`--config "<absolute-root-config-path>"\`.
 
-\`\`\`bash
-bridge_config_args=()
-if [[ -n "\${LARK_CHANNEL_BRIDGE_CONFIG:-}" ]]; then
-  bridge_config_args=(--config "$LARK_CHANNEL_BRIDGE_CONFIG")
-fi
-\`\`\`
+Do not reuse \`LARK_CHANNEL_CONFIG\`; it belongs to the lark-cli source projection. Substitute the placeholders as ordinary command arguments so the same examples work in Bash, PowerShell, and cmd.exe.
 
 ## Commands
 
 List registered worker tasks:
 
-\`\`\`bash
-lark-channel-bridge codex-task list "\${bridge_config_args[@]}" --profile "$LARK_CHANNEL_PROFILE" --json
+\`\`\`text
+lark-channel-bridge codex-task list <config-option> <profile-option> --json
 \`\`\`
 
-Create an empty persistent worker task:
+Reserve a pending worker handle. This does not create a Codex thread yet:
 
-\`\`\`bash
-lark-channel-bridge codex-task create "\${bridge_config_args[@]}" --profile "$LARK_CHANNEL_PROFILE" --title "<title>" --cwd "<absolute-path>" --json
+\`\`\`text
+lark-channel-bridge codex-task create <config-option> <profile-option> --title "<title>" --cwd "<absolute-path>" --json
 \`\`\`
 
-Create a worker and immediately give it work:
+Create a worker and materialize its durable thread with the first turn:
 
-\`\`\`bash
-lark-channel-bridge codex-task create "\${bridge_config_args[@]}" --profile "$LARK_CHANNEL_PROFILE" --title "<title>" --cwd "<absolute-path>" --message "<instruction>" --json
+\`\`\`text
+lark-channel-bridge codex-task create <config-option> <profile-option> --title "<title>" --cwd "<absolute-path>" --message "<instruction>" --json
 \`\`\`
 
-Read a worker without resuming it:
+Read a materialized worker without resuming it:
 
-\`\`\`bash
-lark-channel-bridge codex-task read <handle> "\${bridge_config_args[@]}" --profile "$LARK_CHANNEL_PROFILE" --json
+\`\`\`text
+lark-channel-bridge codex-task read <handle> <config-option> <profile-option> --json
 \`\`\`
 
-Send additional work and wait for the turn to finish:
+Send work and wait for the turn to finish. For a pending handle, this command creates the durable thread and starts the first turn in one App Server process:
 
-\`\`\`bash
-lark-channel-bridge codex-task send <handle> "\${bridge_config_args[@]}" --profile "$LARK_CHANNEL_PROFILE" --message "<instruction>" --json
+\`\`\`text
+lark-channel-bridge codex-task send <handle> <config-option> <profile-option> --message "<instruction>" --json
 \`\`\`
 
 After a command finishes, report the handle, title, cwd, model, status, and result. Keep long histories summarized unless the user asks for full detail.

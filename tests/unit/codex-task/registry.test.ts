@@ -80,6 +80,8 @@ describe('CodexTaskRegistry', () => {
       new Date('2026-07-31T08:00:02.000Z'),
       new Date('2026-07-31T08:00:03.000Z'),
       new Date('2026-07-31T08:00:04.000Z'),
+      new Date('2026-07-31T08:00:05.000Z'),
+      new Date('2026-07-31T08:00:06.000Z'),
     ];
     const registry = new CodexTaskRegistry(
       join(dir, 'codex-tasks.json'),
@@ -91,10 +93,16 @@ describe('CodexTaskRegistry', () => {
     expect(pending).toMatchObject({ handle: 'T-C0FFEE', status: 'pending' });
     expect(pending.threadId).toBeUndefined();
 
+    await registry.update(pending.handle, { status: 'running' });
+    await expect(registry.setThreadCandidate(pending.handle, 'thread-durable')).resolves.toMatchObject({
+      status: 'running',
+      candidateThreadId: 'thread-durable',
+    });
     await expect(registry.importThread(pending.handle, 'thread-durable')).resolves.toMatchObject({
-      status: 'pending',
+      status: 'running',
       threadId: 'thread-durable',
     });
+    await expect(registry.get(pending.handle)).resolves.not.toHaveProperty('candidateThreadId');
     await expect(registry.markReconcile(pending.handle, {
       desiredStatus: 'completed',
       error: 'simulated final write failure',
@@ -119,6 +127,32 @@ describe('CodexTaskRegistry', () => {
 
     await expect(registry.update(pending.handle, { status: 'running' })).resolves.not.toHaveProperty(
       'lastTurnId',
+    );
+  });
+
+  it('keeps candidate and durable thread ownership unique across handles', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'codex-task-registry-'));
+    cleanup.push(dir);
+    const handles = ['T-CA11D0', 'T-CA11D1'];
+    const registry = new CodexTaskRegistry(
+      join(dir, 'codex-tasks.json'),
+      () => new Date('2026-07-31T08:00:00.000Z'),
+      () => handles.shift()!,
+    );
+    const first = await registry.reserve({ title: 'First', cwd: '/tmp/first' });
+    const second = await registry.reserve({ title: 'Second', cwd: '/tmp/second' });
+
+    await registry.setThreadCandidate(first.handle, 'thread-shared');
+    await expect(registry.setThreadCandidate(second.handle, 'thread-shared')).rejects.toThrow(
+      /thread-shared.*T-CA11D0/i,
+    );
+    await expect(registry.importThread(second.handle, 'thread-shared')).rejects.toThrow(
+      /thread-shared.*T-CA11D0/i,
+    );
+
+    await registry.importThread(first.handle, 'thread-shared');
+    await expect(registry.setThreadCandidate(second.handle, 'thread-shared')).rejects.toThrow(
+      /thread-shared.*T-CA11D0/i,
     );
   });
 

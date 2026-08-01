@@ -1,7 +1,9 @@
+import type { ChildProcess } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import type { Readable, Writable } from 'node:stream';
 import { join } from 'node:path';
 import pkg from '../../../package.json';
+import { log } from '../../core/logger';
 import { mergeProcessEnv, spawnProcess, type SpawnedProcessByStdio } from '../../platform/spawn';
 import { buildLarkChannelEnv, type LarkChannelEnvContext } from '../lark-channel-env';
 import { CodexAppServerJsonRpc } from './app-server-jsonrpc';
@@ -25,12 +27,23 @@ export interface AppServerConfigProbeInput {
   binary: string;
   cwd: string;
   env: NodeJS.ProcessEnv;
+  featureListTimeoutMs?: number;
+  shutdownGraceMs?: number;
+}
+
+export interface TerminateChildOptions {
+  eofGraceMs?: number;
+  terminateGraceMs?: number;
+  killGraceMs?: number;
 }
 
 const RPC_TIMEOUT_MS = 15_000;
 const FEATURE_LIST_TIMEOUT_MS = 5_000;
 const MAX_PROTOCOL_LINE_CHARS = 4 * 1024 * 1024;
 const MAX_FEATURE_LIST_CHARS = 1024 * 1024;
+
+/** POSIX children get their own process group so wrapper descendants can be terminated together. */
+export const APP_SERVER_PROCESS_GROUP_ENABLED = process.platform !== 'win32';
 
 export async function readAppServerConfigInventory(
   input: AppServerConfigProbeInput,
@@ -40,6 +53,7 @@ export async function readAppServerConfigInventory(
     cwd: input.cwd,
     env: input.env,
     stdio: ['pipe', 'pipe', 'pipe'],
+    detached: APP_SERVER_PROCESS_GROUP_ENABLED,
   }) as CodexAppServerChild;
   const stderrChunks: Buffer[] = [];
   let stderrBytes = 0;
@@ -121,64 +135,138 @@ export async function readAppServerConfigInventory(
     if (!config) throw new Error('codex app-server config/read returned no config');
     return { features, mcp_servers: config.mcp_servers ?? config.mcpServers };
   } finally {
-    if (!child.stdin.destroyed && !child.stdin.writableEnded) child.stdin.end();
-    if (!(await waitForPromise(closed, 500))) {
-      if (child.exitCode === null && child.signalCode === null) child.kill('SIGTERM');
-      if (!(await waitForPromise(closed, 500)) && child.exitCode === null && child.signalCode === null) {
-        child.kill('SIGKILL');
-        await waitForPromise(closed, 500);
-      }
-    }
+    const graceMs = input.shutdownGraceMs ?? 500;
+    await terminateAndReapChild(child, closed, {
+      eofGraceMs: graceMs,
+      terminateGraceMs: graceMs,
+      killGraceMs: graceMs,
+    });
   }
 }
 
 export async function readAppServerFeatureInventory(
   input: AppServerConfigProbeInput,
 ): Promise<string[]> {
-  return new Promise<string[]>((resolve, reject) => {
-    const child = spawnProcess(input.binary, ['features', 'list'], {
-      cwd: input.cwd,
-      env: input.env,
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-    let stdout = '';
-    let stderr = '';
-    let settled = false;
-    const timer = setTimeout(() => {
-      if (settled) return;
-      child.kill('SIGTERM');
-      settled = true;
-      reject(new Error(`codex features list timed out after ${FEATURE_LIST_TIMEOUT_MS}ms`));
-    }, FEATURE_LIST_TIMEOUT_MS);
-    const finish = (operation: () => void): void => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      operation();
-    };
-    child.stdout?.on('data', (chunk: Buffer) => {
-      if (stdout.length < MAX_FEATURE_LIST_CHARS) stdout += chunk.toString('utf8');
-    });
-    child.stderr?.on('data', (chunk: Buffer) => {
-      if (stderr.length < 16 * 1024) stderr += chunk.toString('utf8');
-    });
-    child.once('error', (err) => finish(() => reject(err)));
-    child.once('close', (code, signal) => finish(() => {
-      if (code !== 0) {
-        reject(new Error(
-          stderr.trim().slice(0, 500)
-            || `codex features list exited: ${code ?? signal ?? 'unknown'}`,
-        ));
-        return;
-      }
-      const features = parseCodexFeatureList(stdout);
-      if (features.length === 0) {
-        reject(new Error('codex features list returned no parseable feature inventory'));
-        return;
-      }
-      resolve(features);
-    }));
+  const child = spawnProcess(input.binary, ['features', 'list'], {
+    cwd: input.cwd,
+    env: input.env,
+    stdio: ['ignore', 'pipe', 'pipe'],
+    detached: APP_SERVER_PROCESS_GROUP_ENABLED,
   });
+  let stdout = '';
+  let stderr = '';
+  const closed = new Promise<void>((resolve) => child.once('close', () => resolve()));
+  const result = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve, reject) => {
+    child.once('error', reject);
+    child.once('close', (code, signal) => resolve({ code, signal }));
+  });
+  child.stdout?.on('data', (chunk: Buffer) => {
+    if (stdout.length < MAX_FEATURE_LIST_CHARS) stdout += chunk.toString('utf8');
+  });
+  child.stderr?.on('data', (chunk: Buffer) => {
+    if (stderr.length < 16 * 1024) stderr += chunk.toString('utf8');
+  });
+
+  const timeoutMs = input.featureListTimeoutMs ?? FEATURE_LIST_TIMEOUT_MS;
+  try {
+    const { code, signal } = await withTimeout(result, timeoutMs, 'codex features list');
+    if (code !== 0) {
+      throw new Error(
+        stderr.trim().slice(0, 500)
+          || `codex features list exited: ${code ?? signal ?? 'unknown'}`,
+      );
+    }
+    const features = parseCodexFeatureList(stdout);
+    if (features.length === 0) {
+      throw new Error('codex features list returned no parseable feature inventory');
+    }
+    return features;
+  } finally {
+    const graceMs = input.shutdownGraceMs ?? 500;
+    await terminateAndReapChild(child, closed, {
+      eofGraceMs: 0,
+      terminateGraceMs: graceMs,
+      killGraceMs: graceMs,
+    });
+  }
+}
+
+export async function terminateAndReapChild(
+  child: ChildProcess,
+  closed: Promise<unknown>,
+  options: TerminateChildOptions = {},
+): Promise<boolean> {
+  const eofGraceMs = options.eofGraceMs ?? 500;
+  const terminateGraceMs = options.terminateGraceMs ?? 500;
+  const killGraceMs = options.killGraceMs ?? 500;
+  if (child.stdin && !child.stdin.destroyed && !child.stdin.writableEnded) child.stdin.end();
+  if (await waitForPromise(closed, eofGraceMs)) {
+    return terminateAppServerProcessGroup(child, { terminateGraceMs, killGraceMs });
+  }
+
+  signalAppServerProcess(child, 'SIGTERM');
+  if (await waitForPromise(closed, terminateGraceMs)) {
+    return terminateAppServerProcessGroup(child, {
+      terminateGraceMs: 0,
+      killGraceMs,
+    });
+  }
+
+  signalAppServerProcess(child, 'SIGKILL');
+  const childReaped = await waitForPromise(closed, killGraceMs);
+  if (!childReaped) {
+    log.warn('app-server', 'child-reap-timeout', {
+      pid: child.pid ?? null,
+      killGraceMs,
+    });
+  }
+  const groupReaped = await terminateAppServerProcessGroup(child, {
+    terminateGraceMs: 0,
+    killGraceMs,
+  });
+  return childReaped && groupReaped;
+}
+
+export function signalAppServerProcess(
+  child: ChildProcess,
+  signal: NodeJS.Signals,
+): boolean {
+  const pid = child.pid;
+  if (APP_SERVER_PROCESS_GROUP_ENABLED && pid && signalProcessGroup(pid, signal)) return true;
+
+  if (child.exitCode !== null || child.signalCode !== null) return false;
+  try {
+    return child.kill(signal);
+  } catch (err) {
+    log.warn('app-server', 'child-signal-failed', {
+      pid: pid ?? null,
+      signal,
+      code: (err as NodeJS.ErrnoException).code ?? null,
+    });
+    return false;
+  }
+}
+
+export async function terminateAppServerProcessGroup(
+  child: ChildProcess,
+  options: Pick<TerminateChildOptions, 'terminateGraceMs' | 'killGraceMs'> = {},
+): Promise<boolean> {
+  if (!APP_SERVER_PROCESS_GROUP_ENABLED || !child.pid) return true;
+  const pid = child.pid;
+  if (!isProcessGroupAlive(pid)) return true;
+
+  signalProcessGroup(pid, 'SIGTERM');
+  if (await waitForProcessGroupExit(pid, options.terminateGraceMs ?? 500)) return true;
+
+  signalProcessGroup(pid, 'SIGKILL');
+  const reaped = await waitForProcessGroupExit(pid, options.killGraceMs ?? 500);
+  if (!reaped) {
+    log.warn('app-server', 'process-group-reap-timeout', {
+      pid,
+      killGraceMs: options.killGraceMs ?? 500,
+    });
+  }
+  return reaped;
 }
 
 export function buildAppServerProcessEnv(options: CodexAppServerProcessOptions): NodeJS.ProcessEnv {
@@ -205,7 +293,7 @@ async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, operation:
   }
 }
 
-async function waitForPromise(promise: Promise<void>, timeoutMs: number): Promise<boolean> {
+async function waitForPromise(promise: Promise<unknown>, timeoutMs: number): Promise<boolean> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     return await Promise.race([
@@ -217,6 +305,42 @@ async function waitForPromise(promise: Promise<void>, timeoutMs: number): Promis
   } finally {
     if (timer) clearTimeout(timer);
   }
+}
+
+function signalProcessGroup(pid: number, signal: NodeJS.Signals): boolean {
+  try {
+    process.kill(-pid, signal);
+    return true;
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code !== 'ESRCH') {
+      log.warn('app-server', 'process-group-signal-failed', {
+        pid,
+        signal,
+        code: code ?? null,
+      });
+    }
+    return false;
+  }
+}
+
+function isProcessGroupAlive(pid: number): boolean {
+  try {
+    process.kill(-pid, 0);
+    return true;
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code === 'EPERM';
+  }
+}
+
+async function waitForProcessGroupExit(pid: number, timeoutMs: number): Promise<boolean> {
+  const deadline = Date.now() + Math.max(0, timeoutMs);
+  while (isProcessGroupAlive(pid)) {
+    const remainingMs = deadline - Date.now();
+    if (remainingMs <= 0) return false;
+    await new Promise((resolve) => setTimeout(resolve, Math.min(10, remainingMs)));
+  }
+  return true;
 }
 
 function recordValue(value: unknown): Record<string, unknown> | undefined {

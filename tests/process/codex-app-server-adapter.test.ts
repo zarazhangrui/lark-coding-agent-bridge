@@ -111,10 +111,13 @@ describe('CodexAppServerAdapter process contract', () => {
       'initialized',
       'config/read',
       'thread/start',
-      'thread/name/set',
       'turn/start',
+      'thread/name/set',
     ]);
 
+    expect(messageByMethod(record, 'initialize').params.capabilities).toEqual({
+      experimentalApi: true,
+    });
     const threadStart = messageByMethod(record, 'thread/start');
     expect(threadStart.params).toMatchObject({
       cwd,
@@ -151,6 +154,9 @@ describe('CodexAppServerAdapter process contract', () => {
       binary: fake.path,
       profileStateDir: fake.dir,
       sandbox: 'danger-full-access',
+      onThreadCandidate: async () => {
+        throw new Error('resume must not report a fresh thread candidate');
+      },
     });
     const run = await prepareAndRun(adapter, {
       runId: 'run-resume',
@@ -179,6 +185,7 @@ describe('CodexAppServerAdapter process contract', () => {
       model: 'gpt-test',
       sandbox: 'workspace-write',
       approvalPolicy: 'never',
+      excludeTurns: true,
     });
     expect(messageByMethod(record, 'turn/start').params).toMatchObject({
       threadId: 'thread-old',
@@ -219,6 +226,131 @@ describe('CodexAppServerAdapter process contract', () => {
     });
   });
 
+  it('treats thread naming as best-effort after the first turn starts', async () => {
+    const fake = await createFakeAppServer({ failMethod: 'thread/name/set' });
+    cleanup.push(fake.dir);
+    const run = await prepareAndRun(new CodexAppServerAdapter({
+      binary: fake.path,
+      profileStateDir: fake.dir,
+    }), {
+      runId: 'run-name-failure',
+      prompt: 'continue without a display name',
+      cwd: await realpath(fake.dir),
+    });
+
+    expect((await collect(run.events)).at(-1)).toEqual({
+      type: 'done',
+      threadId: 'thread-fresh',
+      terminationReason: 'normal',
+    });
+    expect(await run.waitForExit(1000)).toBe(true);
+    const methods = (await readRecord(fake.recordPath)).messages
+      .map((message) => message.method)
+      .filter(Boolean);
+    expect(methods.indexOf('turn/start')).toBeLessThan(methods.indexOf('thread/name/set'));
+  });
+
+  it('awaits fresh thread candidate reconciliation before turn/start', async () => {
+    const fake = await createFakeAppServer();
+    cleanup.push(fake.dir);
+    const candidates: string[] = [];
+    const run = await prepareAndRun(new CodexAppServerAdapter({
+      binary: fake.path,
+      profileStateDir: fake.dir,
+      onThreadCandidate: async (threadId) => {
+        candidates.push(threadId);
+        throw new Error('candidate reconciliation failed');
+      },
+    }), {
+      runId: 'run-candidate-failure',
+      prompt: 'must not start',
+      cwd: await realpath(fake.dir),
+    });
+
+    expect(await collect(run.events)).toEqual([{
+      type: 'error',
+      message: 'codex app-server protocol error: candidate reconciliation failed',
+      terminationReason: 'failed',
+    }]);
+    expect(await run.waitForExit(1000)).toBe(true);
+    expect(candidates).toEqual(['thread-fresh']);
+    const record = await readRecord(fake.recordPath);
+    expect(record.messages.some((message) => message.method === 'thread/start')).toBe(true);
+    expect(record.messages.some((message) => message.method === 'turn/start')).toBe(false);
+  });
+
+  it('returns protocol-complete MCP elicitation declines', async () => {
+    const fake = await createFakeAppServer({ mcpElicitationRequest: true });
+    cleanup.push(fake.dir);
+    const run = await prepareAndRun(new CodexAppServerAdapter({
+      binary: fake.path,
+      profileStateDir: fake.dir,
+    }), {
+      runId: 'run-mcp-elicitation',
+      prompt: 'decline MCP input',
+      cwd: await realpath(fake.dir),
+    });
+
+    await collect(run.events);
+    expect(await run.waitForExit(1000)).toBe(true);
+    expect((await readRecord(fake.recordPath)).messages).toContainEqual({
+      id: 'mcp-elicitation-1',
+      result: { action: 'decline', content: null },
+    });
+  });
+
+  it('keeps current resume usage that arrives before turn/start while filtering history', async () => {
+    const fake = await createFakeAppServer({
+      historicalUsageOnResume: true,
+      notificationsBeforeTurnResponse: true,
+    });
+    cleanup.push(fake.dir);
+    const run = await prepareAndRun(new CodexAppServerAdapter({
+      binary: fake.path,
+      profileStateDir: fake.dir,
+    }), {
+      runId: 'run-resume-current-usage',
+      prompt: 'new turn',
+      cwd: await realpath(fake.dir),
+      threadId: 'thread-old',
+    });
+
+    const events = await collect(run.events);
+    expect(await run.waitForExit(1000)).toBe(true);
+    expect(events.filter((event) => event.type === 'usage')).toEqual([{
+      type: 'usage',
+      inputTokens: 12,
+      outputTokens: 3,
+      cachedInputTokens: 4,
+      reasoningOutputTokens: 1,
+    }]);
+  });
+
+  it('does not attribute legacy resume usage without a turn id to the current turn', async () => {
+    const fake = await createFakeAppServer({
+      historicalUsageOnResume: true,
+      historicalUsageWithoutTurnId: true,
+      suppressCurrentUsage: true,
+    });
+    cleanup.push(fake.dir);
+    const run = await prepareAndRun(new CodexAppServerAdapter({
+      binary: fake.path,
+      profileStateDir: fake.dir,
+    }), {
+      runId: 'run-resume-usage',
+      prompt: 'new turn',
+      cwd: await realpath(fake.dir),
+      threadId: 'thread-old',
+    });
+
+    const events = await collect(run.events);
+    expect(await run.waitForExit(1000)).toBe(true);
+    expect(events.filter((event) => event.type === 'usage')).toEqual([]);
+    expect(messageByMethod(await readRecord(fake.recordPath), 'thread/resume').params).toMatchObject({
+      excludeTurns: true,
+    });
+  });
+
   it('answers currentTime/read with whole Unix seconds', async () => {
     const fake = await createFakeAppServer({ currentTimeRequest: true });
     cleanup.push(fake.dir);
@@ -248,7 +380,7 @@ describe('CodexAppServerAdapter process contract', () => {
 
   it.each(['applyPatchApproval', 'execCommandApproval'] as const)(
     'uses the official ReviewDecision wire schema for %s',
-    async (legacyApprovalMethod) => {
+    async (legacyApprovalMethod: 'applyPatchApproval' | 'execCommandApproval') => {
       const fake = await createFakeAppServer({ legacyApprovalMethod });
       cleanup.push(fake.dir);
       const run = await prepareAndRun(new CodexAppServerAdapter({
@@ -355,6 +487,44 @@ describe('CodexAppServerAdapter process contract', () => {
       { type: 'final_text', content: 'hello user' },
     ]);
     expect(events.filter((event) => event.type === 'usage')).toHaveLength(1);
+  });
+
+  it('reports matching raw run activity even when no display event is produced', async () => {
+    const fake = await createFakeAppServer({
+      activityOnlyNotifications: true,
+      holdTurn: true,
+    });
+    cleanup.push(fake.dir);
+    let activityCount = 0;
+    let resolveActivity!: () => void;
+    const activity = new Promise<void>((resolve) => {
+      resolveActivity = resolve;
+    });
+    const run = await prepareAndRun(new CodexAppServerAdapter({
+      binary: fake.path,
+      profileStateDir: fake.dir,
+      stopGraceMs: 100,
+      onActivity: () => {
+        activityCount++;
+        resolveActivity();
+      },
+    }), {
+      runId: 'run-raw-activity',
+      prompt: 'stay active',
+      cwd: await realpath(fake.dir),
+    });
+    const iterator = run.events[Symbol.asyncIterator]();
+
+    expect(await iterator.next()).toMatchObject({
+      done: false,
+      value: { type: 'system', threadId: 'thread-fresh' },
+    });
+    await waitForPromise(activity, 'matching raw activity');
+    expect(activityCount).toBe(1);
+
+    await run.stop();
+    expect(await run.waitForExit(1000)).toBe(true);
+    await iterator.return?.();
   });
 
   it('interrupts an active turn before terminating its temporary app-server', async () => {
@@ -493,6 +663,7 @@ async function prepareAndRun(
 }
 
 async function createFakeAppServer(options: {
+  activityOnlyNotifications?: boolean;
   approvalRequest?: boolean;
   addMcpAfterProbe?: boolean;
   currentTimeRequest?: boolean;
@@ -501,7 +672,11 @@ async function createFakeAppServer(options: {
   legacyApprovalMethod?: 'applyPatchApproval' | 'execCommandApproval';
   failMethod?: string;
   malformedAfterInitialize?: boolean;
+  mcpElicitationRequest?: boolean;
   notificationsBeforeTurnResponse?: boolean;
+  historicalUsageOnResume?: boolean;
+  historicalUsageWithoutTurnId?: boolean;
+  suppressCurrentUsage?: boolean;
   requireProfileCodexHome?: boolean;
   supportedFeatures?: string[];
 } = {}): Promise<FakeAppServer> {
@@ -548,6 +723,7 @@ const mcpStarts = [];
 let threadId = 'thread-fresh';
 let turnId = 'turn-1';
 let completed = false;
+let turnStarted = false;
 let initializeReplied = false;
 let configProbe = false;
 
@@ -609,12 +785,14 @@ function finish(status = 'completed') {
       threadId, turnId, completedAtMs: Date.now(),
       item: { id: 'msg-1', type: 'agentMessage', phase: 'final_answer', text: 'hello user' }
     }});
-    send({ method: 'thread/tokenUsage/updated', params: {
-      threadId, turnId, tokenUsage: {
-        last: { inputTokens: 12, outputTokens: 3, cachedInputTokens: 4, reasoningOutputTokens: 1, totalTokens: 15 },
-        total: { inputTokens: 120, outputTokens: 30, cachedInputTokens: 40, reasoningOutputTokens: 10, totalTokens: 150 }
-      }
-    }});
+    if (!options.suppressCurrentUsage) {
+      send({ method: 'thread/tokenUsage/updated', params: {
+        threadId, turnId, tokenUsage: {
+          last: { inputTokens: 12, outputTokens: 3, cachedInputTokens: 4, reasoningOutputTokens: 1, totalTokens: 15 },
+          total: { inputTokens: 120, outputTokens: 30, cachedInputTokens: 40, reasoningOutputTokens: 10, totalTokens: 150 }
+        }
+      }});
+    }
   }
   send({ method: 'turn/completed', params: {
     threadId, turn: { id: turnId, status, items: [] }
@@ -670,19 +848,45 @@ rl.on('line', (line) => {
       model: message.params.model ?? 'fake-model', modelProvider: 'openai',
       approvalPolicy: 'never', approvalsReviewer: 'user', sandbox: {}
     }});
+    if (message.method === 'thread/resume' && options.historicalUsageOnResume) {
+      send({ method: 'thread/tokenUsage/updated', params: {
+        threadId,
+        ...(options.historicalUsageWithoutTurnId ? {} : { turnId: 'turn-historical' }),
+        tokenUsage: {
+          last: { inputTokens: 999, outputTokens: 999, totalTokens: 1998 },
+          total: { inputTokens: 999, outputTokens: 999, totalTokens: 1998 }
+        }
+      }});
+    }
   } else if (message.method === 'thread/name/set') {
+    if (!turnStarted) {
+      send({ id: message.id, error: { code: -32600, message: 'no rollout found for thread id' } });
+      return;
+    }
     send({ id: message.id, result: {} });
   } else if (message.method === 'turn/start') {
+    turnStarted = true;
     if (options.notificationsBeforeTurnResponse) finish('completed');
     send({ id: message.id, result: { turn: { id: turnId, status: 'inProgress', items: [] } } });
     if (options.notificationsBeforeTurnResponse) {
       // Notifications were intentionally sent first to exercise client buffering.
+    } else if (options.activityOnlyNotifications) {
+      send({ method: 'item/reasoning/textDelta', params: {
+        threadId, turnId: 'turn-other', itemId: 'reason-other', delta: 'ignore me'
+      }});
+      send({ method: 'item/reasoning/textDelta', params: {
+        threadId, turnId, itemId: 'reason-1', delta: 'still working'
+      }});
     } else if (options.approvalRequest) {
       send({ id: 'approval-1', method: 'item/commandExecution/requestApproval', params: {
         threadId, turnId, itemId: 'cmd-approval'
       }});
     } else if (options.currentTimeRequest) {
       send({ id: 'current-time-1', method: 'currentTime/read', params: { threadId } });
+    } else if (options.mcpElicitationRequest) {
+      send({ id: 'mcp-elicitation-1', method: 'mcpServer/elicitation/request', params: {
+        threadId, turnId, serverName: 'fake-mcp', message: 'need input'
+      }});
     } else if (options.legacyApprovalMethod) {
       send({ id: 'legacy-approval-1', method: options.legacyApprovalMethod, params: {
         conversationId: threadId, callId: 'legacy-call-1'
@@ -693,7 +897,10 @@ rl.on('line', (line) => {
   } else if (message.method === 'turn/interrupt') {
     send({ id: message.id, result: {} });
     finish('interrupted');
-  } else if (message.id === 'approval-1' && message.result) {
+  } else if (
+    (message.id === 'approval-1' || message.id === 'mcp-elicitation-1')
+    && message.result
+  ) {
     finish('completed');
   } else if (
     (message.id === 'current-time-1' || message.id === 'legacy-approval-1')
@@ -756,4 +963,18 @@ async function waitForRecordedMethod(path: string, method: string): Promise<void
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
   throw new Error(`timed out waiting for ${method}`);
+}
+
+async function waitForPromise(promise: Promise<unknown>, label: string): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      promise,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`timed out waiting for ${label}`)), 2000);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }

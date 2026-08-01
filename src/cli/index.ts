@@ -120,7 +120,7 @@ codexTask
 
 codexTask
   .command('create')
-  .description('Create and register a persistent Codex worker task')
+  .description('Reserve a Codex worker task and optionally run its first turn')
   .requiredOption('--title <title>', 'user-facing task title')
   .requiredOption('--cwd <path>', 'absolute worker working directory')
   .option('-c, --config <path>', 'path to Bridge root config file')
@@ -153,7 +153,7 @@ codexTask
 
 codexTask
   .command('send <handle>')
-  .description('Resume a registered task, send one instruction, and wait for completion')
+  .description('Materialize or resume a registered task and wait for completion')
   .option('-c, --config <path>', 'path to Bridge root config file')
   .requiredOption('--message <text>', 'instruction to send')
   .option('--model <slug>', 'per-turn model override, persisted for later sends')
@@ -354,7 +354,7 @@ program.parseAsync(process.argv).catch((err: unknown) => {
   const diagnostic = getAgentPreflightDiagnostic(err);
   if (diagnostic) {
     console.error(formatAgentPreflightDiagnostic(diagnostic));
-    process.exit(1);
+    process.exit(process.exitCode && process.exitCode !== 0 ? process.exitCode : 1);
   }
   if (err instanceof Error) {
     if (err.name === 'UserCancelledError') {
@@ -365,5 +365,5 @@ program.parseAsync(process.argv).catch((err: unknown) => {
   } else {
     console.error(err);
   }
-  process.exit(1);
+  process.exit(process.exitCode && process.exitCode !== 0 ? process.exitCode : 1);
 });

@@ -161,11 +161,21 @@ lark-channel-bridge codex-task send T-A1B2C3 --profile codex --message "继续�
 
 `list` 只列出该 profile 注册的 worker；`read` 使用 `thread/read`，不会 resume task，
 并只返回筛选后的 task 元数据、状态和用户/agent 文本，不返回原始 thread/工具载荷。
-`create` 使用持久化 `thread/start` + `thread/name/set`；`send` 会在短生命周期
-app-server 中完成 `thread/resume` + `turn/start` 并等待终态。profile-local lock 可以
-防止两个 `codex-task send` 同时写一个 worker，但无法检测或阻止 Codex App 另一个
-进程正在写；App 与 Bridge 仍必须顺序交接。本 MVP 没有 delete/archive、后台
-fire-and-forget、跨进程 stop 或 App→飞书实时镜像。
+不带消息的 `create` 只预留一个 `pending` handle，不会把尚未启动 turn 的内存 thread
+标记成可恢复。首次 `send`（或 `create --message`）会在同一个 App Server 进程内依次
+执行 `thread/start` 与 `turn/start`。fresh thread ID 会先作为私有 candidate 落盘，
+`turn/start` 成功后才提升为 durable thread。如果响应丢失，下一次 `send` 会先用
+`thread/read` 验证：candidate 已 durable 时只导入并 fail closed，提示前一 turn 结果
+不确定，不会发送本次消息；只有明确返回 `thread not loaded` 才允许重新物化。普通 CLI
+输出不会暴露 candidate ID，显示名称仍按 best-effort 设置。后续发送使用
+`thread/resume`，并关闭历史 turns 重放。专用的 profile-local 执行锁会直接拒绝同一
+worker 的并发发送。默认 5 分钟的空闲 watchdog 会被已识别的 App Server 活动刷新，
+包括不会渲染成聊天文本的 command、file-change 和 MCP progress；只有真正静默的
+worker 才会标记为 `timeout`。`SIGINT`/`SIGTERM` 会先 interrupt 当前 turn、落盘
+`interrupted` 并释放锁；`timeout` 与 `interrupted` 仍会输出结构化结果，但 CLI 使用
+非零退出码。该锁仍无法检测或阻止 Codex App 的另一个进程写入，因此 App 与 Bridge
+必须顺序交接。本 MVP 没有
+delete/archive、后台 fire-and-forget、跨进程 stop 或 App→飞书实时镜像。
 
 ## 命令速查
 

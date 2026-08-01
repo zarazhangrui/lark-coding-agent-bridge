@@ -168,14 +168,27 @@ lark-channel-bridge codex-task send T-A1B2C3 --profile codex --message "Continue
 
 `list` returns only workers registered by that profile. `read` uses
 `thread/read` without resuming the task and returns filtered task metadata,
-status, and user/agent text rather than raw thread/tool payloads. `create` uses
-persistent `thread/start` plus `thread/name/set`; `send` performs
-`thread/resume` plus `turn/start` in a short-lived app-server and waits for a
-terminal event. A profile-local lock prevents two `codex-task send` commands
-from writing the same worker concurrently, but it cannot detect or block a
-separate Codex App process. App and Bridge must still hand off sequentially.
-This MVP intentionally omits delete/archive, background fire-and-forget,
-cross-process stop, and App-to-Lark live mirroring.
+status, and user/agent text rather than raw thread/tool payloads. An empty
+`create` reserves a pending handle but does not claim that an unstarted thread
+is durable. The first `send` (or `create --message`) performs `thread/start` and
+`turn/start` in the same App Server process. The fresh thread ID is first stored
+as a private candidate, then promoted to the durable thread only after
+`turn/start` succeeds. If that response is lost, the next `send` verifies the
+candidate with `thread/read`: a durable candidate is imported but the new
+message is not sent, and the command fails closed with an ambiguous-outcome
+warning; only an explicit `thread not loaded` response permits a fresh retry.
+Candidate IDs are never included in normal CLI output. Thread naming remains
+best-effort. Later sends use `thread/resume` with historical turn replay
+disabled. A dedicated profile-local execution lock rejects concurrent sends to
+the same worker. A five-minute idle watchdog is refreshed by recognized App
+Server activity, including command, file-change, and MCP progress that is not
+rendered as chat output; a truly silent worker is marked `timeout`. `SIGINT` and
+`SIGTERM` interrupt the active turn and persist `interrupted` before releasing
+the lock. `timeout` and `interrupted` results remain available as structured
+output but use a non-zero CLI exit status. The lock cannot detect or block a
+separate Codex App process, so App and Bridge must still hand off sequentially. This MVP
+intentionally omits delete/archive, background fire-and-forget, cross-process
+stop, and App-to-Lark live mirroring.
 
 ## Commands
 

@@ -29,9 +29,12 @@ import {
   buildLeanAppServerArgs,
 } from './app-server-lean';
 import {
+  APP_SERVER_PROCESS_GROUP_ENABLED,
   buildAppServerProcessEnv,
   readAppServerConfigInventory,
   readAppServerFeatureInventory,
+  signalAppServerProcess,
+  terminateAppServerProcessGroup,
   type CodexAppServerProcessOptions,
 } from './app-server-process';
 
@@ -41,11 +44,16 @@ export interface CodexAppServerAdapterOptions extends CodexAppServerProcessOptio
   sandbox?: SandboxMode;
   stopGraceMs?: number;
   developerInstructions?: string;
+  /** Observe matching raw run notifications, including notifications with no display event. */
+  onActivity?: () => void;
+  /** Persist/reconcile a fresh in-memory thread id before its first turn is submitted. */
+  onThreadCandidate?: (threadId: string) => Promise<void>;
 }
 
 type CodexAppServerChild = SpawnedProcessByStdio<Writable, Readable, Readable>;
 
 const RPC_TIMEOUT_MS = 15_000;
+const THREAD_NAME_TIMEOUT_MS = 2_000;
 const NORMAL_SHUTDOWN_GRACE_MS = 250;
 const MAX_PROTOCOL_LINE_CHARS = 4 * 1024 * 1024;
 const MAX_BUFFERED_NOTIFICATIONS = 2_000;
@@ -212,6 +220,7 @@ class CodexAppServerRun implements AgentRun {
         cwd: input.run.cwd,
         env: buildAppServerProcessEnv(input.adapter),
         stdio: ['pipe', 'pipe', 'pipe'],
+        detached: APP_SERVER_PROCESS_GROUP_ENABLED,
       },
     ) as CodexAppServerChild;
 
@@ -237,7 +246,16 @@ class CodexAppServerRun implements AgentRun {
         }
         this.readline.close();
         this.queue.close();
-        resolve();
+        void terminateAppServerProcessGroup(this.child).then(
+          () => resolve(),
+          (err) => {
+            log.warn('app-server', 'process-group-cleanup-failed', {
+              pid: this.child.pid ?? null,
+              message: errorMessage(err),
+            });
+            resolve();
+          },
+        );
       });
     });
 
@@ -257,7 +275,10 @@ class CodexAppServerRun implements AgentRun {
   }
 
   async stop(): Promise<void> {
-    if (this.exited) return;
+    if (this.exited) {
+      await this.exitPromise;
+      return;
+    }
     this.stopRequested = true;
     const graceMs = this.input.run.stopGraceMs ?? this.input.adapter.stopGraceMs ?? 5000;
 
@@ -295,7 +316,6 @@ class CodexAppServerRun implements AgentRun {
   }
 
   waitForExit(timeoutMs: number): Promise<boolean> {
-    if (this.exited) return Promise.resolve(true);
     return waitForPromise(this.exitPromise, timeoutMs);
   }
 
@@ -341,7 +361,7 @@ class CodexAppServerRun implements AgentRun {
           title: 'Lark Channel Bridge',
           version: pkg.version,
         },
-        capabilities: null,
+        capabilities: { experimentalApi: true },
       }),
       RPC_TIMEOUT_MS,
       'initialize',
@@ -367,25 +387,9 @@ class CodexAppServerRun implements AgentRun {
     }
     this.threadId = threadId;
     if (!this.input.run.threadId) {
-      await withTimeout(
-        this.rpc.request('thread/name/set', {
-          threadId,
-          name: this.input.run.threadName?.trim() || '飞书 · 新会话',
-        }),
-        RPC_TIMEOUT_MS,
-        'thread/name/set',
-      );
+      await this.input.adapter.onThreadCandidate?.(threadId);
+      if (this.stopRequested) throw new Error('codex app-server run stopped before turn start');
     }
-    this.publish([
-      {
-        type: 'system',
-        threadId,
-        cwd: stringValue(threadResponse?.cwd) ?? this.input.run.cwd,
-        ...(stringValue(threadResponse?.model) ?? this.input.run.model
-          ? { model: stringValue(threadResponse?.model) ?? this.input.run.model }
-          : {}),
-      },
-    ]);
 
     const turnResult = await withTimeout(
       this.rpc.request('turn/start', {
@@ -407,7 +411,45 @@ class CodexAppServerRun implements AgentRun {
     if (!turnId) throw new Error('codex app-server returned no turn id');
     this.turnId = turnId;
     this.translator.setContext(threadId, turnId);
+    // A fresh thread becomes resumable only once its first turn has started.
+    // Publish it now so task controllers never persist an in-memory-only id.
+    this.publish([
+      {
+        type: 'system',
+        threadId,
+        cwd: stringValue(threadResponse?.cwd) ?? this.input.run.cwd,
+        ...(stringValue(threadResponse?.model) ?? this.input.run.model
+          ? { model: stringValue(threadResponse?.model) ?? this.input.run.model }
+          : {}),
+      },
+    ]);
+    if (!this.input.run.threadId) {
+      void this.setFreshThreadName(threadId);
+      // Let the queued name request reach stdin before a synchronously buffered
+      // terminal notification closes the normal-shutdown side of the pipe.
+      await Promise.resolve();
+    }
     this.flushPendingNotifications();
+  }
+
+  private async setFreshThreadName(threadId: string): Promise<void> {
+    try {
+      await withTimeout(
+        this.rpc.request('thread/name/set', {
+          threadId,
+          name: this.input.run.threadName?.trim() || '飞书 · 新会话',
+        }),
+        THREAD_NAME_TIMEOUT_MS,
+        'thread/name/set',
+      );
+    } catch (err) {
+      // Naming is cosmetic. A rejected or unsupported name must not discard a
+      // turn that has already started successfully.
+      log.warn('app-server', 'thread-name-failed', {
+        threadId,
+        message: errorMessage(err),
+      });
+    }
   }
 
   private threadParams(): Record<string, unknown> {
@@ -420,7 +462,7 @@ class CodexAppServerRun implements AgentRun {
       ...(this.input.run.model ? { model: this.input.run.model } : {}),
     };
     return this.input.run.threadId
-      ? { threadId: this.input.run.threadId, ...common }
+      ? { threadId: this.input.run.threadId, excludeTurns: true, ...common }
       : {
           serviceName: 'lark-channel-bridge',
           threadSource: 'user',
@@ -470,6 +512,18 @@ class CodexAppServerRun implements AgentRun {
   }
 
   private handleNotification(method: string, params: unknown): void {
+    const notification = recordValue(params);
+    if (
+      !this.turnId &&
+      this.input.run.threadId &&
+      method === 'thread/tokenUsage/updated' &&
+      notification &&
+      !stringValue(notification.turnId)
+    ) {
+      // Legacy servers may replay cumulative usage without a turn id after
+      // resume. Such a snapshot cannot be attributed safely to the new turn.
+      return;
+    }
     if (!this.turnId && isRunNotification(method)) {
       if (this.pendingNotifications.length >= MAX_BUFFERED_NOTIFICATIONS) {
         this.failTransport(new Error('codex app-server notification buffer overflow'));
@@ -477,6 +531,14 @@ class CodexAppServerRun implements AgentRun {
       }
       this.pendingNotifications.push({ method, params });
       return;
+    }
+    if (
+      !this.terminal &&
+      isRunNotification(method) &&
+      notification &&
+      this.matchesCurrentRunNotification(notification)
+    ) {
+      this.notifyActivity();
     }
     const events = this.translator.translate(method, params);
     this.publish(events);
@@ -501,7 +563,7 @@ class CodexAppServerRun implements AgentRun {
         await this.rpc.respond(request.id, { answers: {} });
         return;
       case 'mcpServer/elicitation/request':
-        await this.rpc.respond(request.id, { action: decision });
+        await this.rpc.respond(request.id, { action: decision, content: null });
         return;
       case 'item/permissions/requestApproval':
         await this.rpc.respond(request.id, { permissions: {}, scope: 'turn' });
@@ -551,8 +613,25 @@ class CodexAppServerRun implements AgentRun {
   }
 
   private terminate(signal: NodeJS.Signals): void {
-    if (this.exited || this.child.exitCode !== null || this.child.signalCode !== null) return;
-    this.child.kill(signal);
+    if (this.exited) return;
+    signalAppServerProcess(this.child, signal);
+  }
+
+  private matchesCurrentRunNotification(params: Record<string, unknown>): boolean {
+    if (!this.threadId || !this.turnId) return false;
+    const eventThreadId = stringValue(params.threadId);
+    const eventTurnId = stringValue(params.turnId ?? recordValue(params.turn)?.id);
+    if (eventThreadId && eventThreadId !== this.threadId) return false;
+    if (eventTurnId && eventTurnId !== this.turnId) return false;
+    return true;
+  }
+
+  private notifyActivity(): void {
+    try {
+      this.input.adapter.onActivity?.();
+    } catch (err) {
+      log.warn('app-server', 'activity-hook-failed', { message: errorMessage(err) });
+    }
   }
 
   private writeMessage(message: unknown): Promise<void> {

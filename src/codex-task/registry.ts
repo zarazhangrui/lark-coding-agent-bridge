@@ -1,5 +1,7 @@
 import { randomBytes } from 'node:crypto';
-import { readFile } from 'node:fs/promises';
+import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { dirname, join } from 'node:path';
+import * as lockfile from 'proper-lockfile';
 import { withConfigFileLock } from '../config/profile-store';
 import { writeFileAtomic } from '../platform/atomic-write';
 
@@ -16,6 +18,8 @@ export type CodexTaskStatus =
 export interface CodexTaskRecord {
   handle: string;
   threadId?: string;
+  /** Fresh App Server thread awaiting confirmation that its first turn is durable. */
+  candidateThreadId?: string;
   title: string;
   cwd: string;
   model?: string;
@@ -68,12 +72,53 @@ export interface MarkCodexTaskReconcileInput {
 const HANDLE_PATTERN = /^T-[A-F0-9]{6}$/;
 const REGISTRY_SCHEMA_VERSION = 1;
 
+export class CodexTaskBusyError extends Error {
+  readonly code = 'codex-task-busy';
+
+  constructor(readonly handle: string, cause?: unknown) {
+    super(`Codex task ${handle} is already running`);
+    this.name = 'CodexTaskBusyError';
+    this.cause = cause;
+  }
+}
+
 export class CodexTaskRegistry {
   constructor(
     private readonly path: string,
     private readonly now: () => Date = () => new Date(),
     private readonly createHandle: () => string = randomHandle,
   ) {}
+
+  async withTaskLock<T>(handle: string, fn: () => Promise<T>): Promise<T> {
+    const normalized = normalizeHandle(handle);
+    const target = join(dirname(this.path), 'codex-task-runs', normalized);
+    await mkdir(dirname(target), { recursive: true });
+    await writeFile(target, '', { flag: 'a', mode: 0o600 });
+    await chmod(target, 0o600).catch(() => {});
+
+    let release: () => Promise<void>;
+    try {
+      release = await lockfile.lock(target, {
+        realpath: false,
+        // Task turns can legitimately take minutes. Heartbeats prevent a live
+        // worker from being mistaken for a stale lock.
+        stale: 2 * 60_000,
+        update: 10_000,
+        retries: 0,
+      });
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'ELOCKED') {
+        throw new CodexTaskBusyError(normalized, err);
+      }
+      throw err;
+    }
+
+    try {
+      return await fn();
+    } finally {
+      await release();
+    }
+  }
 
   async list(): Promise<CodexTaskRecord[]> {
     const tasks = await readRegistry(this.path);
@@ -105,20 +150,77 @@ export class CodexTaskRegistry {
     });
   }
 
-  async importThread(handle: string, threadId: string): Promise<CodexTaskRecord> {
+  async importThread(
+    handle: string,
+    threadId: string,
+    input: Pick<UpdateCodexTaskInput, 'status' | 'lastResult'> = {},
+  ): Promise<CodexTaskRecord> {
     const normalizedThreadId = threadId.trim();
     if (!normalizedThreadId) throw new Error('thread id is required');
-    return this.mutate(handle, (current) => ({
-      ...current,
-      threadId: normalizedThreadId,
-      status: 'pending',
-    }));
+    return this.mutate(handle, (current, tasks) => {
+      if (current.threadId && current.threadId !== normalizedThreadId) {
+        throw new Error(`Codex task ${current.handle} already owns thread ${current.threadId}`);
+      }
+      if (current.candidateThreadId && current.candidateThreadId !== normalizedThreadId) {
+        throw new Error(
+          `Codex task ${current.handle} candidate ${current.candidateThreadId} does not match ${normalizedThreadId}`,
+        );
+      }
+      assertThreadIdAvailable(tasks, current.handle, normalizedThreadId);
+      return {
+        ...current,
+        threadId: normalizedThreadId,
+        candidateThreadId: undefined,
+        ...(input.status ? { status: input.status } : {}),
+        ...(input.lastResult !== undefined ? { lastResult: input.lastResult } : {}),
+        ...(input.status || input.lastResult !== undefined ? { reconciliation: undefined } : {}),
+      };
+    });
+  }
+
+  async setThreadCandidate(handle: string, threadId: string): Promise<CodexTaskRecord> {
+    const normalizedThreadId = threadId.trim();
+    if (!normalizedThreadId) throw new Error('candidate thread id is required');
+    return this.mutate(handle, (current, tasks) => {
+      if (current.threadId) {
+        if (current.threadId === normalizedThreadId) return current;
+        throw new Error(`Codex task ${current.handle} already owns thread ${current.threadId}`);
+      }
+      if (current.candidateThreadId && current.candidateThreadId !== normalizedThreadId) {
+        throw new Error(
+          `Codex task ${current.handle} already has candidate ${current.candidateThreadId}`,
+        );
+      }
+      assertThreadIdAvailable(tasks, current.handle, normalizedThreadId);
+      return { ...current, candidateThreadId: normalizedThreadId };
+    });
+  }
+
+  async clearThreadCandidate(
+    handle: string,
+    threadId: string,
+    input: Pick<UpdateCodexTaskInput, 'status' | 'lastResult'> = {},
+  ): Promise<CodexTaskRecord> {
+    const normalizedThreadId = threadId.trim();
+    if (!normalizedThreadId) throw new Error('candidate thread id is required');
+    return this.mutate(handle, (current) => {
+      if (current.candidateThreadId !== normalizedThreadId) {
+        throw new Error(`Codex task ${current.handle} candidate changed before it could be cleared`);
+      }
+      return {
+        ...current,
+        candidateThreadId: undefined,
+        ...(input.status ? { status: input.status } : {}),
+        ...(input.lastResult !== undefined ? { lastResult: input.lastResult } : {}),
+        ...(input.status || input.lastResult !== undefined ? { reconciliation: undefined } : {}),
+      };
+    });
   }
 
   async markReconcile(handle: string, input: MarkCodexTaskReconcileInput): Promise<CodexTaskRecord> {
     return this.mutate(handle, (current) => ({
       ...current,
-      ...(input.threadId ? { threadId: input.threadId } : {}),
+      ...(input.threadId ? { threadId: input.threadId, candidateThreadId: undefined } : {}),
       status: 'reconcile',
       reconciliation: {
         desiredStatus: input.desiredStatus,
@@ -141,7 +243,7 @@ export class CodexTaskRegistry {
         const recovery = task.reconciliation;
         const updated = normalizeRecord({
           ...task,
-          ...(recovery.threadId ? { threadId: recovery.threadId } : {}),
+          ...(recovery.threadId ? { threadId: recovery.threadId, candidateThreadId: undefined } : {}),
           status: recovery.desiredStatus,
           ...(recovery.lastTurnId ? { lastTurnId: recovery.lastTurnId } : {}),
           ...(recovery.lastResult !== undefined ? { lastResult: recovery.lastResult } : {}),
@@ -162,11 +264,15 @@ export class CodexTaskRegistry {
   async register(input: RegisterCodexTaskInput): Promise<CodexTaskRecord> {
     return withConfigFileLock(this.path, async () => {
       const tasks = await readRegistry(this.path);
-      const existing = tasks.find((task) => task.threadId === input.threadId);
+      const existing = tasks.find((task) => (
+        task.threadId === input.threadId || task.candidateThreadId === input.threadId
+      ));
       const timestamp = this.now().toISOString();
       if (existing) {
         const updated = normalizeRecord({
           ...existing,
+          threadId: input.threadId,
+          candidateThreadId: undefined,
           title: input.title,
           cwd: input.cwd,
           ...(input.model ? { model: input.model } : {}),
@@ -214,7 +320,10 @@ export class CodexTaskRegistry {
 
   private async mutate(
     handle: string,
-    change: (current: CodexTaskRecord) => Record<string, unknown>,
+    change: (
+      current: CodexTaskRecord,
+      tasks: readonly CodexTaskRecord[],
+    ) => CodexTaskRecord | Record<string, unknown>,
   ): Promise<CodexTaskRecord> {
     const normalizedHandle = normalizeHandle(handle);
     return withConfigFileLock(this.path, async () => {
@@ -222,11 +331,12 @@ export class CodexTaskRegistry {
       const index = tasks.findIndex((task) => task.handle === normalizedHandle);
       if (index < 0) throw new Error(`Codex task not found: ${normalizedHandle}`);
       const updated = normalizeRecord({
-        ...change(tasks[index]!),
+        ...change(tasks[index]!, tasks),
         updatedAt: this.now().toISOString(),
       });
       if (!updated) throw new Error(`failed to normalize Codex task: ${normalizedHandle}`);
       tasks[index] = updated;
+      assertUniqueThreadOwnership(tasks);
       await persistRegistry(this.path, tasks);
       return updated;
     });
@@ -267,7 +377,9 @@ async function readRegistry(path: string): Promise<CodexTaskRecord[]> {
     if (tasks.some((task) => !task)) {
       throw new Error(`damaged Codex task registry entry: ${path}`);
     }
-    return tasks as CodexTaskRecord[];
+    const normalized = tasks as CodexTaskRecord[];
+    assertUniqueThreadOwnership(normalized);
+    return normalized;
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === 'ENOENT') return [];
     throw err;
@@ -275,6 +387,7 @@ async function readRegistry(path: string): Promise<CodexTaskRecord[]> {
 }
 
 async function persistRegistry(path: string, tasks: CodexTaskRecord[]): Promise<void> {
+  assertUniqueThreadOwnership(tasks);
   const sorted = [...tasks].sort((left, right) => left.createdAt.localeCompare(right.createdAt));
   await writeFileAtomic(path, `${JSON.stringify({
     schemaVersion: REGISTRY_SCHEMA_VERSION,
@@ -291,6 +404,9 @@ function normalizeRecord(value: unknown): CodexTaskRecord | undefined {
   if (
     !HANDLE_PATTERN.test(handle) ||
     (raw.threadId !== undefined && (typeof raw.threadId !== 'string' || !raw.threadId)) ||
+    (raw.candidateThreadId !== undefined
+      && (typeof raw.candidateThreadId !== 'string' || !raw.candidateThreadId)) ||
+    (raw.threadId !== undefined && raw.candidateThreadId !== undefined) ||
     typeof raw.title !== 'string' ||
     !raw.title.trim() ||
     typeof raw.cwd !== 'string' ||
@@ -305,6 +421,9 @@ function normalizeRecord(value: unknown): CodexTaskRecord | undefined {
   return {
     handle,
     ...(typeof raw.threadId === 'string' ? { threadId: raw.threadId } : {}),
+    ...(typeof raw.candidateThreadId === 'string'
+      ? { candidateThreadId: raw.candidateThreadId }
+      : {}),
     title: raw.title.trim(),
     cwd: raw.cwd,
     ...(typeof raw.model === 'string' && raw.model ? { model: raw.model } : {}),
@@ -315,6 +434,32 @@ function normalizeRecord(value: unknown): CodexTaskRecord | undefined {
     ...(typeof raw.lastTurnId === 'string' && raw.lastTurnId ? { lastTurnId: raw.lastTurnId } : {}),
     ...(reconciliation ? { reconciliation } : {}),
   };
+}
+
+function assertThreadIdAvailable(
+  tasks: readonly CodexTaskRecord[],
+  handle: string,
+  threadId: string,
+): void {
+  const owner = tasks.find((task) => (
+    task.handle !== handle
+    && (task.threadId === threadId || task.candidateThreadId === threadId)
+  ));
+  if (owner) throw new Error(`Codex thread ${threadId} already belongs to task ${owner.handle}`);
+}
+
+function assertUniqueThreadOwnership(tasks: readonly CodexTaskRecord[]): void {
+  const owners = new Map<string, string>();
+  for (const task of tasks) {
+    for (const threadId of [task.threadId, task.candidateThreadId]) {
+      if (!threadId) continue;
+      const owner = owners.get(threadId);
+      if (owner && owner !== task.handle) {
+        throw new Error(`Codex thread ${threadId} already belongs to task ${owner}`);
+      }
+      owners.set(threadId, task.handle);
+    }
+  }
 }
 
 function normalizeReconciliation(value: unknown): CodexTaskReconciliation | undefined {

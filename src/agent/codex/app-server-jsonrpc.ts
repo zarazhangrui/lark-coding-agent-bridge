@@ -9,12 +9,14 @@ export type CodexAppServerIncoming =
   | { kind: 'request'; id: JsonRpcId; method: string; params: unknown };
 
 export class CodexAppServerRpcError extends Error {
+  readonly method: string;
   readonly code: number | string | undefined;
   readonly data: unknown;
 
-  constructor(message: string, code?: number | string, data?: unknown) {
+  constructor(method: string, message: string, code?: number | string, data?: unknown) {
     super(message);
     this.name = 'CodexAppServerRpcError';
+    this.method = method;
     this.code = code;
     this.data = data;
   }
@@ -98,6 +100,7 @@ export class CodexAppServerJsonRpc {
       const error = recordValue(message.error);
       pending.reject(
         new CodexAppServerRpcError(
+          pending.method,
           stringValue(error?.message) ?? `codex app-server rejected ${pending.method}`,
           numberOrStringValue(error?.code),
           error?.data,

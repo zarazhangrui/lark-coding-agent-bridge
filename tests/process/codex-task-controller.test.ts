@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { CodexTaskController, finalAgentMessages } from '../../src/codex-task/controller';
-import { CodexTaskRegistry } from '../../src/codex-task/registry';
+import { CodexTaskBusyError, CodexTaskRegistry } from '../../src/codex-task/registry';
 import { writeFileAtomic } from '../../src/platform/atomic-write';
 
 describe('CodexTaskController process contract', () => {
@@ -45,8 +45,10 @@ describe('CodexTaskController process contract', () => {
       title: 'Worker task',
       cwd: fake.dir,
       model: 'gpt-test',
-      status: 'idle',
+      status: 'pending',
     });
+    expect(created.threadId).toBeUndefined();
+    await expect(controller.read(created.handle)).rejects.toThrow(/pending.*first message/i);
 
     const sent = await controller.send(created.handle, { message: 'check status' });
     expect(sent).toMatchObject({
@@ -74,8 +76,62 @@ describe('CodexTaskController process contract', () => {
       && env.LARK_CHANNEL_CONFIG === join(fake.dir, 'lark-cli-source', 'config.json')
     ))).toBe(true);
     const persisted = JSON.parse(await readFile(fake.state, 'utf8')) as Record<string, unknown>;
-    expect(persisted.resumeDeveloperInstructions).toContain('persistent Codex worker task');
-    expect(persisted.resumeDeveloperInstructions).not.toContain('lark-channel-bridge 运行约定');
+    expect(persisted.startDeveloperInstructions).toContain('persistent Codex worker task');
+    expect(persisted.startDeveloperInstructions).not.toContain('lark-channel-bridge 运行约定');
+  });
+
+  it('materializes create --message in the same App Server lifecycle', async () => {
+    const fake = await createFakeAppServer();
+    cleanup.push(fake.dir);
+    const registry = new CodexTaskRegistry(
+      join(fake.dir, 'codex-tasks.json'),
+      () => new Date('2026-07-31T08:00:00.000Z'),
+      () => 'T-C0DE01',
+    );
+    const controller = new CodexTaskController({
+      binary: fake.binary,
+      profileStateDir: fake.dir,
+      registry,
+      sandbox: 'workspace-write',
+    });
+
+    const created = await controller.create({
+      title: 'Immediate worker',
+      cwd: fake.dir,
+      message: 'bootstrap',
+    });
+    if (!('output' in created)) throw new Error('expected execution result');
+    expect(created).toMatchObject({
+      task: { handle: 'T-C0DE01', threadId: 'thread-worker', status: 'completed' },
+      output: 'worker-ok: bootstrap',
+      terminationReason: 'normal',
+    });
+    await expect(controller.read(created.task.handle)).resolves.toMatchObject({
+      thread: { id: 'thread-worker', name: 'Immediate worker' },
+    });
+  });
+
+  it('includes the reserved handle when create --message fails', async () => {
+    const fake = await createFakeAppServer({ rejectTurnStart: true });
+    cleanup.push(fake.dir);
+    const registry = new CodexTaskRegistry(
+      join(fake.dir, 'codex-tasks.json'),
+      () => new Date('2026-07-31T08:00:00.000Z'),
+      () => 'T-BAD001',
+    );
+    const controller = new CodexTaskController({
+      binary: fake.binary,
+      profileStateDir: fake.dir,
+      registry,
+      sandbox: 'workspace-write',
+    });
+
+    await expect(controller.create({
+      title: 'Failed immediate worker',
+      cwd: fake.dir,
+      message: 'bootstrap',
+    })).rejects.toThrow(/T-BAD001.*first turn/i);
+    await expect(registry.get('T-BAD001')).resolves.toMatchObject({ status: 'failed' });
   });
 
   it('does not persist the observed runtime model unless the caller explicitly overrides it', async () => {
@@ -110,7 +166,7 @@ describe('CodexTaskController process contract', () => {
     expect((await registry.get(created.handle))?.model).toBe('gpt-pinned');
   });
 
-  it('keeps a failed thread naming operation discoverable in the registry', async () => {
+  it('keeps a successfully materialized task usable when thread naming fails', async () => {
     const fake = await createFakeAppServer({ failThreadName: true });
     cleanup.push(fake.dir);
     const registry = new CodexTaskRegistry(
@@ -125,22 +181,14 @@ describe('CodexTaskController process contract', () => {
       sandbox: 'workspace-write',
     });
 
-    await expect(controller.create({ title: 'Recoverable worker', cwd: fake.dir })).rejects.toThrow(
-      /T-FA17ED/,
-    );
-    const recovered = new CodexTaskController({
-      binary: fake.binary,
-      profileStateDir: fake.dir,
-      registry: new CodexTaskRegistry(join(fake.dir, 'codex-tasks.json')),
-      sandbox: 'workspace-write',
+    const created = await controller.create({ title: 'Recoverable worker', cwd: fake.dir });
+    if ('output' in created) throw new Error('unexpected execution result');
+    const sent = await controller.send(created.handle, { message: 'materialize me' });
+    expect(sent).toMatchObject({
+      task: { handle: 'T-FA17ED', threadId: 'thread-worker', status: 'completed' },
+      output: 'worker-ok: materialize me',
     });
-    await expect(recovered.list()).resolves.toEqual([
-      expect.objectContaining({
-        handle: 'T-FA17ED',
-        threadId: 'thread-worker',
-        status: 'failed',
-      }),
-    ]);
+    await expect(controller.list()).resolves.toEqual([sent.task]);
   });
 
   it('records the durable thread id when registry import fails after thread creation', async () => {
@@ -158,8 +206,10 @@ describe('CodexTaskController process contract', () => {
       sandbox: 'workspace-write',
     });
 
-    await expect(controller.create({ title: 'Import recovery', cwd: fake.dir })).rejects.toThrow(
-      /T-1A2B3C.*thread-worker/,
+    const created = await controller.create({ title: 'Import recovery', cwd: fake.dir });
+    if ('output' in created) throw new Error('unexpected execution result');
+    await expect(controller.send(created.handle, { message: 'materialize' })).rejects.toThrow(
+      /simulated thread import failure/,
     );
     await expect(baseRegistry.get('T-1A2B3C')).resolves.toMatchObject({
       status: 'reconcile',
@@ -169,6 +219,95 @@ describe('CodexTaskController process contract', () => {
         threadId: 'thread-worker',
         error: 'simulated thread import failure',
       },
+    });
+  });
+
+  it('recovers a durable candidate but fails closed when the first-turn outcome is ambiguous', async () => {
+    const fake = await createFakeAppServer({ dropTurnStartResponse: true });
+    cleanup.push(fake.dir);
+    const registry = new CodexTaskRegistry(
+      join(fake.dir, 'codex-tasks.json'),
+      () => new Date('2026-07-31T08:00:00.000Z'),
+      () => 'T-A8B190',
+    );
+    const controller = new CodexTaskController({
+      binary: fake.binary,
+      profileStateDir: fake.dir,
+      registry,
+      sandbox: 'workspace-write',
+    });
+    const created = await controller.create({ title: 'Ambiguous worker', cwd: fake.dir });
+    if ('output' in created) throw new Error('unexpected execution result');
+
+    await expect(controller.send(created.handle, { message: 'run exactly once' })).rejects.toThrow();
+    await expect(registry.get(created.handle)).resolves.toMatchObject({
+      status: 'failed',
+      candidateThreadId: 'thread-worker',
+    });
+
+    await expect(controller.send(created.handle, { message: 'must not run yet' })).rejects.toThrow(
+      /outcome.*ambiguous/i,
+    );
+    await expect(registry.get(created.handle)).resolves.toMatchObject({
+      status: 'failed',
+      threadId: 'thread-worker',
+    });
+    await expect(registry.get(created.handle)).resolves.not.toHaveProperty('candidateThreadId');
+    const persisted = JSON.parse(await readFile(fake.state, 'utf8')) as { turns?: unknown[] };
+    expect(persisted.turns).toHaveLength(1);
+    expect(JSON.stringify(persisted)).not.toContain('must not run yet');
+  });
+
+  it('clears an explicitly missing candidate before retrying materialization', async () => {
+    const fake = await createFakeAppServer();
+    cleanup.push(fake.dir);
+    const registry = new CodexTaskRegistry(
+      join(fake.dir, 'codex-tasks.json'),
+      () => new Date('2026-07-31T08:00:00.000Z'),
+      () => 'T-CA11D0',
+    );
+    const controller = new CodexTaskController({
+      binary: fake.binary,
+      profileStateDir: fake.dir,
+      registry,
+      sandbox: 'workspace-write',
+    });
+    const created = await registry.reserve({ title: 'Missing candidate', cwd: fake.dir });
+    await registry.update(created.handle, { status: 'failed' });
+    await registry.setThreadCandidate(created.handle, 'thread-missing');
+
+    await expect(controller.send(created.handle, { message: 'safe retry' })).resolves.toMatchObject({
+      task: { status: 'completed', threadId: 'thread-worker' },
+      output: 'worker-ok: safe retry',
+    });
+    await expect(registry.get(created.handle)).resolves.not.toHaveProperty('candidateThreadId');
+  });
+
+  it('keeps a candidate and fails closed on a non-not-found read error', async () => {
+    const fake = await createFakeAppServer({
+      threadReadError: { code: -32600, message: 'temporary registry backend failure' },
+    });
+    cleanup.push(fake.dir);
+    const registry = new CodexTaskRegistry(
+      join(fake.dir, 'codex-tasks.json'),
+      () => new Date('2026-07-31T08:00:00.000Z'),
+      () => 'T-CA11D1',
+    );
+    const controller = new CodexTaskController({
+      binary: fake.binary,
+      profileStateDir: fake.dir,
+      registry,
+      sandbox: 'workspace-write',
+    });
+    const created = await registry.reserve({ title: 'Unreadable candidate', cwd: fake.dir });
+    await registry.update(created.handle, { status: 'failed' });
+    await registry.setThreadCandidate(created.handle, 'thread-unknown');
+
+    await expect(controller.send(created.handle, { message: 'do not duplicate' })).rejects.toThrow(
+      /unresolved thread candidate/i,
+    );
+    await expect(registry.get(created.handle)).resolves.toMatchObject({
+      candidateThreadId: 'thread-unknown',
     });
   });
 
@@ -220,11 +359,131 @@ describe('CodexTaskController process contract', () => {
       }),
     ]);
   });
+
+  it('marks a silent turn as timeout and releases the task execution lock', async () => {
+    const fake = await createFakeAppServer({ neverComplete: true });
+    cleanup.push(fake.dir);
+    const registry = new CodexTaskRegistry(
+      join(fake.dir, 'codex-tasks.json'),
+      () => new Date('2026-07-31T08:00:00.000Z'),
+      () => 'T-71AE00',
+    );
+    const controller = new CodexTaskController({
+      binary: fake.binary,
+      profileStateDir: fake.dir,
+      registry,
+      sandbox: 'workspace-write',
+      turnIdleTimeoutMs: 100,
+      stopGraceMs: 50,
+    });
+    const created = await controller.create({ title: 'Silent worker', cwd: fake.dir });
+    if ('output' in created) throw new Error('unexpected execution result');
+
+    await expect(controller.send(created.handle, { message: 'stay silent' })).resolves.toMatchObject({
+      task: { status: 'timeout', threadId: 'thread-worker' },
+      terminationReason: 'timeout',
+    });
+    await expect(controller.send(created.handle, { message: 'try again' })).resolves.toMatchObject({
+      task: { status: 'timeout' },
+      terminationReason: 'timeout',
+    });
+  });
+
+  it('keeps an active turn alive when raw command progress continues', async () => {
+    const fake = await createFakeAppServer({ turnDelayMs: 300, progressEveryMs: 25 });
+    cleanup.push(fake.dir);
+    const registry = new CodexTaskRegistry(
+      join(fake.dir, 'codex-tasks.json'),
+      () => new Date('2026-07-31T08:00:00.000Z'),
+      () => 'T-AC7100',
+    );
+    const controller = new CodexTaskController({
+      binary: fake.binary,
+      profileStateDir: fake.dir,
+      registry,
+      sandbox: 'workspace-write',
+      turnIdleTimeoutMs: 100,
+      stopGraceMs: 50,
+    });
+    const created = await controller.create({ title: 'Active worker', cwd: fake.dir });
+    if ('output' in created) throw new Error('unexpected execution result');
+
+    await expect(controller.send(created.handle, { message: 'long build' })).resolves.toMatchObject({
+      task: { status: 'completed' },
+      terminationReason: 'normal',
+      output: 'worker-ok: long build',
+    });
+  });
+
+  it('uses AbortSignal to interrupt a turn and release the execution lock', async () => {
+    const fake = await createFakeAppServer({ turnDelayMs: 1_000 });
+    cleanup.push(fake.dir);
+    const registry = new CodexTaskRegistry(
+      join(fake.dir, 'codex-tasks.json'),
+      () => new Date('2026-07-31T08:00:00.000Z'),
+      () => 'T-AB0710',
+    );
+    const controller = new CodexTaskController({
+      binary: fake.binary,
+      profileStateDir: fake.dir,
+      registry,
+      sandbox: 'workspace-write',
+      turnIdleTimeoutMs: 2_000,
+      stopGraceMs: 50,
+    });
+    const created = await controller.create({ title: 'Abortable worker', cwd: fake.dir });
+    if ('output' in created) throw new Error('unexpected execution result');
+    const abort = new AbortController();
+    const sent = controller.send(created.handle, {
+      message: 'wait for cancellation',
+      signal: abort.signal,
+    });
+    await waitForTaskThread(registry, created.handle);
+    abort.abort();
+
+    await expect(sent).resolves.toMatchObject({
+      task: { status: 'interrupted', threadId: 'thread-worker' },
+      terminationReason: 'interrupted',
+    });
+    await expect(registry.withTaskLock(created.handle, async () => 'released')).resolves.toBe('released');
+  });
+
+  it('rejects a concurrent send with a domain error instead of using stale task state', async () => {
+    const fake = await createFakeAppServer({ turnDelayMs: 200 });
+    cleanup.push(fake.dir);
+    const registry = new CodexTaskRegistry(
+      join(fake.dir, 'codex-tasks.json'),
+      () => new Date('2026-07-31T08:00:00.000Z'),
+      () => 'T-B05E00',
+    );
+    const controller = new CodexTaskController({
+      binary: fake.binary,
+      profileStateDir: fake.dir,
+      registry,
+      sandbox: 'workspace-write',
+    });
+    const created = await controller.create({ title: 'Busy worker', cwd: fake.dir });
+    if ('output' in created) throw new Error('unexpected execution result');
+
+    const first = controller.send(created.handle, { message: 'first', model: 'gpt-first' });
+    await waitForTaskStatus(registry, created.handle, 'running');
+    const second = controller.send(created.handle, { message: 'second', model: 'gpt-stale' });
+    await expect(second).rejects.toBeInstanceOf(CodexTaskBusyError);
+    await expect(first).resolves.toMatchObject({
+      task: { status: 'completed', model: 'gpt-first' },
+      output: 'worker-ok: first',
+    });
+    await expect(registry.get(created.handle)).resolves.toMatchObject({ model: 'gpt-first' });
+  });
 });
 
 class FailCompletedUpdateRegistry extends CodexTaskRegistry {
   constructor(private readonly delegate: CodexTaskRegistry) {
     super('/unused');
+  }
+
+  override withTaskLock<T>(handle: string, fn: () => Promise<T>) {
+    return this.delegate.withTaskLock(handle, fn);
   }
 
   override list() {
@@ -241,6 +500,14 @@ class FailCompletedUpdateRegistry extends CodexTaskRegistry {
 
   override importThread(handle: string, threadId: string) {
     return this.delegate.importThread(handle, threadId);
+  }
+
+  override setThreadCandidate(handle: string, threadId: string) {
+    return this.delegate.setThreadCandidate(handle, threadId);
+  }
+
+  override clearThreadCandidate(handle: string, threadId: string) {
+    return this.delegate.clearThreadCandidate(handle, threadId);
   }
 
   override markReconcile(
@@ -275,7 +542,15 @@ class FailImportRegistry extends FailCompletedUpdateRegistry {
   }
 }
 
-async function createFakeAppServer(options: { failThreadName?: boolean } = {}): Promise<{
+async function createFakeAppServer(options: {
+  dropTurnStartResponse?: boolean;
+  failThreadName?: boolean;
+  neverComplete?: boolean;
+  progressEveryMs?: number;
+  rejectTurnStart?: boolean;
+  threadReadError?: { code: number; message: string };
+  turnDelayMs?: number;
+} = {}): Promise<{
   dir: string;
   binary: string;
   invocations: string;
@@ -294,7 +569,13 @@ import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 const statePath = ${JSON.stringify(state)};
 const invocationsPath = ${JSON.stringify(invocations)};
 const environmentsPath = ${JSON.stringify(environments)};
+const dropTurnStartResponse = ${JSON.stringify(options.dropTurnStartResponse === true)};
 const failThreadName = ${JSON.stringify(options.failThreadName === true)};
+const neverComplete = ${JSON.stringify(options.neverComplete === true)};
+const progressEveryMs = ${JSON.stringify(options.progressEveryMs ?? 0)};
+const rejectTurnStart = ${JSON.stringify(options.rejectTurnStart === true)};
+const threadReadError = ${JSON.stringify(options.threadReadError)};
+const turnDelayMs = ${JSON.stringify(options.turnDelayMs ?? 10)};
 const invocations = existsSync(invocationsPath) ? JSON.parse(readFileSync(invocationsPath, 'utf8')) : [];
 invocations.push(process.argv.slice(2));
 writeFileSync(invocationsPath, JSON.stringify(invocations));
@@ -311,7 +592,9 @@ if (process.argv[2] === 'features' && process.argv[3] === 'list') {
 
 let initialized = false;
 let loadedThread;
-let turnCounter = 0;
+let loadedCwd;
+let loadedModel;
+let loadedDeveloperInstructions;
 const load = () => existsSync(statePath) ? JSON.parse(readFileSync(statePath, 'utf8')) : undefined;
 const save = (value) => writeFileSync(statePath, JSON.stringify(value));
 const send = (value) => process.stdout.write(JSON.stringify(value) + '\\n');
@@ -336,6 +619,9 @@ rl.on('line', (line) => {
   }
   if (message.method === 'thread/start') {
     loadedThread = 'thread-worker';
+    loadedCwd = message.params.cwd;
+    loadedModel = message.params.model;
+    loadedDeveloperInstructions = message.params.developerInstructions;
     send({ id: message.id, result: {
       thread: { id: loadedThread, sessionId: loadedThread, ephemeral: false },
       cwd: message.params.cwd,
@@ -346,6 +632,10 @@ rl.on('line', (line) => {
     return;
   }
   if (message.method === 'thread/name/set') {
+    if (!load()) {
+      send({ id: message.id, error: { code: -32600, message: 'no rollout found for thread id' } });
+      return;
+    }
     if (failThreadName) {
       send({ id: message.id, error: { code: -32000, message: 'simulated thread/name/set failure' } });
       return;
@@ -362,7 +652,14 @@ rl.on('line', (line) => {
       return;
     }
     loadedThread = current.id;
-    save({ ...current, resumeDeveloperInstructions: message.params.developerInstructions });
+    loadedCwd = message.params.cwd;
+    loadedModel = message.params.model;
+    loadedDeveloperInstructions = message.params.developerInstructions;
+    save({
+      ...current,
+      resumeDeveloperInstructions: message.params.developerInstructions,
+      resumeExcludeTurns: message.params.excludeTurns,
+    });
     send({ id: message.id, result: {
       thread: current,
       cwd: message.params.cwd,
@@ -372,7 +669,18 @@ rl.on('line', (line) => {
     return;
   }
   if (message.method === 'thread/read') {
+    if (threadReadError) {
+      send({ id: message.id, error: threadReadError });
+      return;
+    }
     const current = load();
+    if (!current || current.id !== message.params.threadId) {
+      send({
+        id: message.id,
+        error: { code: -32600, message: 'thread not loaded: ' + message.params.threadId }
+      });
+      return;
+    }
     send({ id: message.id, result: { thread: message.params.includeTurns
       ? { ...current, status: { type: 'notLoaded' } }
       : { id: current.id, name: current.name, cwd: current.cwd, status: { type: 'notLoaded' } }
@@ -384,10 +692,38 @@ rl.on('line', (line) => {
       send({ id: message.id, error: { code: -32000, message: 'thread not loaded' } });
       return;
     }
-    const turnId = 'turn-' + (++turnCounter);
+    const existing = load();
+    const current = existing ?? {
+      id: loadedThread,
+      cwd: loadedCwd ?? process.cwd(),
+      model: loadedModel,
+      startDeveloperInstructions: loadedDeveloperInstructions,
+      turns: [],
+    };
+    const turnId = 'turn-' + ((current.turns?.length ?? 0) + 1);
     const text = 'worker-ok: ' + message.params.input[0].text;
+    if (rejectTurnStart) {
+      send({ id: message.id, error: { code: -32000, message: 'simulated turn/start rejection' } });
+      return;
+    }
+    // The fake models Codex durability: thread/start alone is in-memory; the
+    // first turn/start materializes the thread before naming or process exit.
+    save(current);
+    if (dropTurnStartResponse) {
+      save({ ...current, turns: [...(current.turns ?? []), {
+        id: turnId, status: 'completed', items: [{ id: 'msg-1', type: 'agentMessage', text }]
+      }] });
+      process.exit(1);
+    }
     send({ id: message.id, result: { turn: { id: turnId, status: 'inProgress', items: [] } } });
+    if (neverComplete) return;
+    const progressTimer = progressEveryMs > 0 ? setInterval(() => {
+      send({ method: 'item/commandExecution/outputDelta', params: {
+        threadId: loadedThread, turnId, itemId: 'command-1', delta: 'still working'
+      }});
+    }, progressEveryMs) : undefined;
     setTimeout(() => {
+      if (progressTimer) clearInterval(progressTimer);
       send({ method: 'item/started', params: {
         threadId: loadedThread, turnId, item: { id: 'msg-1', type: 'agentMessage', phase: 'final_answer', text: '' }
       }});
@@ -398,14 +734,21 @@ rl.on('line', (line) => {
         threadId: loadedThread, turnId,
         item: { id: 'msg-1', type: 'agentMessage', phase: 'final_answer', text }
       }});
-      const current = load();
-      save({ ...current, turns: [...(current.turns ?? []), {
+      const persisted = load();
+      save({ ...persisted, turns: [...(persisted.turns ?? []), {
         id: turnId, status: 'completed', items: [{ id: 'msg-1', type: 'agentMessage', text }]
       }] });
       send({ method: 'turn/completed', params: {
         threadId: loadedThread, turn: { id: turnId, status: 'completed', items: [] }
       }});
-    }, 10);
+    }, turnDelayMs);
+    return;
+  }
+  if (message.method === 'turn/interrupt') {
+    send({ id: message.id, result: {} });
+    send({ method: 'turn/completed', params: {
+      threadId: loadedThread, turn: { id: message.params.turnId, status: 'interrupted', items: [] }
+    }});
     return;
   }
   send({ id: message.id, error: { code: -32601, message: 'unsupported ' + message.method } });
@@ -416,4 +759,26 @@ rl.on('close', () => process.exit(0));
   await writeFileAtomic(binary, source, { mode: 0o755 });
   await chmod(binary, 0o755);
   return { dir, binary, invocations, environments, state };
+}
+
+async function waitForTaskStatus(
+  registry: CodexTaskRegistry,
+  handle: string,
+  status: string,
+): Promise<void> {
+  const deadline = Date.now() + 2_000;
+  while (Date.now() < deadline) {
+    if ((await registry.get(handle))?.status === status) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error(`timed out waiting for ${handle} to reach ${status}`);
+}
+
+async function waitForTaskThread(registry: CodexTaskRegistry, handle: string): Promise<void> {
+  const deadline = Date.now() + 2_000;
+  while (Date.now() < deadline) {
+    if ((await registry.get(handle))?.threadId) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error(`timed out waiting for ${handle} to import its thread`);
 }

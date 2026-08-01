@@ -33,6 +33,7 @@ describe('CodexAppServerJsonRpc', () => {
 
     await expect(rejected).rejects.toMatchObject({
       name: 'CodexAppServerRpcError',
+      method: 'thread/resume',
       message: 'thread not found',
       code: -32000,
       data: { stale: true },

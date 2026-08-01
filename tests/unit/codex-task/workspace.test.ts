@@ -25,7 +25,11 @@ describe('initializeControllerWorkspace', () => {
     expect(skill).toContain('lark-channel-bridge codex-task send');
     expect(skill).toContain('Never edit Codex rollout JSONL');
     expect(skill).toContain('LARK_CHANNEL_BRIDGE_CONFIG');
-    expect(skill).toContain('"${bridge_config_args[@]}"');
+    expect(skill).toContain('<config-option>');
+    expect(skill).toContain('PowerShell');
+    expect(skill).toContain('pending worker handle');
+    expect(skill).not.toContain('bridge_config_args');
+    expect(skill).not.toContain('[[ ');
   });
 
   it('uses atomic no-clobber creation when initializers race without --force', async () => {

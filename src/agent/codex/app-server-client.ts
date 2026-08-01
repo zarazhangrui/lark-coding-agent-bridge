@@ -3,12 +3,16 @@ import type { Readable, Writable } from 'node:stream';
 import pkg from '../../../package.json';
 import { spawnProcess, type SpawnedProcessByStdio } from '../../platform/spawn';
 import {
+  APP_SERVER_PROCESS_GROUP_ENABLED,
   buildAppServerProcessEnv,
   readAppServerConfigInventory,
+  terminateAndReapChild,
   type CodexAppServerProcessOptions,
 } from './app-server-process';
 import { CodexAppServerJsonRpc, type CodexAppServerIncoming } from './app-server-jsonrpc';
 import { assertMcpServersDisabled, buildLeanAppServerArgs } from './app-server-lean';
+
+export { CodexAppServerRpcError } from './app-server-jsonrpc';
 
 type CodexAppServerChild = SpawnedProcessByStdio<Writable, Readable, Readable>;
 
@@ -45,6 +49,7 @@ export async function withCodexAppServerConnection<T>(
     cwd: options.cwd,
     env,
     stdio: ['pipe', 'pipe', 'pipe'],
+    detached: APP_SERVER_PROCESS_GROUP_ENABLED,
   }) as CodexAppServerChild;
   const stderrChunks: Buffer[] = [];
   let stderrBytes = 0;
@@ -113,14 +118,7 @@ export async function withCodexAppServerConnection<T>(
     assertMcpServersDisabled(config.mcp_servers ?? config.mcpServers);
     return await operation(connection);
   } finally {
-    if (!child.stdin.destroyed && !child.stdin.writableEnded) child.stdin.end();
-    if (!(await waitForPromise(closed, 500))) {
-      if (child.exitCode === null && child.signalCode === null) child.kill('SIGTERM');
-      if (!(await waitForPromise(closed, 500)) && child.exitCode === null && child.signalCode === null) {
-        child.kill('SIGKILL');
-        await waitForPromise(closed, 500);
-      }
-    }
+    await terminateAndReapChild(child, closed);
   }
 }
 
@@ -155,20 +153,6 @@ async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: str
       promise,
       new Promise<never>((_, reject) => {
         timer = setTimeout(() => reject(new Error(`${label} timed out after ${timeoutMs}ms`)), timeoutMs);
-      }),
-    ]);
-  } finally {
-    if (timer) clearTimeout(timer);
-  }
-}
-
-async function waitForPromise(promise: Promise<unknown>, timeoutMs: number): Promise<boolean> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  try {
-    return await Promise.race([
-      promise.then(() => true, () => true),
-      new Promise<boolean>((resolve) => {
-        timer = setTimeout(() => resolve(false), timeoutMs);
       }),
     ]);
   } finally {
