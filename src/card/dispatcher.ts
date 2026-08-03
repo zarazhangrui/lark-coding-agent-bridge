@@ -6,6 +6,7 @@ import type { PendingQueue } from '../bot/pending-queue';
 import type { ProcessPool } from '../bot/process-pool';
 import type { CallbackAuth } from './callback-auth';
 import { runCommandHandler, type CommandContext, type Controls } from '../commands';
+import { authorizedIdentityFingerprint } from '../core/identity-fingerprint';
 import { log } from '../core/logger';
 import { canUseDm, canUseGroup } from '../policy/access';
 import type { RunExecutor } from '../runtime/run-executor';
@@ -87,7 +88,17 @@ export async function handleCardAction(deps: CardDispatchDeps): Promise<void> {
     if (isSignedBridgeCallback(payload) && !verifyBridgeToken(deps, payload, scope, cmd)) {
       return;
     }
-    log.info('cardAction', 'cmd', { cmd, scope });
+    // Emit one-way identities only after the normal bridge access policy has
+    // approved the click. Optional local telemetry can authorize a target-
+    // specific callback without receiving raw provider identifiers.
+    log.info('cardAction', 'cmd', {
+      cmd,
+      scope,
+      identityFingerprintVersion: 'v1',
+      chatFingerprint: authorizedIdentityFingerprint('chat', chatId),
+      operatorFingerprint: authorizedIdentityFingerprint('operator', operatorId),
+      messageFingerprint: authorizedIdentityFingerprint('message', deps.evt.messageId),
+    });
     const msg = makeFakeMsg(deps.evt, threadId);
 
     const ctx: CommandContext = {
