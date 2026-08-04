@@ -1,6 +1,6 @@
 # lark-channel-bridge
 
-把飞书 / Lark 消息和本地 Claude Code 或 Codex CLI 打通的轻量 bot。用一条命令启动，扫码绑定 PersonalAgent 应用，然后在飞书里和本机编程助手对话，让它读图、处理文件、改代码。
+把飞书 / Lark 消息和本地 Claude Code、Codex CLI 或 MiMo Code 打通的轻量 bot。用一条命令启动，扫码绑定 PersonalAgent 应用，然后在飞书里和本机编程助手对话，让它读图、处理文件、改代码。
 
 [English README](./README.md)
 
@@ -88,13 +88,14 @@ lark-channel-bridge unregister [--profile <name>]
 
 daemon 日志在 `~/.lark-channel/profiles/<profile>/logs/daemon/`。
 
-### 多 profile：分别运行 Claude 和 Codex
+### 多 profile：分别运行 Claude、Codex 和 MiMo
 
-默认情况下，bridge 使用当前激活的 profile；可以通过 `profile use <name>` 切换。每个 profile 会维护独立的应用凭据、会话、工作目录和日志。只有在需要同时连接多个 PersonalAgent 应用，或分别运行 Claude 和 Codex 时，才需要创建多个 profile：
+默认情况下，bridge 使用当前激活的 profile；可以通过 `profile use <name>` 切换。每个 profile 会维护独立的应用凭据、会话、工作目录和日志。只有在需要同时连接多个 PersonalAgent 应用，或分别运行 Claude、Codex 和 MiMo 时，才需要创建多个 profile：
 
 ```bash
 lark-channel-bridge start --profile claude --agent claude
 lark-channel-bridge start --profile codex --agent codex
+lark-channel-bridge start --profile mimo --agent mimo
 ```
 
 例如只重启 Codex bot：
@@ -109,8 +110,8 @@ lark-channel-bridge status --profile codex
 ### 宿主 CLI
 
 ```text
-lark-channel-bridge run [--profile <name>] [--agent claude|codex] [--workspace <path>] [-c <config>]
-lark-channel-bridge migrate [--profile <name>] [--agent claude|codex]
+lark-channel-bridge run [--profile <name>] [--agent claude|codex|mimo] [--workspace <path>] [-c <config>]
+lark-channel-bridge migrate [--profile <name>] [--agent claude|codex|mimo]
 lark-channel-bridge ps
 lark-channel-bridge kill <id|#>
 lark-channel-bridge --help
@@ -210,13 +211,15 @@ bridge 会检查所选目录存在、是目录，并且不是 `/`、Home 根、�
 
 模式映射：
 
-| Bridge access | Claude permission mode | Codex mode |
-|---|---|---|
-| `full` | `bypassPermissions` | `danger-full-access` |
-| `workspace` | `acceptEdits` | `workspace-write` |
-| `read-only` | `plan` | `read-only` |
+| Bridge access | Claude permission mode | Codex mode | MiMo flag |
+|---|---|---|---|
+| `full` | `bypassPermissions` | `danger-full-access` | `--dangerously-skip-permissions` |
+| `workspace` | `acceptEdits` | `workspace-write` | （不传，由 mimo 自行决定） |
+| `read-only` | `plan` | `read-only` | （不传，由 mimo 自行决定） |
 
 旧版 `sandbox` 字段仍可读取。bridge 保存 profile 后，会把该设置迁移为 canonical `permissions`。
+
+> MiMo Code（mimo v0.1.x）目前只有自动放行这一个开关；`workspace` / `read-only` 访问级别不传该 flag，交给本地 mimo 进程自行决定。另外请确保 mimo profile 配置了模型（`/config` 或 `preferences.model`）——默认的免费档可能已停用，bridge 会把所选模型以 `--model provider/model` 传给 mimo。
 
 ## 数据目录
 

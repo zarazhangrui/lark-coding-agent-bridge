@@ -214,7 +214,7 @@ function normalizeEntry(input: unknown): SessionCatalogEntry | undefined {
   if (
     typeof raw.key !== 'string' ||
     typeof raw.scopeId !== 'string' ||
-    (raw.agentId !== 'claude' && raw.agentId !== 'codex') ||
+    (raw.agentId !== 'claude' && raw.agentId !== 'codex' && raw.agentId !== 'mimo') ||
     typeof raw.cwdRealpath !== 'string' ||
     typeof raw.policyFingerprint !== 'string' ||
     (raw.status !== 'active' && raw.status !== 'archived') ||
@@ -247,18 +247,18 @@ function matchesIdentity(entry: SessionCatalogEntry, input: SessionCatalogIdenti
 }
 
 function isValidAgentEntry(entry: SessionCatalogEntry): boolean {
-  if (entry.agentId === 'claude') return Boolean(entry.sessionId) && !entry.threadId;
-  return Boolean(entry.threadId) && !entry.sessionId;
+  if (entry.agentId === 'codex') return Boolean(entry.threadId) && !entry.sessionId;
+  return Boolean(entry.sessionId) && !entry.threadId;
 }
 
 function assertAgentIdentity(input: UpsertSessionCatalogInput): void {
-  if (input.agentId === 'claude') {
-    if (!input.sessionId || input.threadId) {
-      throw new Error('Claude catalog entries require sessionId and must not include threadId');
+  if (input.agentId === 'codex') {
+    if (!input.threadId || input.sessionId) {
+      throw new Error('Codex catalog entries require threadId and must not include sessionId');
     }
     return;
   }
-  if (!input.threadId || input.sessionId) {
-    throw new Error('Codex catalog entries require threadId and must not include sessionId');
+  if (!input.sessionId || input.threadId) {
+    throw new Error('Claude and mimo catalog entries require sessionId and must not include threadId');
   }
 }
