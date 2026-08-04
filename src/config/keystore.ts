@@ -11,13 +11,22 @@ import { writeFileAtomic } from '../platform/atomic-write';
  * Layout on disk:
  *   ~/.lark-channel/secrets.enc      — JSON map { id → encrypted envelope }
  *   ~/.lark-channel/.keystore.salt   — 32 random bytes, generated once
+ *   ~/.lark-channel/.keystore.key    — 32 random bytes, generated once
  *
- * Both files are chmod 0600. The encryption key is derived (PBKDF2-SHA256,
- * 100k iters) from `hostname + userInfo().username + salt`. This is
- * **defense-in-depth against accidental disclosure** (backups, git commits,
- * log dumps) — *not* against a same-user process actively decrypting. That
- * threat needs a real OS keychain, which is out of scope for this bridge
- * given lark-cli already terminates secrets in its own keychain on bind.
+ * All three are chmod 0600. The encryption key is derived (PBKDF2-SHA256,
+ * 100k iters) from the key file + salt. This is **defense-in-depth against
+ * accidental disclosure** (backups, git commits, log dumps) — *not* against
+ * a same-user process actively decrypting. That threat needs a real OS
+ * keychain, which is out of scope for this bridge given lark-cli already
+ * terminates secrets in its own keychain on bind.
+ *
+ * Envelopes written before the key file existed were keyed off
+ * `hostname + username + salt` instead. A hostname is not stable identity —
+ * mDNS renames a colliding `.local` name (`host-2` → `host-3`), and managed
+ * fleets rename hosts outright — and every such rename silently stranded the
+ * keystore behind an unreadable `Unsupported state or unable to authenticate
+ * data`. Those envelopes are still read (see `KDF_HOSTNAME`) and are
+ * re-keyed onto the key file the first time they are opened.
  */
 
 const KEY_LEN = 32;
@@ -25,6 +34,12 @@ const IV_LEN = 12; // GCM standard
 const TAG_LEN = 16; // GCM auth tag
 const PBKDF2_ITER = 100_000;
 const FILE_VERSION = 1;
+/** Legacy KDF: key from `hostname|username`. Implied when `kdf` is absent. */
+const KDF_HOSTNAME = 'hostname';
+/** Current KDF: key from the machine-local random key file. */
+const KDF_KEYFILE = 'keyfile';
+/** Escape hatch to re-open entries stranded by a rename, see module doc. */
+const LEGACY_HOSTNAME_ENV = 'LARK_CHANNEL_KEYSTORE_LEGACY_HOSTNAME';
 const derivedKeyCache = new Map<string, Buffer>();
 
 interface Envelope {
@@ -34,6 +49,8 @@ interface Envelope {
   data: string;
   /** base64 of 16-byte GCM auth tag */
   tag: string;
+  /** Which key derivation produced this envelope. Absent → `hostname`. */
+  kdf?: typeof KDF_HOSTNAME | typeof KDF_KEYFILE;
 }
 
 interface StoreFile {
@@ -41,7 +58,7 @@ interface StoreFile {
   entries: Record<string, Envelope>;
 }
 
-export type KeystorePaths = Pick<AppPaths, 'secretsFile' | 'keystoreSaltFile'>;
+export type KeystorePaths = Pick<AppPaths, 'secretsFile' | 'keystoreSaltFile' | 'keystoreKeyFile'>;
 
 /** Read + return the full keystore. Missing file or unreadable → empty store. */
 async function readStore(storePaths: KeystorePaths = paths): Promise<StoreFile> {
@@ -83,12 +100,48 @@ async function loadOrCreateSalt(storePaths: KeystorePaths = paths): Promise<Buff
   return salt;
 }
 
+/**
+ * Load the machine-local key material, or generate it if absent. Unlike the
+ * salt this *is* the secret, so a wrong-sized file is treated as corruption
+ * rather than silently replaced — overwriting it would strand every entry.
+ */
+async function loadOrCreateKeyMaterial(storePaths: KeystorePaths = paths): Promise<Buffer> {
+  let existing: Buffer | undefined;
+  try {
+    existing = await readFile(storePaths.keystoreKeyFile);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+  }
+  if (existing) {
+    if (existing.length === KEY_LEN) return existing;
+    throw new Error(
+      `keystore key file ${storePaths.keystoreKeyFile} is ${existing.length} bytes, ` +
+        `expected ${KEY_LEN}; refusing to overwrite it — move it aside and re-add ` +
+        'your secrets to start over',
+    );
+  }
+  const material = randomBytes(KEY_LEN);
+  await writeFileAtomic(storePaths.keystoreKeyFile, material, { mode: 0o600 });
+  return material;
+}
+
 async function deriveKey(storePaths: KeystorePaths = paths): Promise<Buffer> {
-  const cacheKey = `${storePaths.keystoreSaltFile}`;
+  const cacheKey = `${storePaths.keystoreSaltFile}|${KDF_KEYFILE}`;
   const cached = derivedKeyCache.get(cacheKey);
   if (cached) return cached;
   const salt = await loadOrCreateSalt(storePaths);
-  const seed = `${hostname()}|${userInfo().username}`;
+  const material = await loadOrCreateKeyMaterial(storePaths);
+  const key = pbkdf2Sync(material, salt, PBKDF2_ITER, KEY_LEN, 'sha256');
+  derivedKeyCache.set(cacheKey, key);
+  return key;
+}
+
+async function deriveLegacyKey(host: string, storePaths: KeystorePaths = paths): Promise<Buffer> {
+  const cacheKey = `${storePaths.keystoreSaltFile}|${KDF_HOSTNAME}|${host}`;
+  const cached = derivedKeyCache.get(cacheKey);
+  if (cached) return cached;
+  const salt = await loadOrCreateSalt(storePaths);
+  const seed = `${host}|${userInfo().username}`;
   const key = pbkdf2Sync(seed, salt, PBKDF2_ITER, KEY_LEN, 'sha256');
   derivedKeyCache.set(cacheKey, key);
   return key;
@@ -103,6 +156,7 @@ function encrypt(key: Buffer, plaintext: string): Envelope {
     iv: iv.toString('base64'),
     data: enc.toString('base64'),
     tag: tag.toString('base64'),
+    kdf: KDF_KEYFILE,
   };
 }
 
@@ -128,8 +182,59 @@ export async function getSecret(
   const store = await readStore(storePaths);
   const env = store.entries[id];
   if (!env) return undefined;
-  const key = await deriveKey(storePaths);
-  return decrypt(key, env);
+  if (env.kdf === KDF_KEYFILE) {
+    return decrypt(await deriveKey(storePaths), env);
+  }
+  const plaintext = await decryptLegacy(id, env, storePaths);
+  await migrateEntry(id, plaintext, store, storePaths);
+  return plaintext;
+}
+
+/**
+ * Open a pre-key-file envelope. Tries this machine's current hostname, then
+ * whatever the operator pinned in `LARK_CHANNEL_KEYSTORE_LEGACY_HOSTNAME`.
+ */
+async function decryptLegacy(
+  id: string,
+  env: Envelope,
+  storePaths: KeystorePaths,
+): Promise<string> {
+  const current = hostname();
+  const override = process.env[LEGACY_HOSTNAME_ENV]?.trim();
+  const candidates = override && override !== current ? [current, override] : [current];
+  for (const host of candidates) {
+    try {
+      return decrypt(await deriveLegacyKey(host, storePaths), env);
+    } catch {
+      // Wrong hostname → GCM tag mismatch. Fall through to the next guess.
+    }
+  }
+  throw new Error(
+    `failed to decrypt keystore entry "${id}": it was encrypted with a key derived from this ` +
+      `machine's hostname, which has changed since (now "${current}"). Re-add the secret with ` +
+      '`lark-channel-bridge secrets set`, or — if you know the hostname it was stored under — ' +
+      `start once with ${LEGACY_HOSTNAME_ENV}="<previous hostname>" to re-key it automatically.`,
+  );
+}
+
+/**
+ * Re-encrypt a legacy entry onto the key file so the next rename cannot
+ * strand it. Best effort: a read-only or otherwise unwritable profile must
+ * not turn a successful read into a failure.
+ */
+async function migrateEntry(
+  id: string,
+  plaintext: string,
+  store: StoreFile,
+  storePaths: KeystorePaths,
+): Promise<void> {
+  try {
+    const key = await deriveKey(storePaths);
+    store.entries[id] = encrypt(key, plaintext);
+    await writeStore(store, storePaths);
+  } catch {
+    // Keep serving the secret; we retry the migration on the next read.
+  }
 }
 
 /** Store / overwrite the secret for `id`. */
