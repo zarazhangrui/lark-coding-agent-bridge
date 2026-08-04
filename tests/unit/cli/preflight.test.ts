@@ -10,7 +10,7 @@ import {
   createDefaultProfileConfig,
   type RootConfig,
 } from '../../../src/config/profile-schema';
-import { loadRootConfig, saveRootConfig } from '../../../src/config/profile-store';
+import { loadRootConfig, loadRootConfigForProfile, saveRootConfig } from '../../../src/config/profile-store';
 
 const mocks = vi.hoisted(() => ({
   spawnProcess: vi.fn(),
@@ -1214,6 +1214,57 @@ describe('lark-cli preflight', () => {
       'profile-config-persist-failed',
       expect.objectContaining({ profile: 'codex' }),
     );
+  });
+
+  it('loadRootConfigForProfile loads the active profile when an inactive profile has an unknown agentKind', async () => {
+    const rootDir = await tempRoot();
+    const appPaths = resolveAppPaths({ rootDir, profile: 'codex' });
+    const codexConfig = createDefaultProfileConfig({
+      agentKind: 'codex',
+      accounts: bridgeConfig.accounts,
+      codex: { binaryPath: 'codex' },
+    });
+    const rootConfig: RootConfig = {
+      schemaVersion: 2,
+      activeProfile: 'codex',
+      preferences: {} as Record<string, never>,
+      profiles: {
+        codex: codexConfig,
+        cursor: {
+          schemaVersion: 2,
+          agentKind: 'cursor',
+          accounts: bridgeConfig.accounts,
+        },
+      } as unknown as RootConfig['profiles'],
+    };
+    await saveRootConfig(rootConfig, appPaths.configFile);
+
+    const loaded = await loadRootConfigForProfile(appPaths.configFile, 'codex');
+    expect(loaded).toBeDefined();
+    expect(loaded?.profiles.codex).toBeDefined();
+    expect(loaded?.profiles.cursor).toBeDefined();
+  });
+
+  it('loadRootConfigForProfile rejects the active profile when it has an unknown agentKind', async () => {
+    const rootDir = await tempRoot();
+    const appPaths = resolveAppPaths({ rootDir, profile: 'cursor' });
+    const rootConfig: RootConfig = {
+      schemaVersion: 2,
+      activeProfile: 'cursor',
+      preferences: {} as Record<string, never>,
+      profiles: {
+        cursor: {
+          schemaVersion: 2,
+          agentKind: 'cursor',
+          accounts: bridgeConfig.accounts,
+        },
+      } as unknown as RootConfig['profiles'],
+    };
+    await saveRootConfig(rootConfig, appPaths.configFile);
+
+    await expect(
+      loadRootConfigForProfile(appPaths.configFile, 'cursor'),
+    ).rejects.toThrow(/agentKind must be claude/);
   });
 });
 

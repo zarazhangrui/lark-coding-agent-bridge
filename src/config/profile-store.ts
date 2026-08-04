@@ -37,6 +37,40 @@ function normalizeRootConfig(root: RootConfig): RootConfig {
   };
 }
 
+export async function loadRootConfigForProfile(
+  path: string,
+  activeProfile: string,
+): Promise<RootConfig | undefined> {
+  try {
+    const raw = JSON.parse(await readFile(path, 'utf8')) as unknown;
+    if (!isRootConfig(raw)) return undefined;
+    return normalizeRootConfigForProfile(raw, activeProfile);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
+    throw err;
+  }
+}
+
+function normalizeRootConfigForProfile(root: RootConfig, activeProfile: string): RootConfig {
+  const profiles: RootConfig['profiles'] = {};
+  for (const [name, profile] of Object.entries(root.profiles)) {
+    if (name === activeProfile) {
+      profiles[name] = normalizeProfileConfig(profile);
+    } else {
+      profiles[name] = profile;
+    }
+  }
+  const migrations = normalizeRootMigrations(root.migrations);
+  return {
+    schemaVersion: 2,
+    activeProfile: root.activeProfile,
+    preferences: {},
+    ...(root.secrets ? { secrets: root.secrets } : {}),
+    ...(migrations ? { migrations } : {}),
+    profiles,
+  };
+}
+
 export async function saveRootConfig(root: RootConfig, path: string): Promise<void> {
   await writeFileAtomic(path, formatRootConfig(root), { mode: 0o600 });
 }
