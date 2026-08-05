@@ -43,9 +43,27 @@ const CODEX_MODELS: ModelOption[] = [
   { value: 'o3', label: 'o3' },
 ];
 
+/**
+ * Kimi Code models. Forwarded to `kimi -p -m <model>`. Kimi Code resolves
+ * unversioned aliases like `kimi-code` itself, so the picker keeps the short
+ * alias list instead of pinned ids.
+ */
+const KIMI_MODELS: ModelOption[] = [
+  { value: DEFAULT_MODEL, label: '跟随默认（不指定）' },
+  { value: 'kimi-code', label: 'Kimi Code（默认）' },
+  { value: 'kimi-for-coding', label: 'Kimi For Coding' },
+];
+
 /** The model picker options for a profile's agent kind. */
 export function supportedModels(agentKind: AgentKind): ModelOption[] {
-  return agentKind === 'codex' ? CODEX_MODELS : CLAUDE_MODELS;
+  switch (agentKind) {
+    case 'codex':
+      return CODEX_MODELS;
+    case 'kimi':
+      return KIMI_MODELS;
+    default:
+      return CLAUDE_MODELS;
+  }
 }
 
 /** True when the selection means "use the agent default" (no `--model`). */
