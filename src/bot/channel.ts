@@ -659,6 +659,11 @@ async function intakeMessage(deps: IntakeDeps): Promise<void> {
     resources: msg.resources.length,
   });
 
+  const mentionedBot = messageMentionsBot(emsg, channel.botIdentity);
+  if (mentionedBot && !emsg.mentionedBot) {
+    log.info('intake', 'mention-recovered', { scope, msgId: emsg.messageId });
+  }
+
   const accessDecision =
     msg.chatType === 'p2p'
       ? canUseDm(controls.profileConfig, controls, msg.senderId)
@@ -669,7 +674,7 @@ async function intakeMessage(deps: IntakeDeps): Promise<void> {
       sender: msg.senderId.slice(-6),
       reason: accessDecision.reason,
     });
-    if (msg.chatType !== 'p2p' && accessDecision.reason === 'denied-chat' && msg.mentionedBot) {
+    if (msg.chatType !== 'p2p' && accessDecision.reason === 'denied-chat' && mentionedBot) {
       void sendNonAllowedGroupHint(channel, msg.chatId, msg.messageId).catch((err) =>
         log.warn('intake', 'non-allowed-hint-failed', { err: String(err) }),
       );
@@ -689,7 +694,7 @@ async function intakeMessage(deps: IntakeDeps): Promise<void> {
   if (
     msg.chatType !== 'p2p' &&
     requireMentionForChat(controls.profileConfig, controls.cfg, msg.chatId) &&
-    !msg.mentionedBot
+    !mentionedBot
   ) {
     log.info('intake', 'skip-no-mention', { scope, chatType: msg.chatType });
     return;
@@ -746,6 +751,18 @@ async function intakeMessage(deps: IntakeDeps): Promise<void> {
   }
   const size = pending.push(scope, emsg);
   log.info('intake', 'queued', { scope, queueSize: size, debounceMs: DEBOUNCE_MS });
+}
+
+function messageMentionsBot(
+  msg: NormalizedMessage,
+  botIdentity: LarkChannel['botIdentity'],
+): boolean {
+  if (msg.mentionedBot) return true;
+  return (msg.mentions ?? []).some(
+    (mention) =>
+      Boolean(botIdentity?.openId && mention.openId === botIdentity.openId) ||
+      Boolean(botIdentity?.userId && mention.userId === botIdentity.userId),
+  );
 }
 
 interface RunBatchDeps {
