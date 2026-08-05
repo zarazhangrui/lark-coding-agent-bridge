@@ -3,6 +3,7 @@ import { realpath } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { AgentEvent } from '../../../src/agent/types.js';
+import { RUN_START_FAILED_MESSAGE } from '../../../src/bot/run-flow.js';
 import type { FakeAgentEvents } from '../../helpers/fake-agent.js';
 import { createDefaultProfileConfig } from '../../../src/config/profile-schema.js';
 import { log } from '../../../src/core/logger.js';
@@ -82,6 +83,82 @@ afterEach(async () => {
 });
 
 describe('markdown stream startup failures', () => {
+  it('acknowledges an accepted group mention before the debounced agent run starts', async () => {
+    const h = await createHarness();
+    await startTestBridge(h);
+
+    await h.channel.handlers.message?.(
+      message('om_mention', 'run', {
+        chatId: 'oc_group',
+        chatType: 'group',
+        mentionedBot: true,
+      }),
+    );
+
+    expect(h.channel.rawClient.im.v1.messageReaction.create).toHaveBeenCalledWith({
+      path: { message_id: 'om_mention' },
+      data: { reaction_type: { emoji_type: 'Typing' } },
+    });
+    expect(h.agent.runOptions).toHaveLength(0);
+    await waitFor(() => h.agent.runOptions.length === 1);
+  });
+
+  it('recovers a structured bot mention when the SDK mentionedBot flag is false', async () => {
+    const h = await createHarness();
+    await startTestBridge(h);
+
+    await h.channel.handlers.message?.(
+      message('om_rich_mention', 'long post', {
+        chatId: 'oc_group',
+        chatType: 'group',
+        rawContentType: 'post',
+        mentionedBot: false,
+        mentions: [{ key: '@_user_1', openId: 'ou_bot', name: 'Bridge', isBot: true }],
+      }),
+    );
+
+    expect(h.channel.rawClient.im.v1.messageReaction.create).toHaveBeenCalledWith({
+      path: { message_id: 'om_rich_mention' },
+      data: { reaction_type: { emoji_type: 'Typing' } },
+    });
+    expect(h.agent.runOptions).toHaveLength(0);
+    await waitFor(() => h.agent.runOptions.length === 1);
+  });
+
+  it('adds the working reaction before the debounced agent run starts', async () => {
+    const h = await createHarness();
+    await startTestBridge(h);
+
+    await h.channel.handlers.message?.(message('om_first', 'first'));
+
+    expect(h.channel.rawClient.im.v1.messageReaction.create).toHaveBeenCalledWith({
+      path: { message_id: 'om_first' },
+      data: { reaction_type: { emoji_type: 'Typing' } },
+    });
+    expect(h.agent.runOptions).toHaveLength(0);
+    await waitFor(() => h.agent.runOptions.length === 1);
+  });
+
+  it('replies with a fixed message and clears the reaction when agent startup fails', async () => {
+    const h = await createHarness({ spawnError: new Error('private spawn detail') });
+    await startTestBridge(h);
+
+    await h.channel.handlers.message?.(
+      message('om_spawn_failure', 'run', {
+        chatId: 'oc_group',
+        chatType: 'group',
+        mentionedBot: true,
+      }),
+    );
+
+    expect(h.channel.rawClient.im.v1.messageReaction.create).toHaveBeenCalled();
+    await waitFor(() => h.channel.sent.length === 1);
+    expect(lastMarkdown(h.channel)).toBe(RUN_START_FAILED_MESSAGE);
+    expect(lastMarkdown(h.channel)).not.toContain('private spawn detail');
+    expect(h.channel.sent[0]?.options).toMatchObject({ replyTo: 'om_spawn_failure' });
+    await waitFor(() => h.channel.rawClient.im.v1.messageReaction.delete.mock.calls.length === 1);
+  });
+
   it('does not leave the IM queue blocked when the agent exits before stream producer starts', async () => {
     const h = await createHarness();
     await startTestBridge(h);
@@ -438,6 +515,7 @@ async function createHarness(options: {
   messageReply?: 'card' | 'markdown' | 'text';
   /** Codex holds its answer back for a dedicated final reply; Claude streams it. */
   agentKind?: 'claude' | 'codex';
+  spawnError?: Error;
 } = {}): Promise<{
   tmp: TmpProfile;
   channel: FakeLarkChannel;
@@ -460,6 +538,7 @@ async function createHarness(options: {
     },
     access: {
       allowedUsers: ['ou_user'],
+      allowedChats: ['oc_group'],
     },
     codex: {
       binaryPath: '/usr/local/bin/codex',
@@ -489,6 +568,11 @@ async function createHarness(options: {
       [{ type: 'done', terminationReason: 'normal' }],
     ],
   });
+  if (options.spawnError) {
+    vi.spyOn(agent, 'run').mockImplementation(() => {
+      throw options.spawnError;
+    });
+  }
   const channel = createFakeLarkChannel(options);
   sdkMock.channel = channel;
   const controls = createControls(profileConfig);
@@ -621,7 +705,11 @@ function createControls(profileConfig: ReturnType<typeof createDefaultProfileCon
   };
 }
 
-function message(messageId: string, content: string): NormalizedMessage {
+function message(
+  messageId: string,
+  content: string,
+  overrides: Partial<NormalizedMessage> = {},
+): NormalizedMessage {
   return {
     messageId,
     chatId: 'oc_dm',
@@ -633,6 +721,7 @@ function message(messageId: string, content: string): NormalizedMessage {
     resources: [],
     mentionedBot: false,
     createTime: 1760000001000,
+    ...overrides,
   } as unknown as NormalizedMessage;
 }
 
