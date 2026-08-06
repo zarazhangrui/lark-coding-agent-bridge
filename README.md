@@ -284,6 +284,7 @@ If you'd rather not do it inside Feishu, `/invite` and `/config` write the match
         "allowedUsers": ["ou_xxxxxxxxxxxxx"],
         "allowedChats": ["oc_xxxxxxxxxxxxx"],
         "admins": ["ou_xxxxxxxxxxxxx"],
+        "agentUsers": ["ou_xxxxxxxxxxxxx"],
         "requireMentionInGroup": true
       }
     }
@@ -291,7 +292,7 @@ If you'd rather not do it inside Feishu, `/invite` and `/config` write the match
 }
 ```
 
-`allowedUsers` / `admins` take user `open_id`s; `allowedChats` takes group `chat_id`s. The easiest way to find an ID by hand: have the person message the bot (or `@` it in the group), then check the active profile's log:
+`allowedUsers` / `admins` / `agentUsers` take user `open_id`s; `allowedChats` takes group `chat_id`s. `agentUsers` is a runtime permission tier, not an admission list: actors in it use `permissions.maxAccess`, while every other actor that passed the normal access checks uses `permissions.defaultAccess`. Keep the default read-only and the maximum at the intended Agent access level when using this split. The easiest way to find an ID by hand: have the person message the bot (or `@` it in the group), then check the active profile's log:
 
 ```bash
 grep '"event":"enter"' ~/.lark-channel/profiles/<profile>/logs/bridge-$(date +%Y%m%d).jsonl | tail -5
