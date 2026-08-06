@@ -106,6 +106,10 @@ bridge 会给你的子进程注入当前运行 profile 的环境变量:
 
 配置文件可能是多 profile 结构,不要假设根层一定有旧版单 profile 的 \`accounts.app\`;确实需要读取配置时按当前 profile 取值,且不要输出密钥。
 
+## Multica Bug Issue 建票
+
+创建 Multica Bug Issue 时，不要直接运行 \`multica issue create\`。必须改用 \`lark-channel-bridge multica-issue-create <原 multica issue create 参数>\`，让 bridge 在建票时自动附带最近运行日志快照。非 Bug Issue 仍可直接使用普通 \`multica issue create\`。
+
 ## 飞书 OAuth 授权（\`lark-cli auth login\`）
 
 授权流程要让 \`lark-cli\` 进程一直活到用户在浏览器里点完为止。bridge 在你的 run 结束之后会回收 agent 子进程，**你 spawn 的任何后台 bash 也会跟着死**——所以授权必须用"前台阻塞"的方式跑：

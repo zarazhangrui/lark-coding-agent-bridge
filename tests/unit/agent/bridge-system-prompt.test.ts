@@ -37,6 +37,11 @@ describe('bridge system prompt bot collaboration rules', () => {
     expect(BRIDGE_SYSTEM_PROMPT).toContain('[名字 (user|bot)]');
     expect(BRIDGE_SYSTEM_PROMPT).toContain('不要模仿');
   });
+
+  it('requires the bridge Multica wrapper for Bug Issue creation', () => {
+    expect(BRIDGE_SYSTEM_PROMPT).toContain('lark-channel-bridge multica-issue-create');
+    expect(BRIDGE_SYSTEM_PROMPT).toContain('自动附带最近运行日志快照');
+  });
 });
 
 describe('buildBridgeSystemPrompt', () => {
