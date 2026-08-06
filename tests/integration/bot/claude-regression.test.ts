@@ -1,7 +1,11 @@
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { getMessageReplyMode, getRequireMentionInGroup } from '../../../src/config/schema.js';
+import {
+  getMessageReplyMode,
+  getRequireMentionInGroup,
+  getShowToolCalls,
+} from '../../../src/config/schema.js';
 import { PendingQueue } from '../../../src/bot/pending-queue.js';
 import type { NormalizedMessage } from '@larksuite/channel';
 
@@ -29,6 +33,25 @@ describe('Claude IM regression boundaries', () => {
 
     expect(getMessageReplyMode(defaultCfg)).toBe('markdown');
     expect(getMessageReplyMode(cardCfg)).toBe('card');
+  });
+
+  it('defaults Codex to a final-only reply while preserving explicit display choices', () => {
+    const codexCfg = {
+      agentKind: 'codex' as const,
+      accounts: { app: { id: 'app-id', secret: 'secret', tenant: 'feishu' as const } },
+    };
+
+    expect(getMessageReplyMode(codexCfg)).toBe('text');
+    expect(getShowToolCalls(codexCfg)).toBe(false);
+    expect(
+      getMessageReplyMode({
+        ...codexCfg,
+        preferences: { messageReply: 'markdown' as const },
+      }),
+    ).toBe('markdown');
+    expect(
+      getShowToolCalls({ ...codexCfg, preferences: { showToolCalls: true } }),
+    ).toBe(true);
   });
 
   it('queues messages that arrive while a run is active and flushes them as the next batch', () => {

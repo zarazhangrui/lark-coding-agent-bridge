@@ -169,6 +169,8 @@ lark-channel-bridge profile export <name> --include-secrets --yes
 - **工具调用显示**：控制最终回复卡片 / markdown 中是否展示工具块。
 - **COT 过程消息**：`关闭` 只发送最终回复；`简略` 先用 COT 消息展示 agent 的过程文本和工具摘要；`详细` 还会展示工具参数和截断后的输出。
 
+新建 Codex profile 默认只交付最终结果：纯文本一次性发送、隐藏工具调用、关闭 COT。已有 profile 如果明确设置过展示偏好，会继续保留原选择；Claude 仍默认使用流式消息卡片。
+
 开启 COT 后，bridge 会把过程消息和最终答案拆成两条消息。过程消息用于追踪 agent 做了什么；最终答案仍由 agent 原始文本生成，bridge 不做启发式过滤。若 agent 把最终答案也作为普通流式文本输出，COT 过程消息中可能会出现对应片段。
 
 ## lark-cli 身份策略
