@@ -13,6 +13,13 @@ export interface RunExecutorDeps {
   createRunId?: () => string;
   now?: () => number;
   postDoneExitGraceMs?: number;
+  /**
+   * How long a submission may wait for an in-progress pause (reconnect,
+   * bridge restart, etc.) to clear before rejecting with
+   * `reconnect-in-progress`. Defaults to `0` (reject immediately, the prior
+   * behavior) so existing callers are unaffected unless they opt in.
+   */
+  reconnectWaitMs?: number;
 }
 
 export interface SubmitRunInput {
@@ -42,6 +49,7 @@ export interface RunExecution {
 }
 
 const DEFAULT_POST_DONE_EXIT_GRACE_MS = 2000;
+const DEFAULT_RECONNECT_WAIT_MS = 0;
 
 export class RunExecutor {
   private readonly agent: AgentAdapter;
@@ -50,6 +58,7 @@ export class RunExecutor {
   private readonly createRunId: () => string;
   private readonly now: () => number;
   private readonly postDoneExitGraceMs: number;
+  private readonly reconnectWaitMs: number;
 
   constructor(deps: RunExecutorDeps) {
     this.agent = deps.agent;
@@ -58,6 +67,7 @@ export class RunExecutor {
     this.createRunId = deps.createRunId ?? randomUUID;
     this.now = deps.now ?? Date.now;
     this.postDoneExitGraceMs = deps.postDoneExitGraceMs ?? DEFAULT_POST_DONE_EXIT_GRACE_MS;
+    this.reconnectWaitMs = deps.reconnectWaitMs ?? DEFAULT_RECONNECT_WAIT_MS;
   }
 
   async submit(input: SubmitRunInput): Promise<RunExecution> {
@@ -66,10 +76,20 @@ export class RunExecutor {
       throw new RunRejected('policy-expired', 'run policy expired before spawn');
     }
     if (this.activeRuns.newRunsPaused()) {
-      throw new RunRejected(
-        'reconnect-in-progress',
-        this.activeRuns.newRunsPauseReason() ?? 'new runs are temporarily paused',
-      );
+      // Short reconnect blips (a WS ping timeout that self-heals in a
+      // second or two) are common and otherwise silently drop the user's
+      // message — see the "reconnect-in-progress" rejection below, which
+      // used to fire immediately with no retry. Give the pause a bounded
+      // window to clear before giving up; `nowait` callers opt out since
+      // they've already asked not to wait for anything.
+      const shouldWait = this.reconnectWaitMs > 0 && !input.nowait;
+      const resumed = shouldWait ? await this.activeRuns.waitForResume(this.reconnectWaitMs) : false;
+      if (!resumed && this.activeRuns.newRunsPaused()) {
+        throw new RunRejected(
+          'reconnect-in-progress',
+          this.activeRuns.newRunsPauseReason() ?? 'new runs are temporarily paused',
+        );
+      }
     }
     const releaseScope = this.activeRuns.reserve(input.scopeId);
     if (!releaseScope) {
