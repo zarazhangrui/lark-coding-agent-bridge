@@ -1,7 +1,7 @@
-import { readdir } from 'node:fs/promises';
+import { readFile, readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { resolveAppPaths } from '../config/app-paths';
-import { loadRootConfig, readActiveProfile } from '../config/profile-store';
+import { isRootConfig, loadRootConfig, readActiveProfile } from '../config/profile-store';
 import type { AgentKind } from '../config/profile-schema';
 
 export interface DiscoveredProfile {
@@ -22,8 +22,9 @@ export async function listAllProfiles(rootDir?: string): Promise<DiscoveredProfi
   }
 
   const configured = Object.keys(root.profiles);
+  const rawConfigured = await readRawConfiguredProfiles(rootPaths.configFile);
   const stateDirs = await readProfileStateDirs(rootPaths.rootDir);
-  const configuredSet = new Set(configured);
+  const rawConfiguredSet = new Set(rawConfigured);
   const stateSet = new Set(stateDirs);
   const missingState = configured.filter((name) => !stateSet.has(name));
   if (missingState.length > 0) {
@@ -31,7 +32,7 @@ export async function listAllProfiles(rootDir?: string): Promise<DiscoveredProfi
   }
   const orphanState: string[] = [];
   for (const name of stateDirs) {
-    if (configuredSet.has(name)) continue;
+    if (rawConfiguredSet.has(name)) continue;
     if (await isLogOnlyProfileState(rootPaths.rootDir, name)) continue;
     orphanState.push(name);
   }
@@ -51,6 +52,12 @@ export async function listAllProfiles(rootDir?: string): Promise<DiscoveredProfi
         profileDir: resolveAppPaths({ rootDir: rootPaths.rootDir, profile: name }).profileDir,
       };
     });
+}
+
+async function readRawConfiguredProfiles(configFile: string): Promise<string[]> {
+  const raw = JSON.parse(await readFile(configFile, 'utf8')) as unknown;
+  if (!isRootConfig(raw)) return [];
+  return Object.keys(raw.profiles);
 }
 
 async function readProfileStateDirs(rootDir: string): Promise<string[]> {

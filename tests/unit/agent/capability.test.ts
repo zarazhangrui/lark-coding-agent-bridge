@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { BRIDGE_SYSTEM_PROMPT } from '../../../src/agent/bridge-system-prompt';
-import { claudeCapability, codexCapability } from '../../../src/agent/capability';
+import { claudeCapability, codexCapability, opencodeCapability } from '../../../src/agent/capability';
 import { createDefaultProfileConfig } from '../../../src/config/profile-schema';
 
 describe('agent capability contract', () => {
@@ -71,5 +71,22 @@ describe('agent capability contract', () => {
     });
 
     expect(codexCapability(profile).permissions.maxAccess).toBe('read-only');
+  });
+});
+
+describe('opencodeCapability', () => {
+  it('uses opencode agent id and opencode-session session kind', () => {
+    const cap = opencodeCapability({ permissions: { defaultAccess: 'full', maxAccess: 'full' } });
+    expect(cap.agentId).toBe('opencode');
+    expect(cap.sessionKind).toBe('opencode-session');
+    expect(cap.promptInjection).toBe('stdin-prefix');
+    expect(cap.supportsNativeHistory).toBe(true);
+    expect(cap.callback.marker).toBe('__bridge_cb');
+    expect(cap.permissions.maxAccess).toBe('full');
+  });
+
+  it('clamps maxAccess from the profile permissions', () => {
+    const cap = opencodeCapability({ permissions: { defaultAccess: 'read-only', maxAccess: 'workspace' } });
+    expect(cap.permissions.maxAccess).toBe('workspace');
   });
 });

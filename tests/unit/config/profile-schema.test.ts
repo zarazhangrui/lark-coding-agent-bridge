@@ -557,7 +557,6 @@ describe('profile schema', () => {
       maxAccess: 'workspace',
     });
   });
-
   it('clamps default access from full defaults when only canonical max access is explicit', () => {
     const cfg = normalizeProfileConfig({
       schemaVersion: 2,
@@ -574,3 +573,53 @@ describe('profile schema', () => {
     });
   });
 });
+
+describe('opencode profile', () => {
+  const baseApp = { app: { id: 'cli_x', secret: 'shh', tenant: 'feishu' as const } };
+
+  it('rejects an opencode profile missing the opencode block', () => {
+    expect(() =>
+      normalizeProfileConfig({
+        schemaVersion: 2,
+        agentKind: 'opencode',
+        accounts: baseApp,
+      }),
+    ).toThrow('opencode profile requires opencode configuration');
+  });
+
+  it('accepts an opencode profile with binaryPath', () => {
+    const cfg = normalizeProfileConfig({
+      schemaVersion: 2,
+      agentKind: 'opencode',
+      accounts: baseApp,
+      opencode: { binaryPath: '/usr/local/bin/opencode' },
+    });
+    expect(cfg.agentKind).toBe('opencode');
+    expect(cfg.opencode?.binaryPath).toBe('/usr/local/bin/opencode');
+    expect(cfg.opencode?.inheritConfig).toBeUndefined();
+  });
+
+  it('round-trips opencode config through createDefaultProfileConfig', () => {
+    const cfg = createDefaultProfileConfig({
+      agentKind: 'opencode',
+      accounts: baseApp,
+      opencode: { binaryPath: '/opt/opencode', inheritConfig: true, ignoreUserConfig: false },
+    });
+    expect(cfg.opencode).toEqual({
+      binaryPath: '/opt/opencode',
+      inheritConfig: true,
+      ignoreUserConfig: false,
+    });
+  });
+
+  it('rejects an invalid agentKind', () => {
+    expect(() =>
+      normalizeProfileConfig({
+        schemaVersion: 2,
+        agentKind: 'gemini',
+        accounts: baseApp,
+      } as unknown as Parameters<typeof normalizeProfileConfig>[0]),
+    ).toThrow('agentKind must be claude, codex, or opencode');
+  });
+});
+
