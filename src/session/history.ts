@@ -62,11 +62,34 @@ async function summarize(path: string): Promise<{ preview: string; lineCount: nu
   const stream = createReadStream(path, { encoding: 'utf8' });
   const rl = createInterface({ input: stream });
   let preview = '';
+  let customTitle = '';
+  let aiTitle = '';
   let lineCount = 0;
   try {
     for await (const line of rl) {
       lineCount++;
-      if (!preview && line.includes('"type":"user"')) {
+      // Prefer the conversation's title for the label — Claude Code records
+      // `custom-title` (user-set) and `ai-title` (auto-generated). Keep the
+      // latest of each; fall back to the first user message below.
+      if (line.includes('"customTitle"')) {
+        try {
+          const obj = JSON.parse(line) as { type?: string; customTitle?: unknown };
+          if (obj.type === 'custom-title' && typeof obj.customTitle === 'string') {
+            customTitle = obj.customTitle.trim();
+          }
+        } catch {
+          /* malformed line */
+        }
+      } else if (line.includes('"aiTitle"')) {
+        try {
+          const obj = JSON.parse(line) as { type?: string; aiTitle?: unknown };
+          if (obj.type === 'ai-title' && typeof obj.aiTitle === 'string') {
+            aiTitle = obj.aiTitle.trim();
+          }
+        } catch {
+          /* malformed line */
+        }
+      } else if (!preview && line.includes('"type":"user"')) {
         try {
           const obj = JSON.parse(line) as { type?: string; message?: { content?: unknown } };
           if (obj.type === 'user' && obj.message) {
@@ -84,7 +107,8 @@ async function summarize(path: string): Promise<{ preview: string; lineCount: nu
     rl.close();
     stream.destroy();
   }
-  return { preview: preview || '(空会话)', lineCount };
+  // Title first (most readable), then first user message, then placeholder.
+  return { preview: customTitle || aiTitle || preview || '(空会话)', lineCount };
 }
 
 function extractUserText(content: unknown): string {
