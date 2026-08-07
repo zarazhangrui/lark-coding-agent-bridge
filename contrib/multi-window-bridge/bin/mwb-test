@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# Smoke test: send a ping via feishu.send_text using current config.
+
+exec /usr/bin/python3 - <<'PY'
+import sys, os, time
+sys.path.insert(0, os.path.expanduser("~/.claude/multi-window-bridge/lib"))
+import feishu, registry
+text = f"🧪 multi-window-bridge ping {time.strftime('%H:%M:%S')}\n本消息证明 bot 凭据 + 网络 + feishu API 都通。"
+mid = feishu.send_text(text)
+if mid:
+    print(f"✅ sent feishu message {mid}")
+    sys.exit(0)
+print("❌ feishu send failed — check ~/.claude/multi-window-bridge/logs/")
+sys.exit(1)
+PY

@@ -1,0 +1,84 @@
+# multi-window-bridge / cc-register
+# zsh function: launch `claude` with an optional window alias so MWB hooks can
+# attribute the session to a stable, human-readable window-id.
+#
+# Source this file from ~/.zshrc:
+#   [ -f ~/.claude/multi-window-bridge/bin/cc-register ] && source ~/.claude/multi-window-bridge/bin/cc-register
+#
+# Usage:
+#   cc-register                       # auto-name: <basename(cwd)>-<N>
+#   cc-register --alias=morning-debug # explicit alias
+#   cc-register -a morning-debug      # short form
+#   cc-register --alias=fix-bug -- --print "fix the bug"
+#                                     # everything after `--` is passed to claude
+#
+# After launch, hooks fire on Notification / PreToolUse / Stop / SessionEnd and
+# push to feishu. See ~/.claude/multi-window-bridge/README.md.
+
+cc-register() {
+    local alias=""
+    local -a claude_args=()
+    local in_passthrough=0
+
+    while [[ $# -gt 0 ]]; do
+        if (( in_passthrough )); then
+            claude_args+=("$1"); shift; continue
+        fi
+        case "$1" in
+            -a|--alias)
+                alias="$2"; shift 2;;
+            --alias=*)
+                alias="${1#--alias=}"; shift;;
+            --)
+                in_passthrough=1; shift;;
+            -h|--help)
+                cat <<'HELP'
+cc-register — launch claude with a multi-window-bridge alias
+
+  cc-register [--alias=NAME | -a NAME] [-- CLAUDE_ARGS...]
+
+NAME may contain letters, digits, `-`, `_`. Unsafe chars are sanitized.
+If omitted, hooks auto-assign <basename(cwd)>-<N> at SessionStart time.
+
+Examples
+  cc-register                          # auto-named (e.g. kb-1)
+  cc-register --alias=fix-401          # named "fix-401"
+  cc-register -a perf -- --print done  # name "perf", pass --print done to claude
+HELP
+                return 0;;
+            *)
+                # First positional or unknown flag — pass everything from here on
+                # to claude. This makes `cc-register --resume foo` Just Work.
+                claude_args+=("$1"); shift; in_passthrough=1;;
+        esac
+    done
+
+    if [[ -n "$alias" ]]; then
+        # Sanitize: kebab-case alnum/dash/underscore only
+        alias="${alias//[^a-zA-Z0-9_-]/-}"
+        export MWB_WINDOW_ALIAS="$alias"
+    else
+        unset MWB_WINDOW_ALIAS
+    fi
+
+    # Resolve claude binary from PATH.
+    local claude_bin
+    claude_bin="$(command -v claude)"
+    if [[ -z "$claude_bin" ]]; then
+        echo "cc-register: cannot find 'claude' on PATH" >&2
+        return 127
+    fi
+
+    # NOT using `exec` on purpose: when Claude exits we want the user to fall
+    # back to an interactive shell in the same Warp tab, not have the tab
+    # disappear. Hook PPID is the claude process regardless (claude spawns the
+    # hook directly), so PID tracking is unaffected.
+    if (( ${#claude_args} > 0 )); then
+        "$claude_bin" "${claude_args[@]}"
+    else
+        "$claude_bin"
+    fi
+    local rc=$?
+    unset MWB_WINDOW_ALIAS
+    return $rc
+}

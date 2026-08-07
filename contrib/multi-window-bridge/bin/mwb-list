@@ -1,0 +1,289 @@
+#!/usr/bin/env python3
+"""mwb-list — 列出 Claude Code 所有 session
+
+用法:
+  mwb-list                  最近 20 个 (默认),表格
+  mwb-list --markdown       markdown (飞书 / Claude Code 转发用)
+  mwb-list --json           原始 JSON
+  mwb-list --limit 50       多列点
+  mwb-list --alive-only     只看正在跑的 (mwb registry)
+
+设计:
+- 主数据源 = ~/.claude/projects/ 下所有 <sid>.jsonl (Claude Code 自己存的,所有历史 211 个全在)
+- 辅助 = ~/.claude/multi-window-bridge/registry.json (给活 session 加上 mwb alias + PID 信息)
+- 合并后按 mtime 倒序,默认前 20 个
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import sys
+import time
+from pathlib import Path
+
+MWB = Path.home() / ".claude" / "multi-window-bridge"
+
+
+def _alive(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except (ProcessLookupError, PermissionError):
+        return False
+
+
+def _lark_session_ids() -> set[str]:
+    path = Path.home() / ".lark-channel" / "sessions.json"
+    try:
+        data = json.loads(path.read_text())
+        return {v.get("sessionId") for v in data.values()
+                if isinstance(v, dict) and v.get("sessionId")}
+    except Exception:  # noqa: BLE001
+        return set()
+
+
+def _rel_time(ts: int) -> str:
+    if not ts:
+        return "—"
+    delta = int(time.time()) - ts
+    if delta < 60:
+        return f"{delta}s 前"
+    if delta < 3600:
+        return f"{delta // 60}m 前"
+    if delta < 86400:
+        return f"{delta // 3600}h 前"
+    return f"{delta // 86400}d 前"
+
+
+def _short_cwd(cwd: str) -> str:
+    home = str(Path.home())
+    if cwd.startswith(home):
+        return "~" + cwd[len(home):]
+    return cwd
+
+
+def _read_cwd_from_jsonl(path: Path) -> str | None:
+    """Read first jsonl line and return its `cwd` field. None on any error.
+
+    The directory-name encoding (`-Users-you-kb-wiki`) is ambiguous when
+    the real cwd contains hyphens (e.g. `mwb-resume-test` vs `mwb/resume/test`).
+    Each transcript entry carries the true cwd in a field — use that.
+    """
+    try:
+        with path.open() as fh:
+            for line in fh:
+                try:
+                    e = json.loads(line)
+                except Exception:  # noqa: BLE001
+                    continue
+                cwd = e.get("cwd")
+                if cwd:
+                    return cwd
+    except Exception:  # noqa: BLE001
+        pass
+    return None
+
+
+def _scan_session_files() -> dict[str, dict]:
+    """Scan ~/.claude/projects for all <sessionId>.jsonl. Returns {sid: meta}."""
+    base = Path.home() / ".claude" / "projects"
+    out: dict[str, dict] = {}
+    if not base.exists():
+        return out
+    for cwd_dir in base.iterdir():
+        if not cwd_dir.is_dir():
+            continue
+        encoded = cwd_dir.name
+        for f in cwd_dir.glob("*.jsonl"):
+            sid = f.stem
+            try:
+                mtime = int(f.stat().st_mtime)
+            except Exception:  # noqa: BLE001
+                continue
+            # Real cwd from jsonl (authoritative). Fallback to ambiguous decode.
+            real_cwd = _read_cwd_from_jsonl(f)
+            if not real_cwd:
+                real_cwd = ("/" + encoded[1:].replace("-", "/")
+                            if encoded.startswith("-") else encoded)
+            out[sid] = {"sessionId": sid, "cwd": real_cwd, "mtime": mtime}
+    return out
+
+
+def _load_window_chats() -> dict[str, dict]:
+    """Return {windowId: {chatId, groupName, cwd, createdAt}} from session_chats.json."""
+    path = MWB / "session_chats.json"
+    try:
+        data = json.loads(path.read_text())
+        return data.get("windowChats", {})
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+def load(alive_only: bool = False) -> list[dict]:
+    # 1. Active windows from mwb registry (gives alias + PID + lastHookKind)
+    reg_path = MWB / "registry.json"
+    try:
+        reg_data = json.loads(reg_path.read_text())
+    except Exception:  # noqa: BLE001
+        reg_data = {"windows": {}}
+    try:
+        cfg = json.loads((MWB / "config" / "config.json").read_text())
+        mute_wids = set(cfg["notifications"].get("muteWindowIds", []))
+    except Exception:  # noqa: BLE001
+        mute_wids = set()
+    mute_lark = _lark_session_ids()
+    window_chats = _load_window_chats()
+
+    reg_by_sid: dict[str, dict] = {}
+    for wid, e in reg_data.get("windows", {}).items():
+        sid = e.get("sessionId", "")
+        if not sid:
+            continue
+        pid = e.get("claudePid", -1)
+        chat_meta = window_chats.get(wid) or {}
+        reg_by_sid[sid] = {
+            "wid": wid,
+            "alias": e.get("alias", wid),
+            "sessionId": sid,
+            "cwd": e.get("cwd", ""),
+            "pid": pid,
+            "alive": _alive(pid),
+            "lastHookAt": e.get("lastHookAt", 0),
+            "lastHookKind": e.get("lastHookKind", "?"),
+            "muted": wid in mute_wids or sid in mute_lark,
+            "registered": True,
+            "chatId": chat_meta.get("chatId"),
+            "groupName": chat_meta.get("groupName"),
+        }
+
+    if alive_only:
+        rows = list(reg_by_sid.values())
+        for r in rows:
+            r["activity"] = r["lastHookAt"]
+        return sorted(rows, key=lambda r: r["activity"], reverse=True)
+
+    # 2. All session files on disk
+    files = _scan_session_files()
+
+    # 3. Merge: every file is a row; registered ones get alias annotation
+    rows = []
+    for sid, meta in files.items():
+        if sid in reg_by_sid:
+            r = dict(reg_by_sid[sid])
+            r["activity"] = max(meta["mtime"], r["lastHookAt"])
+            rows.append(r)
+        else:
+            rows.append({
+                "wid": f"({sid[:8]})",
+                "alias": None,
+                "sessionId": sid,
+                "cwd": meta["cwd"],
+                "pid": None,
+                "alive": False,
+                "lastHookAt": 0,
+                "lastHookKind": "—",
+                "muted": False,
+                "registered": False,
+                "activity": meta["mtime"],
+                "chatId": None,
+                "groupName": None,
+            })
+    rows.sort(key=lambda r: r["activity"], reverse=True)
+    return rows
+
+
+def _truncate(s: str, n: int) -> str:
+    return s if len(s) <= n else s[: n - 1] + "…"
+
+
+def fmt_table(rows: list[dict]) -> str:
+    """终端友好版,等宽对齐"""
+    if not rows:
+        return "(没有 session)"
+    headers = ("WID/SID", "状态", "活动", "CWD", "SESSIONID", "群")
+    cols: list[tuple[str, list[str]]] = []
+    cols.append((headers[0], [(r["alias"] or r["wid"]) for r in rows]))
+    cols.append((headers[1], ["✅活" if r["alive"] else "—死" for r in rows]))
+    cols.append((headers[2], [_rel_time(r["activity"]) for r in rows]))
+    cols.append((headers[3], [_short_cwd(r["cwd"]) for r in rows]))
+    cols.append((headers[4], [(r["sessionId"][:8] + "…") if r["sessionId"] else "—"
+                              for r in rows]))
+    cols.append((headers[5], [_truncate(r.get("groupName") or "—", 32) for r in rows]))
+    widths = [max(len(h), max((len(v) for v in vs), default=0)) for h, vs in cols]
+    lines = ["  ".join(h.ljust(w) for (h, _), w in zip(cols, widths))]
+    lines.append("  ".join("-" * w for w in widths))
+    for i, r in enumerate(rows):
+        row_vals = [vs[i] for _, vs in cols]
+        muted = " 🔇" if r["muted"] else ""
+        lines.append("  ".join(v.ljust(w) for v, w in zip(row_vals, widths)) + muted)
+    return "\n".join(lines)
+
+
+def fmt_markdown(rows: list[dict], total: int) -> str:
+    """飞书 / Claude Code 卡片版"""
+    if not rows:
+        return "**(没有 session)**"
+    alive_n = sum(1 for r in rows if r["alive"])
+    out = []
+    out.append("## 🪟 Claude Code session")
+    out.append("")
+    out.append(f"显示 **{len(rows)} / {total}** 个 · 活 **{alive_n}** 个 · 按活动倒序")
+    out.append("")
+    out.append("| 标识 | 状态 | 活动 | CWD | 群 |")
+    out.append("|---|---|---|---|---|")
+    for r in rows:
+        if r["alias"]:
+            label = f"`{r['alias']}`"
+        else:
+            label = f"_(historical)_ `{r['sessionId'][:8]}…`"
+        status = "✅ 活" if r["alive"] else "—"
+        muted = " 🔇" if r["muted"] else ""
+        group_cell = f"`{_truncate(r.get('groupName') or '', 28)}`" if r.get("groupName") else "—"
+        out.append(f"| {label}{muted} | {status} | {_rel_time(r['activity'])} | `{_short_cwd(r['cwd'])}` | {group_cell} |")
+    out.append("")
+    out.append("---")
+    out.append("")
+    out.append("### 远程接管(飞书发,任何一行都能):")
+    out.append("")
+    for r in rows:
+        if not r["sessionId"]:
+            continue
+        label = r["alias"] or f"({r['sessionId'][:8]})"
+        out.append(f"- **`{label}`**: `/resume use {r['sessionId']}`")
+    out.append("")
+    out.append("> 提示: 接管活的 session 前最好先把那个 Warp 里的 Claude 退掉,避免双写 race。")
+    if len(rows) < total:
+        out.append("")
+        out.append(f"> 还有 {total - len(rows)} 个更早的 session 没显示。本地跑 `mwb-list --limit 50` 看更多。")
+    return "\n".join(out)
+
+
+def main() -> int:
+    p = argparse.ArgumentParser()
+    p.add_argument("--markdown", action="store_true", help="markdown 表格 (飞书/卡片)")
+    p.add_argument("--json", action="store_true", help="原始 JSON")
+    p.add_argument("--limit", type=int, default=20, help="最多显示几行 (默认 20)")
+    p.add_argument("--alive-only", action="store_true",
+                   help="只看正在跑的 session (mwb registry,跳过历史 .jsonl)")
+    p.add_argument("--all", action="store_true", help="显示全部 (覆盖 --limit)")
+    args = p.parse_args()
+
+    rows = load(alive_only=args.alive_only)
+    total = len(rows)
+    if not args.all:
+        rows = rows[: args.limit]
+
+    if args.json:
+        print(json.dumps(rows, ensure_ascii=False, indent=2))
+    elif args.markdown:
+        print(fmt_markdown(rows, total))
+    else:
+        print(fmt_table(rows))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

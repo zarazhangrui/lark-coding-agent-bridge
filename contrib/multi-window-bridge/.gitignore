@@ -1,0 +1,14 @@
+# Runtime state & secrets — never commit these.
+.tenant_token.json
+registry.json
+registry.json.lock
+session_chats.json
+.receiver_state.json
+pending.json
+pending.json.lock
+logs/
+__pycache__/
+*.pyc
+
+# Local config holds your real chatId / userOpenId — edit config/config.json
+# in place, but do not commit your real IDs back upstream.

@@ -1,0 +1,77 @@
+#!/usr/bin/env bash
+# multi-window-bridge uninstaller.
+#
+# Reverses mwb-install. DOES NOT touch lark-channel-bridge.
+# Keeps logs and registry.json so you can inspect post-mortem; deletes them
+# only with --purge.
+
+set -euo pipefail
+
+MWB="$HOME/.claude/multi-window-bridge"
+SETTINGS="$HOME/.claude/settings.json"
+ZSHRC="$HOME/.zshrc"
+LAUNCH_DIR="$HOME/Library/LaunchAgents"
+
+PURGE=0
+[[ "${1:-}" == "--purge" ]] && PURGE=1
+
+echo "→ multi-window-bridge uninstall (purge=$PURGE)"
+
+# 1. unload + remove plists
+for p in com.local.mwb-watchdog.plist com.local.mwb-receiver.plist; do
+    if [[ -f "$LAUNCH_DIR/$p" ]]; then
+        launchctl unload "$LAUNCH_DIR/$p" 2>/dev/null || true
+        rm -f "$LAUNCH_DIR/$p"
+        echo "  removed $LAUNCH_DIR/$p"
+    fi
+done
+
+# 2. strip MWB hooks from settings.json (preserve other hooks + non-hook keys)
+if [[ -f "$SETTINGS" ]]; then
+    ts="$(date +%s)"
+    cp "$SETTINGS" "$SETTINGS.bak.uninstall.$ts"
+    /usr/bin/python3 - <<'PY'
+import json, os
+path = os.path.expanduser("~/.claude/settings.json")
+with open(path) as fh:
+    cur = json.load(fh)
+hooks = cur.get("hooks", {})
+clean_hooks = {}
+for event, groups in hooks.items():
+    kept_groups = []
+    for grp in groups:
+        kept_hooks = []
+        for h in grp.get("hooks", []):
+            if "/multi-window-bridge/hooks/" in h.get("command", ""):
+                continue
+            kept_hooks.append(h)
+        if kept_hooks:
+            ng = dict(grp); ng["hooks"] = kept_hooks
+            kept_groups.append(ng)
+    if kept_groups:
+        clean_hooks[event] = kept_groups
+if clean_hooks:
+    cur["hooks"] = clean_hooks
+else:
+    cur.pop("hooks", None)
+with open(path, "w") as fh:
+    json.dump(cur, fh, indent=2, ensure_ascii=False)
+print("  stripped MWB hooks from settings.json")
+PY
+fi
+
+# 3. zshrc — remove the source line
+if [[ -f "$ZSHRC" ]]; then
+    /usr/bin/sed -i.bak.uninstall '/multi-window-bridge\/bin\/cc-register/d; /^# multi-window-bridge$/d' "$ZSHRC"
+    echo "  removed cc-register line from ~/.zshrc"
+fi
+
+# 4. optionally purge MWB home
+if (( PURGE )); then
+    rm -rf "$MWB"
+    echo "  purged $MWB (logs + registry deleted)"
+else
+    echo "  kept $MWB (run with --purge to delete)"
+fi
+
+echo "✅ uninstall complete. lark-channel-bridge is untouched."
