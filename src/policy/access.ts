@@ -14,6 +14,7 @@ export interface AccessDecision {
   ok: boolean;
   reason:
     | 'owner'
+    | 'allowed-team'
     | 'allowed-user'
     | 'allowed-admin'
     | 'allowed-chat'
@@ -35,6 +36,9 @@ export function canUseDm(
   senderId: string,
 ): AccessDecision {
   if (isCreator(controls, senderId)) return allow('owner');
+  // Team mode opens up *usage* to everyone — no allowlist gating. Admin
+  // commands stay owner/admin-gated via canRunAdminCommand (unchanged).
+  if (profile.mode === 'team') return allow('allowed-team');
   if (profile.access.allowedUsers.includes(senderId)) return allow('allowed-user');
   if (profile.access.admins.includes(senderId)) return allow('allowed-admin');
   // Open DM: an empty user allowlist means "everyone" (no opt-in required).
@@ -51,6 +55,7 @@ export function canUseGroup(
   senderId: string,
 ): AccessDecision {
   if (isCreator(controls, senderId)) return allow('owner');
+  if (profile.mode === 'team') return allow('allowed-team');
   if (profile.access.admins.includes(senderId)) return allow('allowed-admin');
   if (profile.access.allowedChats.includes(chatId)) return allow('allowed-chat');
   // Open group: an empty chat allowlist means "any group the bot is in".
