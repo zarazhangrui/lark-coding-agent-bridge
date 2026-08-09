@@ -8,8 +8,8 @@ package-lock.json
 yarn.lock
 
 # Build output (already gitignored — reinforced here for safety)
-dist/
-coverage/
+# Backup build artifacts from pi e2e tests — never part of the symbol graph
+dist.bak-pi-e2e/
 *.tsbuildinfo
 
 # Runtime logs / status dumps
