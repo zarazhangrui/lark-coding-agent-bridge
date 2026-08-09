@@ -11,6 +11,9 @@ export interface QuotedContext {
   messageId: string;
   senderId: string;
   senderName?: string;
+  /** Human vs bot, derived from the Feishu `sender.sender_type`. Undefined when
+   * the source item didn't carry it (single-quote fetch path). */
+  senderType?: 'user' | 'bot';
   /** ISO timestamp of the quoted message's creation. Empty when SDK can't
    * resolve it from the fetched item. */
   createdAt: string;
@@ -81,20 +84,37 @@ export async function fetchQuotedContext(
   if (!parent || !parent.message_id) return undefined;
 
   // Reuse the already-fetched items when the SDK re-asks for sub-messages of
-  // this same id (merge_forward case). For nested merge_forwards inside, fall
-  // back to a fresh API call.
+  // this same id (merge_forward case). For nested merge_forwards inside, fetch
+  // fresh — and let a fetch failure throw so it surfaces as a fetch_failed
+  // forward rather than a silently-empty one (see fetchSubTreeItems).
   const fetchSubMessages = async (mid: string): Promise<ApiMessageItem[]> => {
     if (mid === parent.message_id) return items.map(preExpandInteractive);
-    try {
-      const subItems = await channel.fetchRawMessage(mid, {
-        cardContentType: 'user_card_content',
-      });
-      return subItems.map(preExpandInteractive);
-    } catch {
-      return [];
-    }
+    const subItems = await fetchSubTreeItems(channel, mid);
+    return subItems.map(preExpandInteractive);
   };
 
+  return normalizeItemToQuoted(channel, parent, fetchSubMessages);
+}
+
+function mapSenderType(raw: unknown): 'user' | 'bot' | undefined {
+  if (raw === 'user') return 'user';
+  if (raw === 'app' || raw === 'bot') return 'bot';
+  return undefined;
+}
+
+/**
+ * Normalize a single fetched message item (from `im.v1.message.get` or
+ * `im.v1.message.list`) into a {@link QuotedContext}. Shared by the reply-quote
+ * path and the topic-context path. `fetchSubMessages` resolves merge_forward
+ * children — callers decide whether to reuse an already-fetched batch or fetch
+ * fresh.
+ */
+async function normalizeItemToQuoted(
+  channel: LarkChannel,
+  parent: ApiMessageItem,
+  fetchSubMessages: (mid: string) => Promise<ApiMessageItem[]>,
+): Promise<QuotedContext | undefined> {
+  if (!parent.message_id) return undefined;
   const senderOpenId = parent.sender?.id;
   const fakeRaw: RawMessageEvent = {
     sender: { sender_id: { open_id: senderOpenId } },
@@ -126,6 +146,7 @@ export async function fetchQuotedContext(
       messageId: parent.message_id,
       senderId: senderOpenId ?? '',
       senderName: normalized.senderName,
+      senderType: mapSenderType(parent.sender?.sender_type),
       createdAt: Number.isFinite(createMs) && createMs > 0
         ? new Date(createMs).toISOString()
         : '',
@@ -136,10 +157,98 @@ export async function fetchQuotedContext(
     };
   } catch (err) {
     log.warn('quote', 'normalize-failed', {
-      messageId,
+      messageId: parent.message_id,
       err: err instanceof Error ? err.message : String(err),
     });
     return undefined;
+  }
+}
+
+/**
+ * Fetch a Feishu topic's upstream messages (chronological) so the agent has the
+ * conversation it's being pulled into. Feishu's `im.v1.message.list` with
+ * `container_id_type=thread` returns every message in the topic — including the
+ * root that may never have @-mentioned the bot. Used only on the bot's first
+ * engagement in a topic (an already-engaged topic keeps its history in the
+ * resumed session).
+ *
+ * `excludeIds` drops the triggering messages and any explicit reply-quotes so
+ * they aren't duplicated. Capped at `maxMessages` (keeps the most recent when
+ * the topic is longer). Returns `[]` on any error — context is best-effort.
+ */
+export async function fetchTopicContext(
+  channel: LarkChannel,
+  threadId: string,
+  opts: { maxMessages: number; excludeIds?: Set<string> },
+): Promise<QuotedContext[]> {
+  const collected: ApiMessageItem[] = [];
+  let pageToken: string | undefined;
+  try {
+    do {
+      const res = await channel.rawClient.im.v1.message.list({
+        params: {
+          container_id_type: 'thread',
+          container_id: threadId,
+          sort_type: 'ByCreateTimeAsc',
+          page_size: 50,
+          ...(pageToken ? { page_token: pageToken } : {}),
+        },
+      });
+      const data = (res as {
+        data?: { items?: ApiMessageItem[]; messages?: ApiMessageItem[]; has_more?: boolean; page_token?: string };
+      }).data;
+      const items = data?.items ?? data?.messages ?? [];
+      collected.push(...items);
+      pageToken = data?.has_more ? data.page_token : undefined;
+    } while (pageToken && collected.length < opts.maxMessages * 4);
+  } catch (err) {
+    log.warn('topic', 'context-fetch-failed', {
+      threadId,
+      err: err instanceof Error ? err.message : String(err),
+    });
+    return [];
+  }
+
+  const exclude = opts.excludeIds ?? new Set<string>();
+  const relevant = collected
+    .filter(
+      (m) => m.message_id && !exclude.has(m.message_id) && !(m as { deleted?: boolean }).deleted,
+    )
+    .slice(-opts.maxMessages);
+
+  const out: QuotedContext[] = [];
+  for (const item of relevant) {
+    const fetchSubMessages = async (mid: string): Promise<ApiMessageItem[]> => {
+      const source = mid === item.message_id ? [item] : await fetchSubTreeItems(channel, mid);
+      return source.map(preExpandInteractive);
+    };
+    const quoted = await normalizeItemToQuoted(channel, item, fetchSubMessages);
+    if (quoted) out.push(quoted);
+  }
+  return out;
+}
+
+/**
+ * Fetch a nested sub-message's items for merge_forward expansion. Unlike a
+ * best-effort context fetch, this RE-THROWS on failure: the SDK's
+ * convertMergeForward turns a throw into the `<forwarded_messages
+ * status="fetch_failed"/>` sentinel, so a transient fetch failure surfaces as
+ * fetch_failed instead of being silently flattened to an empty forward — the
+ * same distinction @larksuite/channel makes on the live-event path. Passed into
+ * `normalize` as `fetchSubMessages`.
+ */
+async function fetchSubTreeItems(
+  channel: LarkChannel,
+  messageId: string,
+): Promise<ApiMessageItem[]> {
+  try {
+    return await channel.fetchRawMessage(messageId, { cardContentType: 'user_card_content' });
+  } catch (err) {
+    log.warn('quote', 'sub-fetch-failed', {
+      messageId,
+      err: err instanceof Error ? err.message : String(err),
+    });
+    throw err;
   }
 }
 

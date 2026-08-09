@@ -1,6 +1,7 @@
+import { normalizeAtTags } from './at-tag';
+import { maskEmails } from './mask-email';
 import type { Block, RunState, ToolEntry } from './run-state';
 import { toolHeaderText } from './tool-render';
-import { normalizeAtTags } from './at-tag';
 
 /**
  * Render `RunState` as plain markdown text — used in `messageReply: 'text'`
@@ -31,9 +32,11 @@ export function renderText(state: RunState): string {
     parts.push(footerLine(state.footer));
   }
 
-  // Normalize any `<at id=...>` (card spelling) to `<at user_id=...>` so that
+  // Normalize `<at id=...>` (card spelling) to `<at user_id=...>` so that
   // @-mentions actually render in a post/markdown message body. See at-tag.ts.
-  return normalizeAtTags(parts.join('\n\n'));
+  // Then strip raw emails so the Feishu tenant audit doesn't reject the
+  // message (see mask-email.ts).
+  return maskEmails(normalizeAtTags(parts.join('\n\n')));
 }
 
 function renderBlock(block: Block): string {

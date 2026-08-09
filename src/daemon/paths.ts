@@ -97,3 +97,5 @@ export function daemonStdoutPath(profile: string = paths.profile): string {
 export function daemonStderrPath(profile: string = paths.profile): string {
   return join(daemonLogDir(profile), 'daemon-stderr.log');
 }
+
+export const SUPERVISOR_SERVICE_ID = 'supervisor';

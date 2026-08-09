@@ -61,7 +61,7 @@ WantedBy=default.target
 `;
 }
 
-export async function writeUnit(profile: string): Promise<void> {
+export async function writeUnit(profile: string, _runArgs: string[] = ["run"]): Promise<void> {
   const bridgeEntryPath = process.argv[1];
   if (!bridgeEntryPath) {
     throw new Error('cannot determine bridge entry path (process.argv[1] is empty)');
@@ -153,4 +153,8 @@ export async function waitUntilInactive(profile: string, timeoutMs = 5000): Prom
 
 export async function deleteUnit(profile: string): Promise<void> {
   await rm(systemdUnitPath(profile), { force: true });
+}
+
+export function disable(profile: string): SystemctlResult {
+  return runSystemctl(['--user', 'disable', systemdUnitName(profile)]);
 }

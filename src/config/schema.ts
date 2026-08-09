@@ -68,6 +68,9 @@ export interface SecretsConfig {
  */
 export type MessageReplyMode = 'card' | 'markdown' | 'text';
 
+/** CoT (chain-of-thought) process-message display mode. */
+export type CotMessagesMode = 'off' | 'brief' | 'detailed';
+
 /**
  * Access control settings. Empty lists are fail-closed in the v2 policy:
  * no DM senders, no group chats, and only the runtime owner can administer
@@ -211,6 +214,14 @@ export function getMessageReplyMode(cfg: AppConfig): MessageReplyMode {
 }
 
 /** Resolve the show-tool-calls preference with default fallback. */
+
+/** Resolve the CoT process-messages preference with legacy coerce. */
+export function getCotMessages(cfg: AppConfig): CotMessagesMode {
+  const raw = cfg.preferences?.cotMessages;
+  if (raw === 'brief' || raw === 'simple') return 'brief';
+  if (raw === 'detailed' || raw === 'on') return 'detailed';
+  return 'off';
+}
 export function getShowToolCalls(cfg: AppConfig): boolean {
   return cfg.preferences?.showToolCalls !== false;
 }

@@ -30,6 +30,7 @@ import {
   getAgentStopGraceMs,
   getMaxConcurrentRuns,
   getMessageReplyMode,
+  getCotMessages,
   getRequireMentionInGroup,
   getRunIdleTimeoutMs,
   getShowToolCalls,

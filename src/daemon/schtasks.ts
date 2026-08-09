@@ -87,7 +87,7 @@ function runSchtasks(args: string[]): SchtasksResult {
  * The /TR value is the .cmd wrapper path. Schtasks treats /TR as a command
  * line, so wrapping in quotes keeps spaces in the path intact.
  */
-export async function installTask(profile: string): Promise<SchtasksResult> {
+export async function installTask(profile: string, _runArgs: string[] = ["run"]): Promise<SchtasksResult> {
   await writeLauncherCmd(profile);
   return runSchtasks([
     '/Create',

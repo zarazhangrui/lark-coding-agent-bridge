@@ -201,21 +201,6 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
   // switch can inject a one-time "model changed" note into the next (resumed)
   // prompt. In-memory only: on restart the first run re-seeds silently.
   const lastRunModelByScope = new Map<string, string>();
-  const cotClient = new CotClient({
-    tenant: cfg.accounts.app.tenant,
-    appId: cfg.accounts.app.id,
-    appSecret,
-  });
-  const threadModeOverrideWarnedChats = new Set<string>();
-  const logThreadModeOverride: LogThreadModeOverride = ({ chatId, resolvedMode, threadId }) => {
-    const fields = { chatId, cachedMode: resolvedMode, threadId };
-    if (threadModeOverrideWarnedChats.has(chatId)) {
-      log.info('chat', 'mode-overridden-by-thread', fields);
-      return;
-    }
-    threadModeOverrideWarnedChats.add(chatId);
-    log.warn('chat', 'mode-overridden-by-thread', fields);
-  };
 
   const opts: LarkChannelOptions = {
     appId: cfg.accounts.app.id,

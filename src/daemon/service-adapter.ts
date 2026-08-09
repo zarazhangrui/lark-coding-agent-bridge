@@ -42,6 +42,13 @@ export interface ServiceAdapter {
   /** Stop + disable autostart. Used by `unregister` flow. */
   stopAndDisableAutostart(): ServiceResultLike;
 
+  /**
+   * Turn off autostart on an already-stopped service, without trying to stop
+   * it again. `stop` needs this: a service that is registered but not running
+   * would otherwise keep its login-time autostart and come back by itself.
+   */
+  disableAutostart(): ServiceResultLike;
+
   /** Restart the running service in place. */
   restart(): ServiceResultLike;
 
@@ -61,7 +68,7 @@ export interface ServiceAdapter {
   parseStatus(text: string): { pid?: string; lastExit?: string };
 }
 
-function makeLaunchdAdapter(profile: string): ServiceAdapter {
+function makeLaunchdAdapter(profile: string, runArgs: string[]): ServiceAdapter {
   return {
     platformName: 'launchd (macOS)',
     fileExists: () => launchd.plistExists(profile),
@@ -70,9 +77,15 @@ function makeLaunchdAdapter(profile: string): ServiceAdapter {
     install: () => launchd.writePlist(profile),
     start: () => launchd.bootstrap(profile),
     stop: () => launchd.bootout(profile),
-    // launchd has no separate "disable" — bootout already removes the
-    // service from launchd, which also nukes KeepAlive / RunAtLoad.
-    stopAndDisableAutostart: () => launchd.bootout(profile),
+    // bootout alone is session-scoped: the plist keeps RunAtLoad=true, so
+    // launchd re-bootstraps the job at the next login. Pair it with an
+    // explicit `disable` to actually match systemd's `disable --now`.
+    stopAndDisableAutostart: () => {
+      const out = launchd.bootout(profile);
+      const disabled = launchd.disable(profile);
+      return out.ok ? disabled : out;
+    },
+    disableAutostart: () => launchd.disable(profile),
     restart: () => launchd.kickstart(profile),
     waitUntilStopped: (timeoutMs) => launchd.waitUntilUnloaded(profile, timeoutMs),
     deleteFile: () => launchd.deletePlist(profile),
@@ -84,20 +97,21 @@ function makeLaunchdAdapter(profile: string): ServiceAdapter {
   };
 }
 
-function makeSystemdAdapter(profile: string): ServiceAdapter {
+function makeSystemdAdapter(profile: string, runArgs: string[]): ServiceAdapter {
   return {
     platformName: 'systemd (Linux user)',
     fileExists: () => systemd.unitExists(profile),
     isRunning: () => systemd.isActive(profile),
     servicePath: () => systemdUnitPath(profile),
     install: async () => {
-      await systemd.writeUnit(profile);
+      await systemd.writeUnit(profile, runArgs);
       // systemd needs daemon-reload after any unit file change.
       systemd.daemonReload();
     },
     start: () => systemd.enableAndStart(profile),
     stop: () => systemd.stop(profile),
     stopAndDisableAutostart: () => systemd.disableAndStop(profile),
+    disableAutostart: () => systemd.disable(profile),
     restart: () => systemd.restart(profile),
     waitUntilStopped: (timeoutMs) => systemd.waitUntilInactive(profile, timeoutMs),
     deleteFile: async () => {
@@ -116,7 +130,7 @@ function makeSystemdAdapter(profile: string): ServiceAdapter {
   };
 }
 
-function makeSchtasksAdapter(profile: string): ServiceAdapter {
+function makeSchtasksAdapter(profile: string, runArgs: string[]): ServiceAdapter {
   return {
     platformName: 'Task Scheduler (Windows)',
     fileExists: () => schtasks.isTaskRegistered(profile),
@@ -126,12 +140,18 @@ function makeSchtasksAdapter(profile: string): ServiceAdapter {
     // The task name is what the user would search for in Task Scheduler UI.
     servicePath: () => windowsTaskName(profile),
     install: async () => {
-      const r = await schtasks.installTask(profile);
+      const r = await schtasks.installTask(profile, runArgs);
       if (!r.ok) throw new Error(r.stderr || 'schtasks /Create failed');
     },
-    start: () => schtasks.runTask(profile),
+    // Mirror launchd: a previous `stop` disabled the task, and a disabled
+    // task refuses to run. Re-enable before starting it.
+    start: () => {
+      schtasks.enableTask(profile);
+      return schtasks.runTask(profile);
+    },
     stop: () => schtasks.endTask(profile),
     stopAndDisableAutostart: () => schtasks.endAndDisable(profile),
+    disableAutostart: () => schtasks.disableTask(profile),
     // schtasks has no native /Restart — adapter awaits end+wait+run.
     restart: () => schtasks.restartTask(profile),
     waitUntilStopped: (timeoutMs) => schtasks.waitUntilStopped(profile, timeoutMs),
@@ -153,10 +173,18 @@ function makeSchtasksAdapter(profile: string): ServiceAdapter {
 /**
  * Return the right adapter for the current platform, or null if this OS
  * isn't supported. Callers should null-check and surface a friendly error.
+ *
+ * `runArgs` are the CLI args the daemon launches with (e.g.
+ * `['run', '--profile', 'claude']` for a classic per-profile service, or
+ * `['run', '--web-ui']` for the supervisor service). They only matter for
+ * `install()`; stop/status/etc. ignore them.
  */
-export function getServiceAdapter(profile = 'claude'): ServiceAdapter | null {
-  if (process.platform === 'darwin') return makeLaunchdAdapter(profile);
-  if (process.platform === 'linux') return makeSystemdAdapter(profile);
-  if (process.platform === 'win32') return makeSchtasksAdapter(profile);
+export function getServiceAdapter(
+  profile = 'claude',
+  runArgs: string[] = ['run'],
+): ServiceAdapter | null {
+  if (process.platform === 'darwin') return makeLaunchdAdapter(profile, runArgs);
+  if (process.platform === 'linux') return makeSystemdAdapter(profile, runArgs);
+  if (process.platform === 'win32') return makeSchtasksAdapter(profile, runArgs);
   return null;
 }

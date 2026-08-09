@@ -161,3 +161,8 @@ export function describeService(profile: string): string {
 export async function deletePlist(profile: string): Promise<void> {
   await rm(launchAgentPlistPath(profile), { force: true });
 }
+
+/** Disable autostart for a launchd service (best-effort, idempotent). */
+export function disable(profile: string): LaunchctlResult {
+  return runLaunchctl(['disable', launchAgentLabel(profile)]);
+}
