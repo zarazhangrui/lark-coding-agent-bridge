@@ -22,3 +22,4 @@ logs/
 scripts/
 CHANGELOG.md
 tests-smoke/
+dist.bak-pi-e2e/
