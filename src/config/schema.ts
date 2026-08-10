@@ -107,6 +107,13 @@ export interface AppPreferences {
    */
   showToolCalls?: boolean;
   /**
+   * Show a verbose event log panel in the run card — every AgentEvent
+   * (system / usage / tool_use / text / tool_result / done) rendered as
+   * a collapsible entry. Default false. Useful for debugging agent
+   * behavior and protocol-level inspection.
+   */
+  showEventLog?: boolean;
+  /**
    * Model the underlying agent runs with, forwarded as `--model`. The catalog
    * of valid values is agent-kind specific — see `agent/models.ts`. `undefined`
    * or the `'default'` sentinel means "don't pass `--model`" so the agent
@@ -224,6 +231,9 @@ export function getCotMessages(cfg: AppConfig): CotMessagesMode {
 }
 export function getShowToolCalls(cfg: AppConfig): boolean {
   return cfg.preferences?.showToolCalls !== false;
+}
+export function getShowEventLog(cfg: AppConfig): boolean {
+  return cfg.preferences?.showEventLog === true;
 }
 
 /** Resolve the max-concurrent-runs preference with default + sanity clamp. */

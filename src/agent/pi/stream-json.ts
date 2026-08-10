@@ -68,6 +68,16 @@ export class PiJsonTranslator {
       case 'turn_start':
       case 'turn_end':
       case 'message_start':
+      case 'queue_update':
+        // RPC-only: internal queue state change (e.g. steer enqueued).
+        return [];
+      case 'response':
+        // RPC ack for a command we sent — consumed by RpcConnection, not
+        // an AgentSessionEvent. Silently drop in the translator so the
+        // shared event-processing path works for both spawn and RPC modes.
+        return [];
+      case 'extension_ui_request':
+        // RPC-only: extension UI dialog (auto-responded by RpcConnection).
         return [];
       default:
         this.drift.unknownEvents++;

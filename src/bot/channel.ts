@@ -19,6 +19,7 @@ import { CallbackAuth } from '../card/callback-auth';
 import { CallbackNonceStore } from '../card/callback-store';
 import { renderCard } from '../card/run-renderer';
 import {
+  captureEvent,
   finalizeIfRunning,
   initialState,
   markIdleTimeout,
@@ -35,6 +36,7 @@ import {
   getMessageReplyMode,
   getRequireMentionInGroup,
   getRunIdleTimeoutMs,
+  getShowEventLog,
   getShowToolCalls,
 } from '../config/schema';
 import { resolveAppSecret } from '../config/secret-resolver';
@@ -591,6 +593,23 @@ async function intakeMessage(deps: IntakeDeps): Promise<void> {
     log.info('intake', 'command', { scope, droppedPending: dropped.length });
     return;
   }
+  // Steer fast-path: if a run is active for this scope AND the adapter
+  // supports steer (pi RPC mode), inject the message into the running
+  // turn instead of queuing it for the next run. Text-only messages only
+  // — messages with resources still go through pending (they need media
+  // resolution + batch prompt construction for the next run).
+  const activeHandle = activeRuns.get(scope);
+  if (activeHandle && typeof activeHandle.run.steer === 'function' && msg.resources.length === 0) {
+    try {
+      await activeHandle.run.steer(msg.content);
+      log.info('intake', 'steered', { scope, preview });
+      return;
+    } catch (err) {
+      // Steer failed (run ended, process died, etc.) — fall through to
+      // pending so the message isn't lost.
+      log.warn('intake', 'steer-failed', { scope, err: String(err) });
+    }
+  }
 
   const size = pending.push(scope, msg);
   log.info('intake', 'queued', { scope, queueSize: size, debounceMs: DEBOUNCE_MS });
@@ -849,6 +868,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
         eventStream,
         scope,
         idleTimeoutMs,
+        getShowEventLog(controls.cfg),
         recordSession,
         async (state) => {
           latestState = state;
@@ -894,6 +914,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
         eventStream,
         scope,
         idleTimeoutMs,
+        getShowEventLog(controls.cfg),
         recordSession,
         async (state) => {
           latestState = state;
@@ -935,6 +956,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
         eventStream,
         scope,
         idleTimeoutMs,
+        getShowEventLog(controls.cfg),
         recordSession,
         async () => {},
       );
@@ -961,6 +983,7 @@ async function processAgentStream(
   events: AsyncIterable<AgentEvent>,
   scope: string,
   idleTimeoutMs: number | undefined,
+  captureEventLog: boolean,
   recordSession: (event: AgentEvent) => void,
   flush: (state: RunState) => Promise<void>,
 ): Promise<RunState> {
@@ -1017,7 +1040,9 @@ async function processAgentStream(
         inFlightTools.delete(evt.id);
         log.info('agent', 'tool-done', { inFlight: inFlightTools.size });
       }
-      armOrPauseIdle();
+      if (captureEventLog) {
+        state = { ...state, eventLog: captureEvent(state.eventLog, evt, Date.now()) };
+      }
 
       if (evt.type === 'system') {
         recordSession(evt);

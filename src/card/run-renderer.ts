@@ -1,5 +1,5 @@
 import { deepMaskEmails } from './mask-email';
-import type { Block, FooterStatus, RunState, ToolEntry } from './run-state';
+import type { Block, EventLogEntry, FooterStatus, RunState, ToolEntry } from './run-state';
 import { toolBodyMd, toolHeaderText } from './tool-render';
 
 const REASONING_MAX = 1500;
@@ -46,7 +46,9 @@ export function renderCard(state: RunState, options: RunCardRenderOptions = {}):
   } else if (state.terminal === 'done' && elements.length === 0) {
     elements.push(noteMd('_（未返回内容）_'));
   }
-
+  if (state.eventLog.length > 0) {
+    elements.push(eventLogPanel(state.eventLog, state.terminal !== 'running'));
+  }
   if (state.terminal === 'running') {
     if (state.footer) elements.push(footerStatus(state.footer));
     elements.push(stopButton(options));
@@ -59,6 +61,15 @@ export function renderCard(state: RunState, options: RunCardRenderOptions = {}):
     config: {
       streaming_mode: state.terminal === 'running',
       summary: { content: summaryText(state) },
+      ...(state.terminal === 'running'
+        ? {
+            streaming_config: {
+              print_frequency_ms: { default: 50 },
+              print_step: { default: 2 },
+              print_strategy: 'fast' as const,
+            },
+          }
+        : {}),
     },
     body: { elements },
   });
@@ -111,7 +122,7 @@ function toolPanel(tool: ToolEntry, expanded: boolean): object {
   return collapsiblePanel({
     title: toolHeaderText(tool),
     expanded,
-    border: tool.status === 'error' ? 'red' : 'grey',
+    border: tool.status === 'error' ? 'red' : tool.status === 'running' ? 'blue' : 'grey',
     body: toolBodyMd(tool) || '_无输出_',
   });
 }
@@ -216,4 +227,40 @@ function summaryText(state: RunState): string {
 
 function truncate(s: string, max: number): string {
   return s.length > max ? `${s.slice(0, max)}…` : s;
+}
+
+export const EVENT_ICON: Record<string, string> = {
+  system: '🔧',
+  tool_use: '🧰',
+  tool_result: '↩️',
+  text: '💬',
+  thinking: '🧠',
+  usage: '📊',
+  done: '✅',
+  error: '❌',
+};
+
+function eventLogPanel(log: EventLogEntry[], finalized: boolean): object {
+  const title = `📋 **事件流**（${log.length}）`;
+  // Run latest event visible (expanded); terminal → all collapsed.
+  const lines = log.map((entry, i) => {
+    const icon = EVENT_ICON[entry.type] ?? '⚪';
+    const isLatest = i === log.length - 1;
+    const expanded = !finalized && isLatest;
+    const prefix = expanded ? '▸' : '▹';
+    let line = `${prefix} ${icon} \`${entry.type}\` ${truncate(entry.preview, 120)}`;
+    if ('detail' in entry && entry.detail) {
+      line += `\n   \`\`\`\n${truncate(entry.detail, 800)}\n   \`\`\``;
+    }
+    return line;
+  });
+  return {
+    tag: 'collapsible_panel',
+    expanded: false,
+    header: panelHeader(title),
+    border: { color: 'grey', corner_radius: '5px' },
+    vertical_spacing: '4px',
+    padding: '4px 8px 4px 8px',
+    elements: [{ tag: 'markdown', content: lines.join('\n'), text_size: 'notation' }],
+  };
 }

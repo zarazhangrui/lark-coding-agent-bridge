@@ -12,6 +12,7 @@ export interface ConfigFormOpts {
   model: string;
   messageReply: MessageReplyMode;
   showToolCalls: boolean;
+  showEventLog: boolean;
   maxConcurrentRuns: number;
   /** 0 means "disabled". */
   runIdleTimeoutMinutes: number;
@@ -195,6 +196,22 @@ export function configFormCard(opts: ConfigFormOpts): object {
             {
               tag: 'markdown',
               content:
+                '\n**事件流面板**\n' +
+                '_显示:在卡片底部展示 AgentEvent 流(每个事件一条,默认折叠)_\n' +
+                '_隐藏(默认):只看文本/工具/思考结果_',
+            },
+            {
+              tag: 'select_static',
+              name: 'show_event_log',
+              initial_option: opts.showEventLog ? 'show' : 'hide',
+              options: [
+                { text: { tag: 'plain_text', content: '显示' }, value: 'show' },
+                { text: { tag: 'plain_text', content: '隐藏(默认)' }, value: 'hide' },
+              ],
+            },
+            {
+              tag: 'markdown',
+              content:
                 '\n**并发上限**\n' +
                 '_全局同时运行的 agent 进程数(主要影响话题群多话题并行场景)_\n' +
                 '_默认 10,范围 1-50。超出的请求会 FIFO 排队_',
@@ -318,6 +335,7 @@ export function configSavedCard(opts: ConfigFormOpts): object {
             `**模型**:\`${modelLabel(opts.agentKind, opts.model)}\`\n` +
             `**消息回复方式**:${replyLabel}\n` +
             `**工具调用显示**:\`${opts.showToolCalls ? 'show' : 'hide'}\`\n` +
+            `**事件流面板**:\`${opts.showEventLog ? 'show' : 'hide'}\`\n` +
             `**并发上限**:\`${opts.maxConcurrentRuns}\`\n` +
             `**run 探活**:\`${opts.runIdleTimeoutMinutes > 0 ? `${opts.runIdleTimeoutMinutes} 分钟` : '关闭'}\`\n` +
             `**群里需要 @ bot**:\`${opts.requireMentionInGroup ? '是' : '否'}\`\n\n` +

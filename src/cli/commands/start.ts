@@ -5,6 +5,7 @@ import pkg from '../../../package.json';
 import { ClaudeAdapter } from '../../agent/claude/adapter';
 import { CodexAdapter } from '../../agent/codex/adapter';
 import { PiAdapter } from '../../agent/pi/adapter';
+import { PiRpcAdapter } from '../../agent/pi/rpc-adapter';
 import {
   AgentPreflightError,
   formatAgentPreflightDiagnostic,
@@ -440,6 +441,17 @@ export function createRuntimeAgent(
     const pi = profileConfig.pi;
     if (!pi?.binaryPath) {
       throw new Error('pi profile requires pi.binaryPath');
+    }
+    if (pi.mode === 'rpc') {
+      return new PiRpcAdapter({
+        binary: pi.binaryPath,
+        profileStateDir: appPaths.profileDir,
+        ...(pi.piAgentDir ? { piAgentDir: pi.piAgentDir } : {}),
+        inheritPiAgentDir: pi.inheritPiAgentDir === true,
+        ...(pi.gatewayBaseUrl ? { gatewayBaseUrl: pi.gatewayBaseUrl } : {}),
+        ...(pi.gatewayApiKeyEnv ? { gatewayApiKeyEnv: pi.gatewayApiKeyEnv } : {}),
+        larkChannel,
+      });
     }
     return new PiAdapter({
       binary: pi.binaryPath,

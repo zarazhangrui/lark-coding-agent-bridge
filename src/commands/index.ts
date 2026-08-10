@@ -33,6 +33,7 @@ import {
   getCotMessages,
   getRequireMentionInGroup,
   getRunIdleTimeoutMs,
+  getShowEventLog,
   getShowToolCalls,
   secretKeyForApp,
 } from '../config/schema';
@@ -1764,6 +1765,7 @@ async function showConfigForm(ctx: CommandContext): Promise<void> {
     ),
     messageReply: getMessageReplyMode(ctx.controls.cfg),
     showToolCalls: getShowToolCalls(ctx.controls.cfg),
+    showEventLog: getShowEventLog(ctx.controls.cfg),
     maxConcurrentRuns: getMaxConcurrentRuns(ctx.controls.cfg),
     runIdleTimeoutMinutes: ms ? Math.round(ms / 60_000) : 0,
     requireMentionInGroup: getRequireMentionInGroup(ctx.controls.cfg),
@@ -1814,6 +1816,8 @@ async function submitConfig(ctx: CommandContext): Promise<void> {
       : 'card';
   const rawTools = String(fv.show_tool_calls ?? '').trim();
   const showToolCalls = rawTools !== 'hide';
+  const rawEventLog = String(fv.show_event_log ?? '').trim();
+  const showEventLog = rawEventLog === 'show';
   // Parse the model picker. Unexpected / empty values keep the current
   // selection. Store `undefined` for the "default" sentinel to keep config
   // tidy (resolveModelArg treats both the same way).
@@ -1910,6 +1914,7 @@ async function submitConfig(ctx: CommandContext): Promise<void> {
       // explicitly picks any option gets out of the legacy-coerce path.
       messageReplyMigrated: true,
       showToolCalls,
+      showEventLog,
       maxConcurrentRuns,
       runIdleTimeoutMinutes,
       requireMentionInGroup,
@@ -1955,6 +1960,7 @@ async function submitConfig(ctx: CommandContext): Promise<void> {
       mode,
       messageReply,
       showToolCalls,
+      showEventLog,
       maxConcurrentRuns,
       runIdleTimeoutMinutes,
       requireMentionInGroup,
@@ -1973,6 +1979,7 @@ async function submitConfig(ctx: CommandContext): Promise<void> {
         model: modelSelection,
         messageReply,
         showToolCalls,
+        showEventLog,
         maxConcurrentRuns,
         runIdleTimeoutMinutes,
         requireMentionInGroup,

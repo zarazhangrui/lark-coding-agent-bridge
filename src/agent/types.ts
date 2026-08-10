@@ -52,6 +52,13 @@ export interface AgentRun {
   readonly events: AsyncIterable<AgentEvent>;
   stop(): Promise<void>;
   /**
+   * Steer a running turn: inject a message into the agent's current
+   * response without ending it. Only adapters backed by a persistent
+   * process (e.g. pi RPC mode) implement this; spawn-per-run adapters
+   * omit it and messages queue until the next run instead.
+   */
+  steer?(message: string): Promise<void>;
+  /**
    * Wait up to `timeoutMs` for the agent process to exit on its own.
    * Resolves true if it exited within the window, false if the timer
    * fired first (caller usually wants to fall back to stop()).

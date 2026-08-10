@@ -14,7 +14,18 @@ export type Block =
   | { kind: 'text'; content: string; streaming: boolean }
   | { kind: 'tool'; tool: ToolEntry };
 
+export type EventLogEntry =
+  | { type: 'text'; ts: number; preview: string }
+  | { type: 'thinking'; ts: number; preview: string }
+  | { type: 'tool_use'; ts: number; preview: string; detail: string }
+  | { type: 'tool_result'; ts: number; preview: string; detail: string }
+  | { type: 'system'; ts: number; preview: string; detail: string }
+  | { type: 'usage'; ts: number; preview: string; detail: string }
+  | { type: 'done'; ts: number; preview: string }
+  | { type: 'error'; ts: number; preview: string };
+
 export type FooterStatus = 'thinking' | 'tool_running' | 'streaming' | null;
+
 export type Terminal = 'running' | 'done' | 'interrupted' | 'error' | 'idle_timeout';
 
 export interface RunState {
@@ -26,6 +37,9 @@ export interface RunState {
   /** Set when terminal === 'idle_timeout' — how long claude was idle before
    * the watchdog gave up (so the message can say "N 分钟无响应"). */
   idleTimeoutMinutes?: number;
+  /** Verbose event log — raw AgentEvent stream, capped at MAX_EVENT_LOG entries.
+   *  Only populated when showEventLog is enabled. */
+  eventLog: EventLogEntry[];
 }
 
 export const initialState: RunState = {
@@ -33,6 +47,7 @@ export const initialState: RunState = {
   reasoning: { content: '', active: false },
   footer: 'thinking',
   terminal: 'running',
+  eventLog: [],
 };
 
 function closeStreamingText(blocks: Block[]): Block[] {
@@ -166,4 +181,92 @@ export function finalizeIfRunning(state: RunState): RunState {
     terminal: 'done',
     footer: null,
   };
+}
+
+/** Maximum events kept in the verbose event log. Older entries are dropped. */
+export const MAX_EVENT_LOG = 200;
+
+/**
+ * Capture an AgentEvent into a compact EventLogEntry.
+ * Called for every event when verbose mode is on — before reduce().
+ * Consecutive text/thinking deltas are coalesced into the last entry
+ * to avoid flooding the log with per-token fragments.
+ */
+export function captureEvent(
+  log: EventLogEntry[],
+  evt: AgentEvent,
+  now: number,
+): EventLogEntry[] {
+  const last = log[log.length - 1];
+
+  // Coalesce consecutive text deltas.
+  if (evt.type === 'text' && last?.type === 'text') {
+    const merged = last.preview + evt.delta;
+    return [...log.slice(0, -1), { type: 'text', ts: last.ts, preview: truncate(merged, 500) }];
+  }
+  // Coalesce consecutive thinking deltas.
+  if (evt.type === 'thinking' && last?.type === 'thinking') {
+    const merged = last.preview + evt.delta;
+    return [...log.slice(0, -1), { type: 'thinking', ts: last.ts, preview: truncate(merged, 500) }];
+  }
+
+  const entry = toEntry(evt, now);
+  const next = [...log, entry];
+  return next.length > MAX_EVENT_LOG ? next.slice(-MAX_EVENT_LOG) : next;
+}
+
+function toEntry(evt: AgentEvent, now: number): EventLogEntry {
+  switch (evt.type) {
+    case 'text':
+      return { type: 'text', ts: now, preview: truncate(evt.delta, 500) };
+    case 'thinking':
+      return { type: 'thinking', ts: now, preview: truncate(evt.delta, 500) };
+    case 'tool_use':
+      return {
+        type: 'tool_use',
+        ts: now,
+        preview: `${evt.name}(${summarizeInput(evt.input)})`,
+        detail: truncate(JSON.stringify(evt.input), 2000),
+      };
+    case 'tool_result':
+      return {
+        type: 'tool_result',
+        ts: now,
+        preview: truncate(evt.output, 100),
+        detail: truncate(evt.output, 2000),
+      };
+    case 'system':
+      return {
+        type: 'system',
+        ts: now,
+        preview: `session=${truncate(evt.sessionId ?? '?', 20)}`,
+        detail: truncate(JSON.stringify({ sessionId: evt.sessionId, model: evt.model, cwd: evt.cwd }), 2000),
+      };
+    case 'usage':
+      return {
+        type: 'usage',
+        ts: now,
+        preview: `in=${evt.inputTokens ?? '?'} out=${evt.outputTokens ?? '?'} cost=$${evt.costUsd ?? 0}`,
+        detail: truncate(JSON.stringify(evt), 2000),
+      };
+    case 'done':
+      return { type: 'done', ts: now, preview: evt.terminationReason };
+    case 'error':
+      return { type: 'error', ts: now, preview: truncate(evt.message, 200) };
+  }
+}
+
+function summarizeInput(input: unknown): string {
+  if (typeof input === 'string') return truncate(input, 80);
+  if (input && typeof input === 'object') {
+    const obj = input as Record<string, unknown>;
+    // Common tool inputs: command, path, pattern, prompt
+    const cmd = obj.command ?? obj.path ?? obj.pattern ?? obj.prompt ?? obj.content;
+    if (typeof cmd === 'string') return truncate(cmd, 80);
+  }
+  return truncate(JSON.stringify(input), 80);
+}
+
+function truncate(s: string, max: number): string {
+  return s.length > max ? s.slice(0, max) + '…' : s;
 }

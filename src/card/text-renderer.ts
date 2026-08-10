@@ -1,4 +1,5 @@
 import { normalizeAtTags } from './at-tag';
+import { EVENT_ICON } from './run-renderer';
 import { maskEmails } from './mask-email';
 import type { Block, RunState, ToolEntry } from './run-state';
 import { toolHeaderText } from './tool-render';
@@ -36,6 +37,14 @@ export function renderText(state: RunState): string {
   // @-mentions actually render in a post/markdown message body. See at-tag.ts.
   // Then strip raw emails so the Feishu tenant audit doesn't reject the
   // message (see mask-email.ts).
+  if (state.eventLog.length > 0) {
+    parts.push('---');
+    parts.push('📋 **事件流**：');
+    for (const entry of state.eventLog) {
+      const icon = EVENT_ICON[entry.type] ?? '⚪';
+      parts.push(`- ${icon} \`${entry.type}\` ${entry.preview}`);
+    }
+  }
   return maskEmails(normalizeAtTags(parts.join('\n\n')));
 }
 
