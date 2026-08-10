@@ -20,11 +20,9 @@ export interface ProtocolDriftState {
  * - message_end                 -> usage (synthesized from message.usage; decision C)
  * - tool_execution_start        -> tool_use  (authoritative; toolcall_end is dropped
  *                                   to avoid duplicate ids — execution boundary wins)
- * - tool_execution_update       -> text delta prefixed `[tool:NAME] ` (decision B;
- *                                   v1 compromise: surfaces bash live tail without
- *                                   extending the AgentEvent union. Downstream must
- *                                   recognize the prefix rather than render it as
- *                                   assistant speech.)
+ * - tool_execution_update       -> tool_progress (live output tail routed into the
+ *                                   running tool's output field, rendered inside its
+ *                                   panel — not as standalone text)
  * - tool_execution_end          -> tool_result
  * - agent_end                   -> done
  * - agent_start, turn_*, message_start -> dropped (lifecycle markers)
@@ -68,6 +66,16 @@ export class PiJsonTranslator {
       case 'turn_start':
       case 'turn_end':
       case 'message_start':
+      case 'queue_update':
+        // RPC-only: internal queue state change (e.g. steer enqueued).
+        return [];
+      case 'response':
+        // RPC ack for a command we sent — consumed by RpcConnection, not
+        // an AgentSessionEvent. Silently drop in the translator so the
+        // shared event-processing path works for both spawn and RPC modes.
+        return [];
+      case 'extension_ui_request':
+        // RPC-only: extension UI dialog (auto-responded by RpcConnection).
         return [];
       default:
         this.drift.unknownEvents++;
@@ -168,11 +176,11 @@ export class PiJsonTranslator {
   }
 
   private translateToolExecutionUpdate(raw: Record<string, unknown>): AgentEvent[] {
-    // Decision B: degrade the live tool-output tail to a tagged text delta.
     const text = coerceAnyOutput(raw.partialResult);
     if (!text) return [];
-    const toolName = stringValue(raw.toolName) ?? 'tool';
-    return [{ type: 'text', delta: `[tool:${toolName}] ${text}\n` }];
+    const id = stringValue(raw.toolCallId);
+    if (!id) return [];
+    return [{ type: 'tool_progress', id, delta: text }];
   }
 
   private translateToolExecutionEnd(raw: Record<string, unknown>): AgentEvent[] {

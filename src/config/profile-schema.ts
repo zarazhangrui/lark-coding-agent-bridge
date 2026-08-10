@@ -53,6 +53,12 @@ export interface PiConfig {
   inheritPiAgentDir?: boolean;
   gatewayBaseUrl?: string;
   gatewayApiKeyEnv?: string;
+  /**
+   * Process model: 'spawn' (default, spawn-per-run with --mode json) or
+   * 'rpc' (persistent --mode rpc process with steer support). When 'rpc',
+   * the bridge uses PiRpcAdapter which supports mid-turn message injection.
+   */
+  mode?: 'spawn' | 'rpc';
 }
 
 export interface AttachmentConfig {
@@ -347,6 +353,7 @@ function normalizePi(input: PiConfig & { flags?: unknown }): PiConfig {
     inheritPiAgentDir: input.inheritPiAgentDir !== false,
     ...(typeof input.gatewayBaseUrl === 'string' ? { gatewayBaseUrl: input.gatewayBaseUrl } : {}),
     ...(typeof input.gatewayApiKeyEnv === 'string' ? { gatewayApiKeyEnv: input.gatewayApiKeyEnv } : {}),
+    ...(input.mode === 'spawn' || input.mode === 'rpc' ? { mode: input.mode } : {}),
   };
   return pi;
 }
