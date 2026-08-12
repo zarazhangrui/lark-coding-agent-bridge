@@ -13,6 +13,7 @@ import { describeMeetingError } from './manager';
 import type { MeetingSession } from './session';
 import type { MeetingSummaryTarget } from '../config/profile-schema';
 import type { ChatEvent, MeetingEvent } from './types';
+import { isLumosOwnerAuthorized } from '../policy/lumos-owner';
 
 /**
  * Turns in-meeting content into agent runs.
@@ -91,6 +92,17 @@ export function attachMeetingAgent(deps: MeetingAgentDeps): void {
     const chat = event as ChatEvent;
     // message_type 3 is an in-meeting reaction, not text — never a question.
     if (chat.messageType === 3) return;
+    // Lumos meeting turns are owner-only. Check the normalized sender id
+    // before matching trigger text, inspecting transcript context, handling
+    // stop commands, or starting/delivering an agent run.
+    if (!isLumosOwnerAuthorized(controls.profile, chat.from.id)) {
+      log.info('meeting', 'chat-skip', {
+        meetingId: session.meetingId,
+        reason: 'lumos-owner-only',
+        sender: chat.from.id,
+      });
+      return;
+    }
     // Read the bot name live: it is only known after connect and can change.
     const prefixes = triggerPrefixes(
       controls.profileConfig.meeting.trigger,
@@ -220,6 +232,25 @@ export function buildMeetingPrompt(input: MeetingPromptInput): string {
  */
 export async function summarizeEndedMeeting(deps: MeetingAgentDeps): Promise<void> {
   const { session, controls } = deps;
+  if (controls.profile === 'lumos') {
+    // An ended-event has no current Wan message. Static owner configuration is
+    // identity, not authorization, so Lumos never auto-starts an agent turn.
+    log.info('meeting', 'summary-skipped', {
+      meetingId: session.meetingId,
+      reason: 'current-owner-message-required',
+    });
+    return;
+  }
+  // A Lumos summary starts an agent run and sends its result after the meeting
+  // has ended. There is no chat sender at this point, so require the resolved
+  // owner identity before reading transcript context or invoking the agent.
+  if (!isLumosOwnerAuthorized(controls.profile, controls.botOwnerId)) {
+    log.info('meeting', 'summary-skipped', {
+      meetingId: session.meetingId,
+      reason: 'lumos-owner-only',
+    });
+    return;
+  }
   if (!controls.profileConfig.meeting.summaryOnEnd) return;
 
   const transcript = session.recentTranscript();
@@ -312,6 +343,10 @@ async function runMeetingAgent(
     // meeting"; the per-chat allowlist doesn't apply here.
     access: { ok: true, reason: 'allowed-chat' },
     capability,
+    // Transcript lines are multi-party external context. Meeting answers and
+    // automatic summaries therefore remain read-only even when Wan triggered
+    // the question.
+    untrustedContext: true,
     profileConfig: controls.profileConfig,
     sessions: deps.sessions,
     ...(deps.sessionCatalog ? { sessionCatalog: deps.sessionCatalog } : {}),

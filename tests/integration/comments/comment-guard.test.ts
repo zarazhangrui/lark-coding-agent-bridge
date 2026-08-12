@@ -52,6 +52,34 @@ describe('comment guard', () => {
     expect(h.channel.replies).toEqual(['answer']);
   });
 
+  it('blocks a non-owner Lumos comment before resolving or fetching its document', async () => {
+    const h = await createHarness({
+      profile: 'lumos',
+      comments: {},
+      allowedUsers: [],
+    });
+
+    await handleCommentMention(h.deps(event({ operator: { openId: 'ou-outsider' } })));
+
+    expect(h.channel.calls).toEqual([]);
+    expect(h.agent.runOptions).toEqual([]);
+  });
+
+  it('keeps the Lumos comment path available to Wan', async () => {
+    const h = await createHarness({
+      profile: 'lumos',
+      comments: {},
+      allowedUsers: [],
+    });
+
+    await handleCommentMention(
+      h.deps(event({ operator: { openId: 'ou_9c50b535153004480e6c305960c4a570' } })),
+    );
+
+    expect(h.channel.calls).toContain('fileComment.get');
+    expect(h.agent.runOptions).toHaveLength(1);
+  });
+
   it('skips unmentioned, unsupported, and self-reply comments before remote fetch', async () => {
     const h = await createHarness({
       botOpenId: 'ou-bot',
@@ -92,6 +120,7 @@ describe('comment guard', () => {
 });
 
 async function createHarness(options: {
+  profile?: string;
   comments: unknown;
   allowedUsers: string[];
   botOpenId?: string;
@@ -191,7 +220,7 @@ async function createHarness(options: {
       activeRuns,
       executor,
       controls: {
-        profile: 'claude',
+        profile: options.profile ?? 'claude',
         profileConfig,
         botOwnerId: 'ou-owner',
         ownerRefreshState: 'ok',

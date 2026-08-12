@@ -1,11 +1,17 @@
 import { createInterface } from 'node:readline';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import type { Readable, Writable } from 'node:stream';
 import { join } from 'node:path';
-import type { SandboxMode } from '../../config/profile-schema';
+import type { CodexTransport, SandboxMode } from '../../config/profile-schema';
 import { log } from '../../core/logger';
 import { mergeProcessEnv, spawnProcess, type SpawnedProcessByStdio } from '../../platform/spawn';
 import { SpawnFailed } from '../../runtime/errors';
-import { prefixBridgeSystemPrompt } from '../bridge-system-prompt';
+import {
+  buildBridgeSystemPrompt,
+  prefixBridgeSystemPrompt,
+  splitBridgePromptForAppServer,
+} from '../bridge-system-prompt';
 import { buildLarkChannelEnv, type LarkChannelEnvContext } from '../lark-channel-env';
 import { checkAgentAvailability, type AgentAvailability } from '../preflight';
 import type {
@@ -16,10 +22,12 @@ import type {
   AgentRunOptions,
 } from '../types';
 import { buildCodexArgs } from './argv';
+import { CodexAppServerClient } from './app-server-client';
 import { CodexJsonlTranslator, type CodexFinishReason } from './jsonl';
 
 export interface CodexAdapterOptions {
   binary: string;
+  transport?: CodexTransport;
   profileStateDir: string;
   codexHome?: string;
   inheritCodexHome?: boolean;
@@ -34,7 +42,7 @@ type CodexChild = SpawnedProcessByStdio<Writable, Readable, Readable>;
 
 export class CodexAdapter implements AgentAdapter {
   readonly id = 'codex';
-  readonly displayName = 'Codex CLI';
+  readonly displayName: string;
 
   private readonly binary: string;
   private readonly profileStateDir: string;
@@ -45,9 +53,14 @@ export class CodexAdapter implements AgentAdapter {
   private readonly sandbox: SandboxMode;
   private readonly defaultStopGraceMs: number;
   private readonly larkChannel: LarkChannelEnvContext | undefined;
+  private readonly transport: CodexTransport;
+  private readonly appServer: CodexAppServerClient | undefined;
+  private appServerProtocolCheck: Promise<void> | undefined;
   private botIdentity: AgentBotIdentity | undefined;
 
   constructor(opts: CodexAdapterOptions) {
+    this.transport = opts.transport ?? 'exec';
+    this.displayName = this.transport === 'app-server' ? 'Codex App Server' : 'Codex CLI';
     this.binary = opts.binary;
     this.profileStateDir = opts.profileStateDir;
     this.codexHome = opts.codexHome;
@@ -57,6 +70,21 @@ export class CodexAdapter implements AgentAdapter {
     this.sandbox = opts.sandbox ?? 'danger-full-access';
     this.defaultStopGraceMs = opts.stopGraceMs ?? 5000;
     this.larkChannel = opts.larkChannel;
+    if (this.transport === 'app-server') {
+      if (this.ignoreUserConfig || this.ignoreRules) {
+        throw new Error(
+          'codex app-server transport requires ignoreUserConfig=false and ignoreRules=false',
+        );
+      }
+      this.appServer = new CodexAppServerClient({
+        binary: this.binary,
+        profileStateDir: this.profileStateDir,
+        ...(this.codexHome ? { codexHome: this.codexHome } : {}),
+        inheritCodexHome: this.inheritCodexHome,
+        stopGraceMs: this.defaultStopGraceMs,
+        ...(this.larkChannel ? { larkChannel: this.larkChannel } : {}),
+      });
+    }
   }
 
   setBotIdentity(identity: AgentBotIdentity): void {
@@ -77,6 +105,10 @@ export class CodexAdapter implements AgentAdapter {
   }
 
   async prepareRun(): Promise<void> {
+    if (this.appServer) {
+      await this.appServer.prepare();
+      return;
+    }
     const availability = await this.checkAvailability();
     if (!availability.ok) {
       throw new SpawnFailed(
@@ -88,9 +120,50 @@ export class CodexAdapter implements AgentAdapter {
     }
   }
 
+  async warmup(cwd: string): Promise<void> {
+    if (!this.appServer) return;
+    const availability = await this.checkAvailability();
+    if (!availability.ok) {
+      throw new SpawnFailed(
+        'codex binary check failed',
+        availability.error,
+        availability.diagnostic.code,
+        availability.diagnostic,
+      );
+    }
+    this.appServerProtocolCheck ??= verifyAppServerProtocol(this.binary);
+    await this.appServerProtocolCheck;
+    await this.appServer.prime(cwd, buildBridgeSystemPrompt(this.botIdentity));
+  }
+
+  async shutdown(): Promise<void> {
+    await this.appServer?.shutdown();
+  }
+
   run(opts: AgentRunOptions): AgentRun {
     if (!opts.cwd) {
       throw new Error('cwd is required for CodexAdapter.run');
+    }
+
+    if (this.appServer) {
+      const appServerPrompt = splitBridgePromptForAppServer(opts.prompt);
+      return this.appServer.startRun({
+        runId: opts.runId,
+        // App Server has a real developer-instruction channel. Keep bridge
+        // security/identity rules there and pass Feishu history through the
+        // protocol's explicitly untrusted context boundary.
+        prompt: appServerPrompt.prompt,
+        ...(Object.keys(appServerPrompt.additionalContext).length > 0
+          ? { additionalContext: appServerPrompt.additionalContext }
+          : {}),
+        developerInstructions: buildBridgeSystemPrompt(this.botIdentity),
+        cwd: opts.cwd,
+        ...(opts.threadId ? { threadId: opts.threadId } : {}),
+        ...(opts.model ? { model: opts.model } : {}),
+        ...(opts.images ? { images: opts.images } : {}),
+        sandbox: opts.sandbox ?? this.sandbox,
+        ...(opts.stopGraceMs !== undefined ? { stopGraceMs: opts.stopGraceMs } : {}),
+      });
     }
 
     const args = buildCodexArgs({
@@ -201,6 +274,47 @@ export class CodexAdapter implements AgentAdapter {
       },
     };
   }
+}
+
+async function verifyAppServerProtocol(binary: string): Promise<void> {
+  const outDir = await mkdtemp(join(tmpdir(), 'lark-channel-codex-schema-'));
+  try {
+    await runProtocolSchemaProbe(binary, outDir);
+    const schema = await readFile(join(outDir, 'v2', 'TurnStartParams.json'), 'utf8');
+    if (!schema.includes('additionalContext') || !schema.includes('clientUserMessageId')) {
+      throw new Error(
+        'configured Codex app-server is incompatible: TurnStartParams must support additionalContext and clientUserMessageId',
+      );
+    }
+  } finally {
+    await rm(outDir, { recursive: true, force: true }).catch(() => undefined);
+  }
+}
+
+async function runProtocolSchemaProbe(binary: string, outDir: string): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    const child = spawnProcess(binary, [
+      'app-server',
+      'generate-json-schema',
+      '--experimental',
+      '--out',
+      outDir,
+    ], { stdio: ['ignore', 'ignore', 'pipe'] });
+    const timer = setTimeout(() => {
+      child.kill('SIGTERM');
+      reject(new Error('Codex app-server protocol probe timed out'));
+    }, 10_000);
+    child.stderr?.resume();
+    child.once('error', (error) => {
+      clearTimeout(timer);
+      reject(error);
+    });
+    child.once('exit', (code, signal) => {
+      clearTimeout(timer);
+      if (code === 0) resolve();
+      else reject(new Error(`Codex app-server protocol probe failed (${signal ?? `code ${code}`})`));
+    });
+  });
 }
 
 async function* createEventStream(

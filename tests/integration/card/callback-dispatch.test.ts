@@ -100,6 +100,20 @@ describe('signed card callback dispatch', () => {
     expect(queued[0]?.content).toBe('[card-click] {"choice":"a"}');
   });
 
+  it('drops topic callbacks when the carrier thread id cannot be recovered', async () => {
+    const h = await createHarness({ chatMode: 'topic' });
+    h.activeRuns.register('oc_group', h.agent.run({ runId: 'run-active', prompt: 'running' }));
+
+    await h.dispatch({
+      __bridge_cb: true,
+      bridge_token: h.token('agent_callback', { nonce: 'nonce-no-thread' }),
+      choice: 'unsafe-fallback',
+    });
+
+    expect(h.pending.cancel('oc_group')).toHaveLength(0);
+    expect(h.pending.cancel('oc_group:th_topic')).toHaveLength(0);
+  });
+
   it('rejects bridge callbacks when callback auth is unavailable', async () => {
     const h = await createHarness({ callbackAuth: false });
     const activeRun = h.agent.run({ runId: 'run-active', prompt: 'running' }) as FakeAgentRun;

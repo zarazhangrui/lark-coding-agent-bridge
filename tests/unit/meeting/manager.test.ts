@@ -39,12 +39,16 @@ function manager(opts: {
   config?: MeetingConfig;
   client?: VcRequestClient;
   onInvited?: (no: string) => void;
+  authorizeInviter?: (inviterId: string | undefined) => boolean;
+  intakeEnabled?: () => boolean;
 } = {}) {
   return new MeetingManager({
     client: opts.client ?? fakeClient(),
     config: () => opts.config ?? cfg(),
     ...(opts.channel !== undefined ? { channel: opts.channel } : {}),
+    ...(opts.intakeEnabled ? { intakeEnabled: opts.intakeEnabled } : {}),
     ...(opts.onInvited ? { onInvited: opts.onInvited } : {}),
+    ...(opts.authorizeInviter ? { authorizeInviter: opts.authorizeInviter } : {}),
   });
 }
 
@@ -134,6 +138,28 @@ describe('MeetingManager routing', () => {
     expect(m.list()).toHaveLength(0);
   });
 
+  it('ignores invites while its runtime generation is inactive', async () => {
+    const { channel, handlers } = fakeChannel();
+    const seen: string[] = [];
+    const client = fakeClient();
+    const m = manager({
+      channel,
+      client,
+      config: cfg({ autoJoinOnInvite: true }),
+      intakeEnabled: () => false,
+      onInvited: (n) => seen.push(n),
+    });
+    m.attachPush();
+
+    handlers.get(VC_BOT_EVENTS.invited)?.({ meeting: { meeting_no: '123456789' } });
+    await Promise.resolve();
+
+    expect(seen).toEqual([]);
+    expect(m.list()).toHaveLength(0);
+    expect(client.request).not.toHaveBeenCalled();
+    expect(m.pushHealth().received).toBe(0);
+  });
+
   it('auto-joins on invite when configured', async () => {
     const { channel, handlers } = fakeChannel();
     const m = manager({ channel, config: cfg({ autoJoinOnInvite: true }) });
@@ -143,6 +169,30 @@ describe('MeetingManager routing', () => {
 
     await vi.waitFor(() => expect(m.list()).toHaveLength(1));
     expect(m.list()[0]?.meetingNo).toBe('123456789');
+  });
+
+  it('rejects an unauthorized invite before callbacks and auto-join', async () => {
+    const { channel, handlers } = fakeChannel();
+    const seen: string[] = [];
+    const client = fakeClient();
+    const m = manager({
+      channel,
+      client,
+      config: cfg({ autoJoinOnInvite: true }),
+      onInvited: (n) => seen.push(n),
+      authorizeInviter: (openId) => openId === 'ou_owner',
+    });
+    m.attachPush();
+
+    handlers.get(VC_BOT_EVENTS.invited)?.({
+      meeting: { meeting_no: '123456789' },
+      inviter: { open_id: 'ou_outsider' },
+    });
+    await Promise.resolve();
+
+    expect(seen).toEqual([]);
+    expect(m.list()).toHaveLength(0);
+    expect(client.request).not.toHaveBeenCalled();
   });
 
   it('reuses the existing session when asked to join the same meeting twice', async () => {

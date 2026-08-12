@@ -1,5 +1,8 @@
 import { ClaudeAdapter } from '../agent/claude/adapter';
 import { CodexAdapter } from '../agent/codex/adapter';
+import { existsSync, mkdirSync, symlinkSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 import { AgentPreflightError, type AgentAvailability } from '../agent/preflight';
 import type { AgentAdapter } from '../agent/types';
 import type { AppPaths } from '../config/app-paths';
@@ -38,11 +41,26 @@ export function createRuntimeAgent(
     if (!codex?.binaryPath) {
       throw new Error('codex profile requires codex.binaryPath');
     }
+    const lumosIsolatedCodexHome = appPaths.profile === 'lumos'
+      ? join(appPaths.profileDir, 'codex-home')
+      : undefined;
+    if (lumosIsolatedCodexHome) {
+      mkdirSync(lumosIsolatedCodexHome, { recursive: true, mode: 0o700 });
+      linkCodexAuthOnly(
+        codex.codexHome ?? process.env.CODEX_HOME ?? join(homedir(), '.codex'),
+        lumosIsolatedCodexHome,
+      );
+    }
     return new CodexAdapter({
       binary: codex.binaryPath,
+      transport: codex.transport ?? 'exec',
       profileStateDir: appPaths.profileDir,
-      ...(codex.codexHome ? { codexHome: codex.codexHome } : {}),
-      inheritCodexHome: codex.inheritCodexHome === true,
+      ...(lumosIsolatedCodexHome
+        ? { codexHome: lumosIsolatedCodexHome }
+        : codex.codexHome
+          ? { codexHome: codex.codexHome }
+          : {}),
+      inheritCodexHome: lumosIsolatedCodexHome ? false : codex.inheritCodexHome === true,
       ignoreUserConfig: codex.ignoreUserConfig === true,
       ignoreRules: codex.ignoreRules !== false,
       sandbox: profileConfig.sandbox.defaultMode,
@@ -50,6 +68,13 @@ export function createRuntimeAgent(
     });
   }
   return new ClaudeAdapter({ larkChannel });
+}
+
+function linkCodexAuthOnly(sourceHome: string, isolatedHome: string): void {
+  const source = join(sourceHome, 'auth.json');
+  const target = join(isolatedHome, 'auth.json');
+  if (!existsSync(source) || existsSync(target)) return;
+  symlinkSync(source, target, 'file');
 }
 
 export async function checkRuntimeAgentAvailability(agent: AgentAdapter): Promise<AgentAvailability> {

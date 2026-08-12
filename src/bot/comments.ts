@@ -9,6 +9,7 @@ import type { Controls } from '../commands';
 import { resolveAppPaths } from '../config/app-paths';
 import { log } from '../core/logger';
 import { evaluateRunPolicy } from '../policy/run-policy';
+import { isLumosOwnerAuthorized } from '../policy/lumos-owner';
 import { resolveWorkingDirectory } from '../policy/workspace';
 import { RunRejected } from '../runtime/errors';
 import type { ActiveRuns } from './active-runs';
@@ -88,6 +89,17 @@ export interface ExtractCommentQuestionResult {
  */
 export async function handleCommentMention(deps: CommentDeps): Promise<void> {
   const { channel, evt, sessions, sessionCatalog, workspaces, controls } = deps;
+  // Lumos is a private owner-only bridge. Keep this gate before target
+  // resolution, comment fetch/history, reactions, workspace lookup, and any
+  // agent call so an outsider's @ cannot cause side effects or disclose a
+  // reply. Other profiles retain the existing comment behavior.
+  if (!isLumosOwnerAuthorized(controls.profile, evt.operator.openId)) {
+    log.info('comment', 'skip', {
+      reason: 'lumos-owner-only',
+      sender: evt.operator.openId,
+    });
+    return;
+  }
   const eventDocScopeId = commentDocumentScopeId(evt.fileToken);
   const eventCommentScopeId = commentScopeId(evt.fileToken, evt.commentId);
   // Log every comment event we receive, regardless of whether we'll act on it.
@@ -213,6 +225,9 @@ export async function handleCommentMention(deps: CommentDeps): Promise<void> {
       now: Date.now(),
       codexHome: controls.profileConfig.codex?.codexHome,
       inheritCodexHome: controls.profileConfig.codex?.inheritCodexHome,
+      // Comment quote/history is authored outside the verified current
+      // @mention. It can inform the answer but cannot grant write authority.
+      untrustedContext: Boolean(ctx.quote || ctx.priorReplies.length > 0),
       ...(typeof commentTimeoutMs === 'number' ? { ttlMs: commentTimeoutMs } : {}),
     });
     if (!policy.ok) {

@@ -304,10 +304,38 @@ describe('profile schema', () => {
       owner: 501,
       mode: 0o755,
       inheritCodexHome: true,
+      transport: 'exec',
       ignoreUserConfig: false,
       ignoreRules: true,
     });
     expect(cfg.codex).not.toHaveProperty('flags');
+  });
+
+  it('preserves explicit Codex app-server transport', () => {
+    const cfg = normalizeProfileConfig({
+      schemaVersion: 2,
+      agentKind: 'codex',
+      accounts: { app },
+      codex: {
+        binaryPath: '/usr/local/bin/codex',
+        transport: 'app-server',
+      },
+    });
+
+    expect(cfg.codex?.transport).toBe('app-server');
+    expect(cfg.codex?.ignoreRules).toBe(false);
+  });
+
+  it('rejects an unknown explicit Codex transport instead of silently falling back', () => {
+    expect(() => normalizeProfileConfig({
+      schemaVersion: 2,
+      agentKind: 'codex',
+      accounts: { app },
+      codex: {
+        binaryPath: '/usr/local/bin/codex',
+        transport: 'app-sever' as 'app-server',
+      },
+    })).toThrow('codex.transport 无效');
   });
 
   it('preserves explicit Codex home isolation when configured', () => {

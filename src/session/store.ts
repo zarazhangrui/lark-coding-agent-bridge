@@ -14,7 +14,32 @@ export interface SessionEntry {
    * scope, undefined = follow global default. Session resets preserve this
    * scope preference while removing the resumable session id/cwd. */
   idleTimeoutMinutes?: number;
+  /**
+   * Lightweight cursor for topic-context replay. The bridge persists the
+   * upstream message id/create time plus a bounded set of ids seen around the
+   * boundary — never message bodies — so a resumed topic can ask Feishu for
+   * just the messages that arrived since the last successful run. This is
+   * intentionally independent of sessionId/cwd: Codex threads live in
+   * SessionCatalog, but still share the same topic context cursor.
+   */
+  topicCursor?: TopicCursor;
 }
+
+export interface TopicCursor {
+  messageId: string;
+  createTime: number;
+  /**
+   * Bounded ids observed while reading the topic around this cursor.  The
+   * bridge uses these ids to de-duplicate a small overlap window on the next
+   * read, which protects against Feishu's eventually-consistent message list
+   * briefly omitting a message between two visible rows.  Bodies are never
+   * persisted here.
+   */
+  recentMessageIds?: string[];
+}
+
+/** Keep the persisted replay metadata small and independent of topic length. */
+export const MAX_TOPIC_CURSOR_RECENT_IDS = 128;
 
 type SessionMap = Record<string, SessionEntry>;
 
@@ -43,13 +68,15 @@ export class SessionStore {
         const cwd = typeof entry.cwd === 'string' ? entry.cwd : undefined;
         const idleTimeoutMinutes =
           typeof entry.idleTimeoutMinutes === 'number' ? entry.idleTimeoutMinutes : undefined;
+        const topicCursor = normalizeTopicCursor(entry.topicCursor);
         const hasSession = sessionId !== undefined && cwd !== undefined;
-        if (!hasSession && idleTimeoutMinutes === undefined) continue;
+        if (!hasSession && idleTimeoutMinutes === undefined && topicCursor === undefined) continue;
         this.data[chatId] = {
           ...(sessionId !== undefined ? { sessionId } : {}),
           ...(cwd !== undefined ? { cwd } : {}),
           updatedAt: entry.updatedAt,
           ...(idleTimeoutMinutes !== undefined ? { idleTimeoutMinutes } : {}),
+          ...(topicCursor ? { topicCursor } : {}),
         };
       }
     } catch (err) {
@@ -85,6 +112,7 @@ export class SessionStore {
       ...(prev?.idleTimeoutMinutes !== undefined
         ? { idleTimeoutMinutes: prev.idleTimeoutMinutes }
         : {}),
+      ...(prev?.topicCursor ? { topicCursor: prev.topicCursor } : {}),
     };
     this.schedulePersist();
   }
@@ -100,6 +128,36 @@ export class SessionStore {
     } else {
       delete this.data[chatId];
     }
+    this.schedulePersist();
+  }
+
+  /** Return the last successfully-triggered topic message for this scope. */
+  getTopicCursor(scope: string): TopicCursor | undefined {
+    const cursor = this.data[scope]?.topicCursor;
+    return cursor
+      ? {
+          ...cursor,
+          ...(cursor.recentMessageIds
+            ? { recentMessageIds: [...cursor.recentMessageIds] }
+            : {}),
+        }
+      : undefined;
+  }
+
+  /**
+   * Persist the topic cursor after an agent run has successfully started.
+   * Keeping this state on SessionStore (rather than alongside a particular
+   * agent session) lets both Claude and Codex share the same replay boundary.
+   */
+  setTopicCursor(scope: string, cursor: TopicCursor): void {
+    const normalized = normalizeTopicCursor(cursor);
+    if (!normalized) return;
+    const prev = this.data[scope];
+    this.data[scope] = {
+      ...(prev ?? { updatedAt: Date.now() }),
+      topicCursor: normalized,
+      updatedAt: Date.now(),
+    };
     this.schedulePersist();
   }
 
@@ -145,4 +203,44 @@ export class SessionStore {
         log.fail('session', err, { step: 'persist' });
       });
   }
+}
+
+function normalizeTopicCursor(input: unknown): TopicCursor | undefined {
+  if (!input || typeof input !== 'object') return undefined;
+  const raw = input as { messageId?: unknown; createTime?: unknown };
+  const createTime =
+    typeof raw.createTime === 'number'
+      ? raw.createTime
+      : typeof raw.createTime === 'string' && raw.createTime.trim() !== ''
+        ? Number(raw.createTime)
+        : Number.NaN;
+  if (
+    typeof raw.messageId !== 'string' ||
+    raw.messageId.length === 0 ||
+    !Number.isFinite(createTime) ||
+    createTime < 0
+  ) {
+    return undefined;
+  }
+  const recentMessageIds = normalizeRecentMessageIds(
+    (input as { recentMessageIds?: unknown }).recentMessageIds,
+  );
+  return {
+    messageId: raw.messageId,
+    createTime,
+    ...(recentMessageIds.length > 0 ? { recentMessageIds } : {}),
+  };
+}
+
+function normalizeRecentMessageIds(input: unknown): string[] {
+  if (!Array.isArray(input)) return [];
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const value of input) {
+    if (typeof value !== 'string' || value.length === 0 || seen.has(value)) continue;
+    seen.add(value);
+    out.push(value);
+    if (out.length >= MAX_TOPIC_CURSOR_RECENT_IDS) break;
+  }
+  return out;
 }

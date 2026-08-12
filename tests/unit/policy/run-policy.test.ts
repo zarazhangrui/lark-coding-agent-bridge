@@ -85,6 +85,20 @@ describe('run policy', () => {
     expect(result.permissionMode).toBe('plan');
   });
 
+  it('forces a turn with untrusted external context to read-only', () => {
+    const result = evaluateRunPolicy({
+      ...baseInput(),
+      untrustedContext: true,
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      accessMode: 'read-only',
+      sandbox: 'read-only',
+      permissionMode: 'plan',
+    });
+  });
+
   it('returns an expiry and a stable policy fingerprint for accepted runs', () => {
     const input = baseInput({ now: 1000 });
     const result = evaluateRunPolicy(input);

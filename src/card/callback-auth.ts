@@ -59,6 +59,10 @@ export type CallbackVerifyResult =
         | 'nonce-revoked';
     };
 
+type CallbackEnvelopeResult =
+  | { ok: true; payload: CallbackPayload }
+  | { ok: false; reason: 'malformed' | 'unknown-key' | 'bad-signature' | 'expired' };
+
 const PREFIX = 'bridge_cb.v1';
 
 export class CallbackAuth {
@@ -92,7 +96,36 @@ export class CallbackAuth {
     return `${PREFIX}.${encoded}.${sign(encoded, key.secret)}`;
   }
 
+  /**
+   * Read identity/scope from a server-signed callback before routing it. This
+   * does not consume the nonce; callers must still invoke verify() before any
+   * action. Invalid, expired, or revoked tokens are never exposed.
+   */
+  inspect(token: string): CallbackPayload | undefined {
+    const verified = this.verifyEnvelope(token);
+    if (!verified.ok) return undefined;
+    const nonceState = this.nonceStore.state(verified.payload.n);
+    return nonceState === 'revoked' || nonceState === 'used' ? undefined : verified.payload;
+  }
+
   verify(token: string, expected: CallbackVerifyExpected): CallbackVerifyResult {
+    const envelope = this.verifyEnvelope(token);
+    if (!envelope.ok) return envelope;
+    const { payload } = envelope;
+    if (!matchesExpected(payload, expected)) {
+      return { ok: false, reason: 'context-mismatch' };
+    }
+
+    const nonceState = this.nonceStore.state(payload.n);
+    if (nonceState === 'revoked') return { ok: false, reason: 'nonce-revoked' };
+    if (nonceState === 'used') return { ok: false, reason: 'nonce-replay' };
+    if (!this.nonceStore.consume(payload.n)) {
+      return { ok: false, reason: 'nonce-replay' };
+    }
+    return { ok: true, payload };
+  }
+
+  private verifyEnvelope(token: string): CallbackEnvelopeResult {
     const parts = token.split('.');
     if (parts.length !== 4 || `${parts[0]}.${parts[1]}` !== PREFIX) {
       return { ok: false, reason: 'malformed' };
@@ -109,16 +142,6 @@ export class CallbackAuth {
       return { ok: false, reason: 'bad-signature' };
     }
     if (payload.exp <= this.now()) return { ok: false, reason: 'expired' };
-    if (!matchesExpected(payload, expected)) {
-      return { ok: false, reason: 'context-mismatch' };
-    }
-
-    const nonceState = this.nonceStore.state(payload.n);
-    if (nonceState === 'revoked') return { ok: false, reason: 'nonce-revoked' };
-    if (nonceState === 'used') return { ok: false, reason: 'nonce-replay' };
-    if (!this.nonceStore.consume(payload.n)) {
-      return { ok: false, reason: 'nonce-replay' };
-    }
     return { ok: true, payload };
   }
 

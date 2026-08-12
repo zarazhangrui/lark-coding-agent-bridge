@@ -35,6 +35,7 @@ export interface StartRunFlowInput {
   executor: RunExecutor;
   now: number;
   stopGraceMs?: number;
+  untrustedContext?: boolean;
   observability?: {
     profile: string;
     agent: string;
@@ -101,6 +102,7 @@ export async function startRunFlow(input: StartRunFlowInput): Promise<StartRunFl
     now: input.now,
     codexHome: input.profileConfig.codex?.codexHome,
     inheritCodexHome: input.profileConfig.codex?.inheritCodexHome,
+    untrustedContext: input.untrustedContext,
   });
   if (!policy.ok) {
     return {

@@ -89,6 +89,9 @@ import { hasStructuredLarkCliUserAuth } from '../lark-cli/identity-policy';
 export interface Controls {
   profile: string;
   profileConfig: ProfileConfig;
+  /** Live supervisor generation gate. Missing means intake is enabled for
+   * standalone/tests that do not run under the supervisor. */
+  runtime?: { intakeEnabled: boolean };
   botOwnerId?: string;
   ownerRefreshState: OwnerRefreshState;
   ownerRefreshedAt?: number;
@@ -112,6 +115,10 @@ export interface Controls {
   /** In-meeting agent manager; present only while the channel is connected and
    * `meeting.enabled` is on. Late-bound by startChannel. */
   meeting?: MeetingManager;
+}
+
+export function runtimeIntakeEnabled(controls: Controls): boolean {
+  return controls.runtime?.intakeEnabled !== false;
 }
 
 export interface CommandContext {

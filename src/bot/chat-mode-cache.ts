@@ -43,4 +43,20 @@ export class ChatModeCache {
   invalidate(chatId: string): void {
     this.cache.delete(chatId);
   }
+
+  /** Re-read chat mode without trusting or poisoning the cache. */
+  async resolveFresh(channel: LarkChannel, chatId: string): Promise<ChatMode | undefined> {
+    try {
+      const mode = await channel.getChatMode(chatId);
+      this.cache.set(chatId, mode);
+      log.info('chat', 'mode-refreshed', { chatId, mode });
+      return mode;
+    } catch (err) {
+      log.warn('chat', 'mode-refresh-failed', {
+        chatId,
+        err: err instanceof Error ? err.message : String(err),
+      });
+      return undefined;
+    }
+  }
 }

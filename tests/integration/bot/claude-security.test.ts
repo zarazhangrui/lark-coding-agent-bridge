@@ -29,6 +29,8 @@ interface Harness {
   cleanup(): Promise<void>;
 }
 
+const LUMOS_OWNER_OPEN_ID = 'ou_9c50b535153004480e6c305960c4a570';
+
 const cleanups: Array<() => Promise<void>> = [];
 
 describe('Claude shared security regressions', () => {
@@ -91,9 +93,63 @@ describe('Claude shared security regressions', () => {
       rawContentType: 'card_action',
     });
   });
+
+  it('blocks outsider Lumos card actions before resolving their topic scope', async () => {
+    const h = await createHarness({ profile: 'lumos' });
+    let scopeLookups = 0;
+    h.chatModeCache.resolve = async () => {
+      scopeLookups += 1;
+      return 'group';
+    };
+
+    await handleCardAction({
+      channel: h.channel as unknown as Parameters<typeof handleCardAction>[0]['channel'],
+      evt: cardEvent({ cmd: 'new' }),
+      sessions: h.sessions,
+      workspaces: h.workspaces,
+      activeRuns: h.activeRuns,
+      agent: h.agent,
+      controls: h.controls,
+      pending: h.pending,
+      chatModeCache: h.chatModeCache,
+    });
+
+    expect(scopeLookups).toBe(0);
+    expect(h.agent.runOptions).toEqual([]);
+  });
+
+  it('keeps owner Lumos card callbacks available', async () => {
+    const h = await createHarness({ profile: 'lumos' });
+    const activeRun = h.agent.run({ runId: 'run-active', prompt: 'running' });
+    h.activeRuns.register('oc_group', activeRun);
+
+    await handleCardAction({
+      channel: h.channel as unknown as Parameters<typeof handleCardAction>[0]['channel'],
+      evt: cardEvent(
+        {
+          __bridge_cb: true,
+          bridge_token: h.token('agent_callback', 'nonce-lumos-owner'),
+          choice: 'owner',
+        },
+        undefined,
+        LUMOS_OWNER_OPEN_ID,
+      ),
+      sessions: h.sessions,
+      workspaces: h.workspaces,
+      activeRuns: h.activeRuns,
+      agent: h.agent,
+      controls: h.controls,
+      pending: h.pending,
+      chatModeCache: h.chatModeCache,
+      callbackAuth: h.callbackAuth,
+      callbackPolicyFingerprint: 'fp-1',
+    });
+
+    expect(h.pending.cancel('oc_group')).toHaveLength(1);
+  });
 });
 
-async function createHarness(): Promise<Harness> {
+async function createHarness(options: { profile?: string } = {}): Promise<Harness> {
   const tmp = await createTmpProfile('claude-security-test-');
   const channel = createFakeChannel();
   const sessions = new SessionStore(`${tmp.profile}/sessions.json`);
@@ -111,7 +167,7 @@ async function createHarness(): Promise<Harness> {
     createNonce: () => nextNonce,
   });
   const controls = {
-    profile: 'claude',
+    profile: options.profile ?? 'claude',
     profileConfig,
     botOwnerId: 'ou_owner',
     ownerRefreshState: 'ok',
@@ -124,6 +180,7 @@ async function createHarness(): Promise<Harness> {
   } satisfies Controls;
   const chatModeCache = {
     resolve: async () => 'group',
+    resolveFresh: async () => 'group',
   } as unknown as ChatModeCache;
 
   const cleanup = async (): Promise<void> => {
@@ -150,7 +207,7 @@ async function createHarness(): Promise<Harness> {
         runId: 'run-active',
         scope: 'oc_group',
         chatId: 'oc_group',
-        operatorOpenId: 'ou_operator',
+        operatorOpenId: options.profile === 'lumos' ? LUMOS_OWNER_OPEN_ID : 'ou_operator',
         action,
         policyFingerprint: 'fp-1',
         ttlMs: 60_000,
@@ -171,13 +228,14 @@ function appConfig(): ProfileConfig {
 function cardEvent(
   value: Record<string, unknown>,
   formValue?: Record<string, unknown>,
+  operatorOpenId = 'ou_operator',
 ): CardActionEvent {
   return {
     action: { value },
     chatId: 'oc_group',
     messageId: 'om_card',
     operator: {
-      openId: 'ou_operator',
+      openId: operatorOpenId,
       name: 'Operator',
     },
     raw: formValue ? { action: { form_value: formValue } } : undefined,

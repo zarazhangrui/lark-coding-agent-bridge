@@ -54,6 +54,13 @@ export interface RunPolicyInput {
   now: number;
   codexHome?: string;
   inheritCodexHome?: boolean;
+  /**
+   * The turn contains content supplied by someone or something other than the
+   * currently-authorized actor (topic history, quotes, forwards, attachments,
+   * comments, or meeting transcript). Such content may inform an answer but
+   * must never inherit the actor's write authority.
+   */
+  untrustedContext?: boolean;
   ttlMs?: number;
 }
 
@@ -104,11 +111,12 @@ export function evaluateRunPolicy(input: RunPolicyInput): RunPolicyResult {
     return reject('required-attachment-rejected', '必需附件未通过校验，已拒绝运行。');
   }
 
-  const accessMode = clampAccess(
+  const configuredAccessMode = clampAccess(
     input.profileConfig.permissions.defaultAccess,
     input.profileConfig.permissions.maxAccess,
     input.capability.permissions.maxAccess,
   );
+  const accessMode: AccessMode = input.untrustedContext ? 'read-only' : configuredAccessMode;
   const sandbox = accessToCodexSandbox(accessMode);
   const permissionMode = accessToClaudePermissionMode(
     accessMode,

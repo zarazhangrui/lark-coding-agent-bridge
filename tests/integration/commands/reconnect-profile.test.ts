@@ -48,7 +48,7 @@ describe('/reconnect profile lifecycle', () => {
     // Connect-before-disconnect reconnect now lives in the supervisor's ManagedProfile.
     const source = await readFile(new URL('../../../src/runtime/supervisor.ts', import.meta.url), 'utf8');
 
-    expect(source).toContain('const nextControls = this.makeControls(nextRuntime.appPaths, next, nextRuntime.profileConfig)');
+    expect(source).toContain('nextControls = this.makeControls(nextRuntime.appPaths, next, nextRuntime.profileConfig)');
     expect(source).toContain('controls: nextControls');
     expect(source).toContain('this.controls = nextControls');
   });

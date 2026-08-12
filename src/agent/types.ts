@@ -53,7 +53,9 @@ export interface AgentRun {
   readonly events: AsyncIterable<AgentEvent>;
   stop(): Promise<void>;
   /**
-   * Wait up to `timeoutMs` for the agent process to exit on its own.
+   * Wait up to `timeoutMs` for this run to terminate on its own. For a
+   * subprocess-backed adapter this is the process exit; for a shared
+   * app-server adapter it is the virtual turn's terminal event.
    * Resolves true if it exited within the window, false if the timer
    * fired first (caller usually wants to fall back to stop()).
    *
@@ -81,8 +83,15 @@ export interface AgentAdapter {
   readonly displayName: string;
   isAvailable(): Promise<boolean>;
   checkAvailability?(): Promise<AgentAvailability>;
+  /**
+   * Start and prime reusable adapter resources before the profile is reported
+   * online. `cwd` is the profile's resolved default workspace.
+   */
+  warmup?(cwd: string): Promise<void>;
   prepareRun?(opts: AgentRunOptions): Promise<void>;
   run(opts: AgentRunOptions): AgentRun;
+  /** Gracefully release adapter-owned long-lived resources, if any. */
+  shutdown?(): Promise<void>;
   /**
    * Late-bound identity injection: the adapter is constructed before the
    * channel connects, so the channel calls this once botIdentity is known.

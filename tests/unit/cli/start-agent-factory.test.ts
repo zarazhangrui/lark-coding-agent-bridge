@@ -1,4 +1,4 @@
-import { readFile } from 'node:fs/promises';
+import { mkdtemp, readFile, readlink, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -58,6 +58,51 @@ describe('start runtime agent factory', () => {
 
     expect(agent.id).toBe('codex');
     expect(agent.displayName).toBe('Codex CLI');
+  });
+
+  it('creates the persistent Codex adapter when app-server transport is configured', () => {
+    const agent = createRuntimeAgent(
+      createDefaultProfileConfig({
+        agentKind: 'codex',
+        accounts: appAccount(),
+        codex: {
+          binaryPath: '/usr/local/bin/codex',
+          transport: 'app-server',
+        },
+      }),
+      { profileDir: '/tmp/lark-channel-bridge/profiles/codex-e2e' },
+    );
+
+    expect(agent.id).toBe('codex');
+    expect(agent.displayName).toBe('Codex App Server');
+  });
+
+  it('forces the Lumos Codex profile into an isolated profile-local home', async () => {
+    const profileDir = await mkdtemp(join(tmpdir(), 'lark-lumos-agent-'));
+    const sourceHome = await mkdtemp(join(tmpdir(), 'lark-global-codex-'));
+    try {
+      await writeFile(join(sourceHome, 'auth.json'), '{}', { mode: 0o600 });
+      const agent = createRuntimeAgent(
+        createDefaultProfileConfig({
+          agentKind: 'codex',
+          accounts: appAccount(),
+          codex: {
+            binaryPath: '/usr/local/bin/codex',
+            transport: 'app-server',
+            codexHome: sourceHome,
+            inheritCodexHome: true,
+          },
+        }),
+        { profileDir, profile: 'lumos' },
+      );
+
+      expect(Reflect.get(agent, 'codexHome')).toBe(join(profileDir, 'codex-home'));
+      expect(Reflect.get(agent, 'inheritCodexHome')).toBe(false);
+      expect(await readlink(join(profileDir, 'codex-home', 'auth.json'))).toBe(join(sourceHome, 'auth.json'));
+    } finally {
+      await rm(profileDir, { recursive: true, force: true });
+      await rm(sourceHome, { recursive: true, force: true });
+    }
   });
 
   it('seeds a default Codex binary when bootstrapping a new Codex profile', () => {

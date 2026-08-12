@@ -8,6 +8,7 @@ import type { CallbackAuth } from './callback-auth';
 import { runCommandHandler, type CommandContext, type Controls } from '../commands';
 import { log } from '../core/logger';
 import { canUseDm, canUseGroup } from '../policy/access';
+import { isLumosOwnerAuthorized } from '../policy/lumos-owner';
 import type { RunExecutor } from '../runtime/run-executor';
 import type { SessionCatalog } from '../session/catalog';
 import type { SessionStore } from '../session/store';
@@ -50,6 +51,16 @@ export async function handleCardAction(deps: CardDispatchDeps): Promise<void> {
   const operatorId = deps.evt.operator.openId;
   const chatId = deps.evt.chatId;
 
+  // Card actions are a separate event lane and never pass through IM intake.
+  // Keep Lumos owner authorization before thread lookup or command/callback
+  // dispatch so a shared-group member cannot operate the owner's agent.
+  if (!isLumosOwnerAuthorized(deps.controls.profile, operatorId)) {
+    log.info('cardAction', 'skip-not-lumos-owner', {
+      operator: operatorId.slice(-6),
+    });
+    return;
+  }
+
   // CardKit 2.0 form submits drop user-input values from action.value; they
   // arrive on raw.action.form_value. The SDK forwards the raw event when
   // includeRawEvent: true is set on the channel options.
@@ -63,7 +74,9 @@ export async function handleCardAction(deps: CardDispatchDeps): Promise<void> {
   // session — look up the carrier message (the card lives on it) once.
   // Done before the access check so we know the chat mode (p2p vs group)
   // and can skip the chat allowlist for DMs.
-  const { scope, threadId, mode } = await resolveScope(deps);
+  const resolvedScope = await resolveSignedCallbackScope(deps, payload) ?? await resolveScope(deps);
+  if (!resolvedScope) return;
+  const { scope, threadId, mode } = resolvedScope;
 
   const accessDecision =
     mode === 'p2p'
@@ -141,21 +154,55 @@ export async function handleCardAction(deps: CardDispatchDeps): Promise<void> {
   return;
 }
 
+async function resolveSignedCallbackScope(
+  deps: CardDispatchDeps,
+  payload: Record<string, unknown>,
+): Promise<{ scope: string; threadId: string | undefined; mode: 'p2p' | 'group' | 'topic' } | undefined> {
+  const token = typeof payload.bridge_token === 'string' ? payload.bridge_token : '';
+  const signed = token ? deps.callbackAuth?.inspect(token) : undefined;
+  if (!signed || signed.c !== deps.evt.chatId || signed.o !== deps.evt.operator.openId) return undefined;
+  const topicPrefix = `${deps.evt.chatId}:`;
+  if (signed.s.startsWith(topicPrefix) && signed.s.length > topicPrefix.length) {
+    return { scope: signed.s, threadId: signed.s.slice(topicPrefix.length), mode: 'topic' };
+  }
+  if (signed.s !== deps.evt.chatId) return undefined;
+  const mode = await deps.chatModeCache.resolve(deps.channel, deps.evt.chatId);
+  if (mode === 'topic') return undefined;
+  return { scope: signed.s, threadId: undefined, mode };
+}
+
 async function resolveScope(
   deps: CardDispatchDeps,
-): Promise<{ scope: string; threadId: string | undefined; mode: 'p2p' | 'group' | 'topic' }> {
+): Promise<{ scope: string; threadId: string | undefined; mode: 'p2p' | 'group' | 'topic' } | undefined> {
   const chatId = deps.evt.chatId;
   const mode = await deps.chatModeCache.resolve(deps.channel, chatId);
   if (mode !== 'topic') {
+    if (deps.controls.profile === 'lumos') {
+      const threadId = await lookupMessageThreadId(deps.channel, deps.evt.messageId);
+      if (threadId) return { scope: `${chatId}:${threadId}`, threadId, mode: 'topic' };
+      const freshMode = await deps.chatModeCache.resolveFresh(deps.channel, chatId);
+      if (freshMode !== mode) {
+        log.warn('cardAction', 'skip-ambiguous-chat-mode', {
+          chatId,
+          cachedMode: mode,
+          freshMode: freshMode ?? 'unknown',
+        });
+        return undefined;
+      }
+    }
     return { scope: chatId, threadId: undefined, mode };
   }
   // Topic group — need the carrier message's thread_id to compose scope.
   // One API call per click; could cache by messageId if it ever becomes hot.
   const threadId = await lookupMessageThreadId(deps.channel, deps.evt.messageId);
   if (!threadId) {
-    // Fall back to plain chatId. Better to land in the chat's "default"
-    // scope than fail the click silently.
-    return { scope: chatId, threadId: undefined, mode };
+    // Fail closed: the thread id is the callback/session isolation boundary.
+    // A chat-level fallback could route a click into another topic's agent.
+    log.warn('cardAction', 'skip-thread-id-unavailable', {
+      chatId,
+      messageId: deps.evt.messageId,
+    });
+    return undefined;
   }
   return { scope: `${chatId}:${threadId}`, threadId, mode };
 }
@@ -191,7 +238,10 @@ function forwardToAgent(
     resources: [],
     mentions: [],
     mentionAll: false,
-    mentionedBot: false,
+    // A signed callback is an authenticated continuation of the owner's
+    // explicitly requested interactive turn. Preserve that narrow authority
+    // as a structured mention when it re-enters the normal pending pipeline.
+    mentionedBot: true,
     createTime: Date.now(),
   };
   deps.pending.push(scope, synthetic);

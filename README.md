@@ -17,6 +17,20 @@ For a product walkthrough, see the [Feishu document](https://larkcommunity.feish
 - **Images and files**: send them to the bot directly, and the bridge downloads them locally for the agent.
 - **Interactive cards**: `/help`, `/ws list`, and `/status` return cards with clickable buttons.
 
+## Lumos profile hardening
+
+This repository contains a hardened `lumos` profile in addition to the generic upstream behavior described below:
+
+- only Wan's current message can trigger work or receive a reply;
+- group and topic turns require a real structured `@Bot` mention, except for a bridge-signed callback from an already authorized turn;
+- one Feishu topic maps to one isolated Codex thread, and ambiguous topic identity fails closed instead of falling back to chat-wide state;
+- Codex runs through one persistent App Server process, so follow-up turns reuse the loaded process and thread;
+- topic history, quotes, forwards, attachments, comment history, and meeting transcripts are untrusted context; any turn containing them is forced to read-only, with network disabled;
+- the Lumos Codex runtime uses a profile-local `CODEX_HOME` and does not load the user's global Codex config, MCP servers, plugins, or skills;
+- reasoning and tool-progress blocks are not published to Feishu for the Lumos profile.
+
+The implementation is locally validated but is not proof of the currently installed daemon or live Feishu behavior. See the [integration guide](./docs/integration-guide.md), [architecture](./docs/architecture.md), [operator runbook](./docs/operator-runbook.md), and [current handoff](./docs/handoff.md).
+
 ## Prerequisites
 
 - Node.js **>= 20.12.0**
@@ -87,6 +101,8 @@ Platform mapping:
 - **Windows**: Task Scheduler task `LarkChannelBridge.Bot.<profile>`, launched through a `.cmd` wrapper
 
 Daemon logs are under `~/.lark-channel/profiles/<profile>/logs/daemon/`.
+
+For the hardened Lumos profile, runtime state also includes `~/.lark-channel/profiles/lumos/codex-home/`. It is private profile state, not project content, and must not be copied into the repository.
 
 ### Multiple profiles: Claude and Codex
 
@@ -270,6 +286,8 @@ To let other people or groups in, add them to one of three lists:
 - Strangers get pure silence — no reply at all. The one exception: if someone `@`-mentions the bot in a group that hasn't been opened up, the bot posts a friendly one-liner telling them an admin can run `/invite group` to enable it.
 - Cloud-doc comments are document-scoped: anyone who can comment in a supported document and mention the bot can trigger a reply.
 
+The access rules above describe generic profiles. The `lumos` profile is stricter: only the fixed owner identity can trigger any supported entry point, including document comments, cards, and meetings. `/invite` and the generic allowlists do not widen that boundary.
+
 ### Advanced: editing the config file directly
 
 If you'd rather not do it inside Feishu, `/invite` and `/config` write the matching profile's `access` field in `~/.lark-channel/config.json`. Empty lists mean nobody from that list, not open access. This is a profile-field snippet; do not replace the whole `config.json` with it:
@@ -302,6 +320,8 @@ Each line carries `chatId` (group / DM id) and `senderId` (user `open_id`). Afte
 ## Cloud-doc comments
 
 Cloud-doc comments do not need a separate workspace binding or document allowlist. In supported document comments, mention the bot and the bridge replies in the same thread. Comment runs reuse the document session key and fall back to the user home directory when no document cwd was previously recorded.
+
+For `lumos`, non-owner mentions remain silent. Prior comments and selected document text are untrusted, so a turn that includes them is read-only and cannot authorize external side effects.
 
 ## FAQ
 

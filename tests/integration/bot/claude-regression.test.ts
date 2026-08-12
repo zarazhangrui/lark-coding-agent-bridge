@@ -57,9 +57,9 @@ describe('Claude IM regression boundaries', () => {
     const source = await readFile(join(process.cwd(), 'src/bot/channel.ts'), 'utf8');
 
     expect(source).toContain('respondToMentionAll: false');
-    // The group-mention gate honors a per-chat override first, then the global
-    // setting (both resolved by requireMentionForChat).
-    expect(source).toContain('requireMentionForChat(controls.profileConfig, controls.cfg, msg.chatId)');
+    // Group/topic traffic is context-only until the bot receives a real
+    // structured mention. This hard gate intentionally ignores legacy per-chat
+    // overrides in the owner-only Lumos fork.
     expect(source).toContain('!msg.mentionedBot');
     expect(source).toContain('msg.chatType !== \'p2p\'');
   });

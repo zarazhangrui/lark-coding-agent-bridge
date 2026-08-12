@@ -14,6 +14,7 @@ import {
 } from './permissions';
 
 export type AgentKind = 'claude' | 'codex';
+export type CodexTransport = 'exec' | 'app-server';
 export type SandboxMode = CodexSandboxMode;
 export type { AccessMode, PermissionConfig, PermissionSource };
 
@@ -40,6 +41,12 @@ export interface SandboxConfig {
 
 export interface CodexConfig {
   binaryPath: string;
+  /**
+   * `exec` starts a fresh Codex CLI process for every turn. `app-server`
+   * keeps one Codex protocol process alive for the profile so MCP servers and
+   * plugins are initialized once and subsequent turns reuse it.
+   */
+  transport?: CodexTransport;
   realpath?: string;
   version?: string;
   sha256?: string;
@@ -376,8 +383,13 @@ function normalizeWorkspaces(input: {
 }
 
 function normalizeCodex(input: CodexConfig & { flags?: unknown }): CodexConfig {
+  if (input.transport !== undefined && input.transport !== 'exec' && input.transport !== 'app-server') {
+    throw new Error(`codex.transport 无效：${String(input.transport)}`);
+  }
+  const transport: CodexTransport = input.transport === 'app-server' ? 'app-server' : 'exec';
   const codex: CodexConfig = {
     binaryPath: input.binaryPath,
+    transport,
     ...(typeof input.realpath === 'string' ? { realpath: input.realpath } : {}),
     ...(typeof input.version === 'string' ? { version: input.version } : {}),
     ...(typeof input.sha256 === 'string' ? { sha256: input.sha256 } : {}),
@@ -386,7 +398,13 @@ function normalizeCodex(input: CodexConfig & { flags?: unknown }): CodexConfig {
     ...(typeof input.codexHome === 'string' ? { codexHome: input.codexHome } : {}),
     inheritCodexHome: input.inheritCodexHome !== false,
     ignoreUserConfig: input.ignoreUserConfig === true,
-    ignoreRules: input.ignoreRules !== false,
+    // App Server has no per-launch --ignore-rules equivalent and is intended
+    // to keep the workspace AGENTS.md contract loaded. Legacy exec profiles
+    // retain their historical ignore-by-default behavior.
+    ignoreRules:
+      typeof input.ignoreRules === 'boolean'
+        ? input.ignoreRules
+        : transport === 'exec',
   };
   return codex;
 }

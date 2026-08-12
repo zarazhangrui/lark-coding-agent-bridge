@@ -80,6 +80,29 @@ describe('bot identity injection into the agent adapter', () => {
   });
 });
 
+describe('runtime generation intake gate', () => {
+  it('holds an event until the generation becomes active instead of dropping it', async () => {
+    const h = await createHarness();
+    h.controls.runtime.intakeEnabled = false;
+    await startTestBridge(h);
+
+    const delivery = h.channel.handlers.message?.(
+      message({
+        messageId: 'om_inactive',
+        senderId: 'ou_owner',
+        content: '/reconnect',
+      }),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 25));
+
+    expect(h.controls.restart).not.toHaveBeenCalled();
+
+    h.controls.runtime.intakeEnabled = true;
+    await delivery;
+    expect(h.controls.restart).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe('sender identity in bridge_context', () => {
   it('marks a bot sender via raw sender_type and injects botOpenId and mentions', async () => {
     const h = await createHarness();
@@ -350,9 +373,11 @@ function createControls(profileConfig: ReturnType<typeof createDefaultProfileCon
   return {
     profile: 'test',
     profileConfig,
+    runtime: { intakeEnabled: true },
+    botOwnerId: 'ou_owner',
     ownerRefreshState: 'unknown' as const,
     async refreshOwner() {},
-    async restart() {},
+    restart: vi.fn(async () => undefined),
     async exit() {},
     configPath: '/tmp/config.json',
     cfg: profileConfig,

@@ -74,11 +74,15 @@ describe('comment run flow', () => {
         { reply_id: 'reply-1', text: '@bot 说说你的思考' },
       ],
     });
+    h.profileConfig.permissions.defaultAccess = 'full';
+    h.profileConfig.permissions.maxAccess = 'full';
 
     await handleCommentMention(h.deps(event({ commentId: 'comment-1', replyId: 'reply-1' })));
 
     expect(h.agent.runOptions).toHaveLength(1);
     const prompt = h.agent.runOptions[0]!.prompt;
+    expect(h.agent.runOptions[0]?.sandbox).toBe('read-only');
+    expect(h.agent.runOptions[0]?.permissionMode).toBe('plan');
     // the two replies before the @bot reply are surfaced as context
     expect(prompt).toContain('此前的讨论');
     expect(prompt).toContain('这段方案有个风险');

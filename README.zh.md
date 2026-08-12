@@ -17,6 +17,20 @@
 - **图片 / 文件**：直接发给 bot，bridge 下载到本地后交给本机 agent 处理。
 - **卡片按钮**：`/help`、`/ws list`、`/status` 返回可点击的交互卡片。
 
+## Lumos profile 安全边界
+
+本仓库在下方通用功能之外，还包含一套收紧后的 `lumos` profile：
+
+- 只有 Wan 当前发出的消息能触发任务或收到回复；
+- 群聊和话题必须真实结构化 `@Bot`，唯一例外是已授权 turn 生成的 bridge 签名回调；
+- 一个飞书话题对应一个隔离的 Codex thread，话题身份不明时直接拒绝，不降级到整群会话；
+- Codex 通过单个常驻 App Server 运行，后续 turn 复用已加载的进程和 thread；
+- 话题历史、引用、转发、附件、评论历史和会议字幕都是不可信上下文；只要 turn 包含它们，就强制只读且关闭网络；
+- Lumos Codex 使用 profile 专属 `CODEX_HOME`，不加载用户全局 Codex 配置、MCP、插件和 skills；
+- Lumos profile 不会把推理或工具执行过程发到飞书。
+
+代码已完成本地验证，不等于当前已安装 daemon 或真实飞书链路已验收。详见[接入指南](./docs/integration-guide.md)、[架构说明](./docs/architecture.md)、[运维手册](./docs/operator-runbook.md)和[当前交接状态](./docs/handoff.md)。
+
 ## 前置条件
 
 - Node.js **>= 20.12.0**
@@ -87,6 +101,8 @@ lark-channel-bridge unregister [--profile <name>]
 - **Windows**：Task Scheduler 任务 `LarkChannelBridge.Bot.<profile>`，launcher 是 `.cmd`
 
 daemon 日志在 `~/.lark-channel/profiles/<profile>/logs/daemon/`。
+
+收紧后的 Lumos profile 还会使用 `~/.lark-channel/profiles/lumos/codex-home/`。这是 profile 私有运行时状态，不是项目内容，不得复制到仓库。
 
 ### 多 profile：分别运行 Claude 和 Codex
 
@@ -270,6 +286,8 @@ bridge 会检查所选目录存在、是目录，并且不是 `/`、Home 根、�
 - 陌生人发消息一律静默丢弃，不会有任何回复。唯一的例外：有人在一个还没开放的群里 @bot，bot 会回一句友好提示，告诉他可以让管理员发 `/invite group` 开放这个群。
 - 云文档评论按文档权限生效：能在支持的文档里评论并 @bot 的人可以触发回复。
 
+上述访问规则描述通用 profile。`lumos` profile 更严格：只有固定 owner 能触发任何入口，包括文档评论、卡片和会议；`/invite` 和通用白名单不会扩大这条边界。
+
 ### 高级：直接改配置文件
 
 不想在飞书里点的话，`/invite`、`/config` 背后写的是 `~/.lark-channel/config.json` 中对应 profile 的 `access` 字段。空白名单表示这个名单没人，不表示所有人都能用。下面只是 profile 里的字段片段，不要整段覆盖 `config.json`：
@@ -302,6 +320,8 @@ grep '"event":"enter"' ~/.lark-channel/profiles/<profile>/logs/bridge-$(date +%Y
 ## 云文档评论
 
 云文档评论不再需要单独绑定工作目录或维护文档白名单。支持的文档评论里 @bot 后，bridge 会在同一个评论线程里回复。评论运行复用文档级 session key；没有记录过文档 cwd 时回退到用户 home 目录。
+
+对 `lumos` 来说，非 owner 的 @ 仍然保持静默。旧评论和选中的文档文本属于不可信上下文，包含它们的 turn 强制只读，不能授权外部副作用。
 
 ## 常见问题
 

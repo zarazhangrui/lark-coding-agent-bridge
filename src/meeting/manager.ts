@@ -39,6 +39,8 @@ export interface MeetingManagerDeps {
   config: () => MeetingConfig;
   /** Late-bound: the bot's identity is only known after the channel connects. */
   botOpenId?: () => string | undefined;
+  /** Live generation guard; disabled startup/restart candidates ignore pushes. */
+  intakeEnabled?: () => boolean;
   /**
    * The channel object. Its `dispatcher` is TypeScript-private but a real
    * runtime property; we probe it defensively rather than assuming.
@@ -48,6 +50,8 @@ export interface MeetingManagerDeps {
   onSession?: (session: MeetingSession) => void;
   /** Bot was invited to a meeting (push only). */
   onInvited?: (meetingNo: string, inviterId?: string) => void;
+  /** Optional authorization gate evaluated before invite callbacks or auto-join. */
+  authorizeInviter?: (inviterId: string | undefined) => boolean;
   /** Meeting ended (push, or observed by the poller). */
   onEnded?: (session: MeetingSession) => void;
 }
@@ -112,14 +116,17 @@ export class MeetingManager {
     try {
       dispatcher.register({
         [VC_BOT_EVENTS.invited]: (data: unknown) => {
+          if (this.deps.intakeEnabled?.() === false) return;
           this.notePush();
           this.handleInvited(data);
         },
         [VC_BOT_EVENTS.activity]: (data: unknown) => {
+          if (this.deps.intakeEnabled?.() === false) return;
           this.notePush();
           this.handleActivity(data);
         },
         [VC_BOT_EVENTS.ended]: (data: unknown) => {
+          if (this.deps.intakeEnabled?.() === false) return;
           this.notePush();
           this.handleEnded(data);
         },
@@ -149,6 +156,13 @@ export class MeetingManager {
     }
     const inviter = asRecord(d.operator ?? d.inviter);
     const inviterId = typeof inviter.open_id === 'string' ? inviter.open_id : undefined;
+    if (this.deps.authorizeInviter && !this.deps.authorizeInviter(inviterId)) {
+      log.info('meeting', 'invite-skipped', {
+        meetingNo,
+        reason: 'unauthorized-inviter',
+      });
+      return;
+    }
     log.info('meeting', 'invited', { meetingNo });
     this.deps.onInvited?.(meetingNo, inviterId);
     if (this.deps.config().autoJoinOnInvite) {
