@@ -89,6 +89,7 @@ describe('topic message quote handling', () => {
     await waitFor(() => h.agent.runOptions.length === 1);
 
     expect(h.agent.runOptions).toHaveLength(1);
+    expect(h.agent.runOptions[0]?.userInput.kind).toBe('interactive');
     const prompt = h.agent.runOptions[0]?.prompt ?? '';
     expect(prompt).toContain('"threadId":"omt_topic"');
     expect(prompt).not.toContain('<quoted_messages>');

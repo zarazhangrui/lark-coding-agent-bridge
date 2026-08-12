@@ -99,6 +99,7 @@ describe('sender identity in bridge_context', () => {
       }),
     );
     await waitFor(() => h.agent.runOptions.length === 1);
+    expect(h.agent.runOptions[0]?.userInput.kind).toBe('interactive');
 
     const context = readSection(h.agent.runOptions[0]?.prompt ?? '', 'bridge_context') as {
       senderType?: string;

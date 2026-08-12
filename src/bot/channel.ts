@@ -14,7 +14,12 @@ import {
   type BridgePromptQuotedMessage,
   type BridgePromptTopicMessage,
 } from '../agent/prompt';
-import type { AgentAdapter, AgentEvent } from '../agent/types';
+import type {
+  AgentAdapter,
+  AgentEvent,
+  AgentUserInputMode,
+  AgentUserInputRequest,
+} from '../agent/types';
 import { handleCardAction } from '../card/dispatcher';
 import { CallbackAuth } from '../card/callback-auth';
 import { CallbackNonceStore } from '../card/callback-store';
@@ -74,6 +79,7 @@ import {
   CotPublisher,
   finalAnswerOnlyState,
 } from './cot';
+import { UserInputRegistry } from './user-input-registry';
 
 const DEBOUNCE_MS = 600;
 const STREAM_TERMINAL_GRACE_MS = 3000;
@@ -270,6 +276,7 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
   };
 
   const channel = createLarkChannel(opts);
+  const userInputRegistry = new UserInputRegistry({ channel, callbackAuth });
   const media = new MediaCache(channel, deps.appPaths?.mediaDir);
 
   // Pending → run handoff: while a run is active on a chat, block its pending
@@ -315,6 +322,7 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
           controls,
           cotClient,
           callbackAuth,
+          userInputRegistry,
           activePolicyFingerprints,
           lastRunModelByScope,
           scope,
@@ -372,6 +380,7 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
           chatModeCache,
           callbackAuth,
           callbackPolicyFingerprintForScope: (scope) => activePolicyFingerprints.get(scope),
+          userInputRegistry,
         });
       }).catch((err) => log.fail('cardAction', err));
     },
@@ -519,6 +528,7 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
       meetingManager?.dispose();
       controls.meeting = undefined;
       pending.cancelAll();
+      userInputRegistry.cancelAll();
       const [disconnectResult, stopAllResult, ...flushResults] = await Promise.allSettled([
         channel.disconnect(),
         activeRuns.stopAll(),
@@ -798,6 +808,7 @@ interface RunBatchDeps {
   controls: Controls;
   cotClient: CotClient;
   callbackAuth?: CallbackAuth;
+  userInputRegistry: UserInputRegistry;
   activePolicyFingerprints: Map<string, string>;
   lastRunModelByScope: Map<string, string>;
   scope: string;
@@ -816,6 +827,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
     controls,
     cotClient,
     callbackAuth,
+    userInputRegistry,
     activePolicyFingerprints,
     lastRunModelByScope,
     scope,
@@ -959,6 +971,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
     controls.profileConfig.agentKind === 'codex'
       ? codexCapability(controls.profileConfig)
       : claudeCapability(controls.profileConfig);
+  const runContext: ImUserInputRunContext = { controller: new AbortController() };
   const flow = await startRunFlow({
     scopeId: scope,
     scope: scopeContext,
@@ -971,10 +984,15 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
     sessionCatalog,
     workspaces,
     executor,
-    userInput: {
-      kind: 'unavailable',
-      reason: 'caller-does-not-support-interactive-turns',
-    },
+    userInput: createImUserInputMode({
+      registry: userInputRegistry,
+      runContext,
+      scope,
+      chatId,
+      operatorOpenId: firstMsg.senderId,
+      replyTo: lastMsg.messageId,
+      replyInThread: mode === 'topic' && Boolean(threadId),
+    }),
     now: Date.now(),
     stopGraceMs: getAgentStopGraceMs(controls.cfg),
     observability: {
@@ -985,6 +1003,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
     },
   });
   if (!flow.ok) {
+    runContext.controller.abort(new Error('IM 运行未启动'));
     log.info('run-flow', 'rejected', { scope, code: flow.rejectReason.code });
     log.warn('policy', 'denied', {
       scope,
@@ -996,6 +1015,8 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
   }
 
   const { execution, cwdRealpath: cwd } = flow;
+  runContext.runId = execution.runId;
+  runContext.policyFingerprint = flow.policy.policyFingerprint;
   activePolicyFingerprints.set(scope, flow.policy.policyFingerprint);
   const handle = execution.handle;
   const eventStream = execution.subscribe();
@@ -1289,9 +1310,51 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
   } catch (err) {
     log.fail('stream', err);
   } finally {
+    runContext.controller.abort(new Error('IM 运行已结束'));
     activePolicyFingerprints.delete(scope);
     scheduleWorkingReactionCleanup(channel, lastMsg.messageId, reactionPromise);
   }
+}
+
+interface ImUserInputRunContext {
+  controller: AbortController;
+  runId?: string;
+  policyFingerprint?: string;
+}
+
+function createImUserInputMode(input: {
+  registry: UserInputRegistry;
+  runContext: ImUserInputRunContext;
+  scope: string;
+  chatId: string;
+  operatorOpenId: string;
+  replyTo: string;
+  replyInThread: boolean;
+}): AgentUserInputMode {
+  return {
+    kind: 'interactive',
+    signal: input.runContext.controller.signal,
+    handle: (request: AgentUserInputRequest, signal: AbortSignal) => {
+      const runId = input.runContext.runId;
+      const policyFingerprint = input.runContext.policyFingerprint;
+      if (!runId || !policyFingerprint) {
+        throw new Error('Codex 用户输入请求早于 IM 运行上下文初始化');
+      }
+      return input.registry.request(
+        {
+          runId,
+          scope: input.scope,
+          chatId: input.chatId,
+          operatorOpenId: input.operatorOpenId,
+          policyFingerprint,
+          request,
+          replyTo: input.replyTo,
+          replyInThread: input.replyInThread,
+        },
+        signal,
+      );
+    },
+  };
 }
 
 interface LazyProgressStream {

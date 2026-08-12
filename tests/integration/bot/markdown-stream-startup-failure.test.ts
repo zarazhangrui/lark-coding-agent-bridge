@@ -88,6 +88,7 @@ describe('markdown stream startup failures', () => {
 
     await h.channel.handlers.message?.(message('om_first', 'first'));
     await waitFor(() => h.agent.runOptions.length === 1);
+    expect(h.agent.runOptions[0]?.userInput.kind).toBe('interactive');
 
     await h.channel.handlers.message?.(message('om_second', 'second'));
     await waitFor(() => h.agent.runOptions.length === 2);
