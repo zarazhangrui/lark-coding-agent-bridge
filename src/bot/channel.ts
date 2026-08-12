@@ -1098,6 +1098,28 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
   const reactionPromise =
     cotEnabled || replyMode === 'card' ? undefined : addWorkingReaction(channel, lastMsg.messageId);
 
+  let codexFailureStop: Promise<void> | undefined;
+  const stopCodexAfterReplyFailure = (cause: unknown): Promise<void> => {
+    if (controls.profileConfig.agentKind !== 'codex') return Promise.resolve();
+    if (codexFailureStop) return codexFailureStop;
+    runContext.controller.abort(new Error('IM 回复渲染失败', { cause }));
+    codexFailureStop = execution.stop().catch((err) => {
+      log.warn('stream', 'stop-after-render-failure-failed', {
+        scope,
+        err: err instanceof Error ? err.message : String(err),
+      });
+    });
+    return codexFailureStop;
+  };
+  const stopCodexOnRenderFailure = async (renderDone: Promise<RunState>): Promise<RunState> => {
+    try {
+      return await renderDone;
+    } catch (cause) {
+      await stopCodexAfterReplyFailure(cause);
+      throw cause;
+    }
+  };
+
   try {
     if (cotEnabled) {
       const cotPublisher = new CotPublisher({
@@ -1173,19 +1195,21 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
           sendOpts,
         ),
       );
-      const renderDone = processAgentStream(
-        handle,
-        eventStream,
-        scope,
-        idleTimeoutMs,
-        recordSession,
-        async (state) => {
-          latestState = state;
-          if (shouldOpenProgressStream(filterForPrefs(state))) progress.ensureOpen();
-          if (cardCtrl) {
-            await cardCtrl.update(renderCard(filterForPrefs(state), cardRenderOptions));
-          }
-        },
+      const renderDone = stopCodexOnRenderFailure(
+        processAgentStream(
+          handle,
+          eventStream,
+          scope,
+          idleTimeoutMs,
+          recordSession,
+          async (state) => {
+            latestState = state;
+            if (shouldOpenProgressStream(filterForPrefs(state))) progress.ensureOpen();
+            if (cardCtrl) {
+              await cardCtrl.update(renderCard(filterForPrefs(state), cardRenderOptions));
+            }
+          },
+        ),
       );
       try {
         await awaitRenderAwareStream({
@@ -1193,6 +1217,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
           progress,
           renderDone,
           producerStarted: () => producerStarted,
+          onUnrenderedStreamFailure: stopCodexAfterReplyFailure,
           fallback: async (state) => {
             if (controls.profileConfig.agentKind === 'codex') return;
             if (renderText(filterForPrefs(state)).trim() === '') return;
@@ -1238,19 +1263,21 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
           sendOpts,
         ),
       );
-      const renderDone = processAgentStream(
-        handle,
-        eventStream,
-        scope,
-        idleTimeoutMs,
-        recordSession,
-        async (state) => {
-          latestState = state;
-          if (shouldOpenProgressStream(filterForPrefs(state))) progress.ensureOpen();
-          if (markdownCtrl) {
-            await markdownCtrl.setContent(renderText(filterForPrefs(state)));
-          }
-        },
+      const renderDone = stopCodexOnRenderFailure(
+        processAgentStream(
+          handle,
+          eventStream,
+          scope,
+          idleTimeoutMs,
+          recordSession,
+          async (state) => {
+            latestState = state;
+            if (shouldOpenProgressStream(filterForPrefs(state))) progress.ensureOpen();
+            if (markdownCtrl) {
+              await markdownCtrl.setContent(renderText(filterForPrefs(state)));
+            }
+          },
+        ),
       );
       try {
         await awaitRenderAwareStream({
@@ -1258,6 +1285,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
           progress,
           renderDone,
           producerStarted: () => producerStarted,
+          onUnrenderedStreamFailure: stopCodexAfterReplyFailure,
           fallback: async (state) => {
             if (controls.profileConfig.agentKind === 'codex') return;
             const body = renderText(filterForPrefs(state));
@@ -1739,20 +1767,29 @@ async function awaitRenderAwareStream(input: {
   progress: LazyProgressStream;
   renderDone: Promise<RunState>;
   producerStarted: () => boolean;
+  onUnrenderedStreamFailure?: (error: unknown) => Promise<void>;
   fallback: (state: RunState) => Promise<void>;
 }): Promise<void> {
   const streamResult = input.progress.settled.then(
     () => ({ kind: 'stream' as const, ok: true as const }),
     (err) => ({ kind: 'stream' as const, ok: false as const, err }),
   );
+  let renderSettled = false;
   const renderResult = input.renderDone.then(
-    (state) => ({ kind: 'render' as const, ok: true as const, state }),
-    (err) => ({ kind: 'render' as const, ok: false as const, err }),
+    (state) => {
+      renderSettled = true;
+      return { kind: 'render' as const, ok: true as const, state };
+    },
+    (err) => {
+      renderSettled = true;
+      return { kind: 'render' as const, ok: false as const, err };
+    },
   );
   const first = await Promise.race([streamResult, renderResult]);
   if (!first.ok) {
     if (first.kind === 'stream') {
       log.fail('stream', first.err, { mode: input.mode, step: 'stream' });
+      if (!renderSettled) await input.onUnrenderedStreamFailure?.(first.err);
       const rendered = await renderResult;
       if (!rendered.ok) throw rendered.err;
       await runFallbackReply(input.mode, rendered.state, input.fallback);

@@ -2,8 +2,8 @@ import type { NormalizedMessage } from '@larksuite/channel';
 import { realpath } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { AgentEvent } from '../../../src/agent/types.js';
-import type { FakeAgentEvents } from '../../helpers/fake-agent.js';
+import type { AgentEvent, AgentRunOptions } from '../../../src/agent/types.js';
+import type { FakeAgentEvents, FakeAgentRun } from '../../helpers/fake-agent.js';
 import { createDefaultProfileConfig } from '../../../src/config/profile-schema.js';
 import { log } from '../../../src/core/logger.js';
 import { SessionStore } from '../../../src/session/store.js';
@@ -349,6 +349,7 @@ describe('markdown stream startup failures', () => {
     await waitFor(() => h.channel.sent.length === 1);
 
     expect(lastMarkdown(h.channel)).toContain('FINAL_AFTER_STREAM_FAILURE');
+    expect(h.agent.runs[0]?.stopped).toBe(false);
     expect(
       fail.mock.calls.some(
         (call) =>
@@ -359,6 +360,72 @@ describe('markdown stream startup failures', () => {
       ),
     ).toBe(true);
   });
+
+  it.each(['card', 'markdown'] as const)(
+    'stops a Codex run waiting for request_user_input when a %s progress update fails',
+    async (messageReply) => {
+      let updateCount = 0;
+      const progressUpdate = vi.fn(async (_next: unknown) => {
+        updateCount++;
+        if (updateCount === 2) throw new Error('progress update failed');
+      });
+      const agent = new WaitingUserInputAgent();
+      const h = await createHarness({
+        agent,
+        messageReply,
+        stream: async (_chatId, input) => {
+          const streamInput = input as {
+            markdown?: (ctrl: {
+              setContent(markdown: string): Promise<void>;
+            }) => Promise<void>;
+            card?: {
+              producer(ctrl: {
+                update(next: object | ((current: object) => object)): Promise<void>;
+              }): Promise<void>;
+            };
+          };
+          if (messageReply === 'card') {
+            await streamInput.card?.producer({ update: progressUpdate });
+          } else {
+            await streamInput.markdown?.({ setContent: progressUpdate });
+          }
+        },
+      });
+      await startTestBridge(h);
+
+      await h.channel.handlers.message?.(message('om_render_failure', 'run'));
+      await waitFor(() => agent.runs[0]?.stopped === true);
+
+      expect(progressUpdate).toHaveBeenCalledTimes(2);
+      expect(agent.runs[0]?.waitForExitCalls).toBeGreaterThan(0);
+
+      await h.channel.handlers.message?.(message('om_after_render_failure', 'run again'));
+      await waitFor(() => agent.runOptions.length === 2);
+    },
+  );
+
+  it.each(['card', 'markdown'] as const)(
+    'stops a Codex run waiting for request_user_input when a %s stream fails before its producer starts',
+    async (messageReply) => {
+      const agent = new WaitingUserInputAgent();
+      const h = await createHarness({
+        agent,
+        messageReply,
+        stream: async () => {
+          throw new Error('progress stream startup failed');
+        },
+      });
+      await startTestBridge(h);
+
+      await h.channel.handlers.message?.(message('om_stream_startup_failure', 'run'));
+      await waitFor(() => agent.runs[0]?.stopped === true);
+
+      expect(agent.runs[0]?.waitForExitCalls).toBeGreaterThan(0);
+
+      await h.channel.handlers.message?.(message('om_after_stream_startup_failure', 'run again'));
+      await waitFor(() => agent.runOptions.length === 2);
+    },
+  );
 
   it('does not record delivery when the final send has no message receipt', async () => {
     const fail = vi.spyOn(log, 'fail').mockImplementation(() => {});
@@ -439,6 +506,7 @@ async function createHarness(options: {
   messageReply?: 'card' | 'markdown' | 'text';
   /** Codex holds its answer back for a dedicated final reply; Claude streams it. */
   agentKind?: 'claude' | 'codex';
+  agent?: FakeAgentAdapter;
 } = {}): Promise<{
   tmp: TmpProfile;
   channel: FakeLarkChannel;
@@ -476,20 +544,22 @@ async function createHarness(options: {
   };
   const sessions = new SessionStore(join(tmp.profile, 'sessions.json'));
   const workspaces = new WorkspaceStore(join(tmp.profile, 'workspaces.json'));
-  const agent = new FakeAgentAdapter({
-    id: 'codex',
-    displayName: 'Codex',
-    events: options.events ?? [
-      [
-        {
-          type: 'error',
-          message: 'codex exited with code 1: Error loading config.toml',
-          terminationReason: 'failed',
-        },
+  const agent =
+    options.agent ??
+    new FakeAgentAdapter({
+      id: 'codex',
+      displayName: 'Codex',
+      events: options.events ?? [
+        [
+          {
+            type: 'error',
+            message: 'codex exited with code 1: Error loading config.toml',
+            terminationReason: 'failed',
+          },
+        ],
+        [{ type: 'done', terminationReason: 'normal' }],
       ],
-      [{ type: 'done', terminationReason: 'normal' }],
-    ],
-  });
+    });
   const channel = createFakeLarkChannel(options);
   sdkMock.channel = channel;
   const controls = createControls(profileConfig);
@@ -606,6 +676,80 @@ function deferred<T>(): {
     reject = rej;
   });
   return { promise, resolve, reject };
+}
+
+class WaitingUserInputAgent extends FakeAgentAdapter {
+  constructor() {
+    super({
+      id: 'codex',
+      displayName: 'Codex',
+      events: [{ type: 'done', terminationReason: 'normal' }],
+    });
+  }
+
+  override run(opts: AgentRunOptions) {
+    if (this.runOptions.length > 0) return super.run(opts);
+    const run = new WaitingUserInputRun(opts);
+    this.runOptions.push(opts);
+    this.runs.push(run);
+    return run;
+  }
+}
+
+class WaitingUserInputRun implements FakeAgentRun {
+  readonly runId: string;
+  readonly opts: AgentRunOptions;
+  readonly events: AsyncIterable<AgentEvent>;
+  readonly waitForExitResult = true;
+  readonly #exit = deferred<void>();
+  #stopped = false;
+  #waitForExitCalls = 0;
+
+  constructor(opts: AgentRunOptions) {
+    this.runId = opts.runId;
+    this.opts = opts;
+    this.events = this.iterate();
+  }
+
+  get stopped(): boolean {
+    return this.#stopped;
+  }
+
+  get waitForExitCalls(): number {
+    return this.#waitForExitCalls;
+  }
+
+  async stop(): Promise<void> {
+    this.#stopped = true;
+    this.#exit.resolve(undefined);
+  }
+
+  async waitForExit(): Promise<boolean> {
+    this.#waitForExitCalls++;
+    await this.#exit.promise;
+    return true;
+  }
+
+  private async *iterate(): AsyncIterable<AgentEvent> {
+    yield {
+      type: 'tool_use',
+      id: 'request-waiting',
+      name: 'request_user_input',
+      input: {
+        id: 'request-waiting',
+        questions: [
+          {
+            id: 'confirm',
+            header: '确认',
+            question: '是否继续？',
+            allowOther: false,
+            options: [{ label: '继续', description: '继续执行' }],
+          },
+        ],
+      },
+    };
+    await this.#exit.promise;
+  }
 }
 
 function createControls(profileConfig: ReturnType<typeof createDefaultProfileConfig>) {
