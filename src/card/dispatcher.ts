@@ -146,18 +146,23 @@ async function resolveScope(
 ): Promise<{ scope: string; threadId: string | undefined; mode: 'p2p' | 'group' | 'topic' }> {
   const chatId = deps.evt.chatId;
   const mode = await deps.chatModeCache.resolve(deps.channel, chatId);
-  if (mode !== 'topic') {
+  if (mode === 'p2p') {
     return { scope: chatId, threadId: undefined, mode };
   }
-  // Topic group — need the carrier message's thread_id to compose scope.
-  // One API call per click; could cache by messageId if it ever becomes hot.
+  // Card-action events do not carry thread_id. Always inspect the carrier
+  // message for group clicks: a recently converted topic group can still be
+  // cached as `group`, while the message's thread_id is already authoritative.
   const threadId = await lookupMessageThreadId(deps.channel, deps.evt.messageId);
   if (!threadId) {
     // Fall back to plain chatId. Better to land in the chat's "default"
     // scope than fail the click silently.
     return { scope: chatId, threadId: undefined, mode };
   }
-  return { scope: `${chatId}:${threadId}`, threadId, mode };
+  if (mode !== 'topic') {
+    deps.chatModeCache.invalidate(chatId);
+    log.info('cardAction', 'thread-mode-override', { chatId, threadId, resolvedMode: mode });
+  }
+  return { scope: `${chatId}:${threadId}`, threadId, mode: 'topic' };
 }
 
 function forwardToAgent(

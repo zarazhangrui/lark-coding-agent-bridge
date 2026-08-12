@@ -100,6 +100,28 @@ describe('signed card callback dispatch', () => {
     expect(queued[0]?.content).toBe('[card-click] {"choice":"a"}');
   });
 
+  it('recovers topic scope from the carrier message when group mode is stale', async () => {
+    const h = await createHarness({ chatMode: 'group' });
+    h.channel.rawThreadIds.set('om_card', 'th_topic');
+    h.activeRuns.register(
+      'oc_group:th_topic',
+      h.agent.run({ runId: 'run-active', prompt: 'running' }),
+    );
+
+    await h.dispatch({
+      __bridge_cb: true,
+      bridge_token: h.token('agent_callback', {
+        nonce: 'nonce-stale-group',
+        scope: 'oc_group:th_topic',
+      }),
+      choice: 'a',
+    });
+
+    expect(h.chatModeInvalidations).toEqual(['oc_group']);
+    expect(h.pending.cancel('oc_group')).toHaveLength(0);
+    expect(h.pending.cancel('oc_group:th_topic')).toHaveLength(1);
+  });
+
   it('rejects bridge callbacks when callback auth is unavailable', async () => {
     const h = await createHarness({ callbackAuth: false });
     const activeRun = h.agent.run({ runId: 'run-active', prompt: 'running' }) as FakeAgentRun;
@@ -125,6 +147,7 @@ type Harness = {
   controls: Controls;
   pending: PendingQueue;
   auth: CallbackAuth;
+  chatModeInvalidations: string[];
   dispatch(value: Record<string, unknown>, formValue?: Record<string, unknown>): Promise<void>;
   token(
     action: string,
@@ -170,8 +193,10 @@ async function createHarness(
     now: () => 1000,
     createNonce: () => nonce,
   });
+  const chatModeInvalidations: string[] = [];
   const chatModeCache = {
     resolve: async () => opts.chatMode ?? 'group',
+    invalidate: (chatId: string) => chatModeInvalidations.push(chatId),
   } as unknown as ChatModeCache;
   cleanups.push(async () => {
     pending.cancelAll();
@@ -189,6 +214,7 @@ async function createHarness(
     controls,
     pending,
     auth,
+    chatModeInvalidations,
     token: (action, overrides = {}) => {
       nonce = overrides.nonce ?? `nonce-${action}`;
       return auth.sign({
