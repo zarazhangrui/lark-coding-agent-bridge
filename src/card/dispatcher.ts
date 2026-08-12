@@ -14,6 +14,10 @@ import type { SessionStore } from '../session/store';
 import type { WorkspaceStore } from '../workspace/store';
 import { commandSessionCatalogIdentity } from '../bot/session-catalog-identity';
 import { lookupMessageThreadId } from '../bot/thread-id';
+import {
+  CODEX_USER_INPUT_MARKER,
+  type UserInputRegistry,
+} from '../bot/user-input-registry';
 
 /** Marker key on a button's value object that flags the cardAction as
  * a callback that should be forwarded back to the agent instead
@@ -40,6 +44,7 @@ export interface CardDispatchDeps {
   callbackAuth?: CallbackAuth;
   callbackPolicyFingerprint?: string;
   callbackPolicyFingerprintForScope?: (scope: string) => string | undefined;
+  userInputRegistry?: UserInputRegistry;
 }
 
 export async function handleCardAction(deps: CardDispatchDeps): Promise<void> {
@@ -73,6 +78,32 @@ export async function handleCardAction(deps: CardDispatchDeps): Promise<void> {
     log.info('cardAction', 'skip-not-allowed-user', {
       operator: operatorId.slice(-6),
       reason: accessDecision.reason,
+    });
+    return;
+  }
+
+  // Native Codex request_user_input callbacks resume the already-running
+  // app-server turn directly. They must never enter PendingQueue as a new IM
+  // prompt, and are handled before both built-in commands and agent callbacks.
+  if (CODEX_USER_INPUT_MARKER in payload) {
+    const interactionId = typeof payload.interaction_id === 'string'
+      ? payload.interaction_id
+      : undefined;
+    const token = typeof payload.bridge_token === 'string'
+      ? payload.bridge_token
+      : undefined;
+    if (!interactionId || !token || !deps.userInputRegistry) {
+      log.warn('user-input', 'submit-denied', { reason: 'malformed-or-unavailable' });
+      return;
+    }
+    await deps.userInputRegistry.handleCardAction({
+      interactionId,
+      token,
+      scope,
+      chatId,
+      operatorOpenId: operatorId,
+      activeRunId: deps.activeRuns.get(scope)?.run.runId,
+      formValue,
     });
     return;
   }
