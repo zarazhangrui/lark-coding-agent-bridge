@@ -161,6 +161,17 @@ If a profile was created with the wrong agent kind, stop or unregister any match
 
 DMs do not require an @ mention. Groups and topic groups require `@bot` by default; `@all` is ignored. Cloud-doc comments in supported document types run when the bot is mentioned.
 
+### Codex interactive questions
+
+Interactive Codex runs in DMs, groups, and topic groups require Codex CLI 0.107.0 or newer. The bridge starts one stdio `codex app-server` process per turn. When Codex calls `request_user_input`, the bridge posts a signed CardKit form and resumes the same turn after the initiating user submits every answer. `/stop`, process exit, or server-side resolution invalidates the form; submitting it never creates a new queued chat message.
+
+Cloud-doc comments, meeting runs, and `/doctor` continue to use the non-interactive `codex exec --json` path and retain their existing CLI compatibility. If the app-server handshake is unavailable, only the interactive IM run fails with an upgrade message. It does not fall back to exec, where Codex could silently choose a default answer. The bridge uses the 0.107 app-server protocol as its forward-compatible baseline and accepts compatible later releases without version-specific branches.
+
+Two existing Codex profile flags need special attention in IM mode:
+
+- `ignoreUserConfig: true` is rejected because app-server has no equivalent user-config isolation.
+- `ignoreRules: true` cannot suppress Codex `.rules` in app-server. The bridge prints a prominent warning once and continues; these rules may make IM runs stricter than the exec-based entry points.
+
 ## Reply Display and COT
 
 `/config` controls three presentation settings:

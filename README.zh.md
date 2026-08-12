@@ -161,6 +161,17 @@ lark-channel-bridge profile export <name> --include-secrets --yes
 
 私聊不需要 @。群和话题群默认必须 `@bot`；`@all` 会被忽略。支持的云文档评论里 @bot 就会触发回复。
 
+### Codex 交互式提问
+
+私聊、群聊和话题群中的 Codex 交互运行要求 Codex CLI 0.107.0 或更高版本。bridge 会为每个 turn 启动一个 stdio `codex app-server` 进程。当 Codex 调用 `request_user_input` 时，bridge 会发送带签名的 CardKit 表单；发起本次运行的用户完整提交后，回答会直接恢复同一个 turn。`/stop`、进程退出或服务端提前结束请求都会让表单失效；提交表单不会生成新的排队聊天消息。
+
+云文档评论、会议运行和 `/doctor` 继续使用非交互的 `codex exec --json` 路径，并保留原有的 CLI 兼容范围。app-server 握手不可用时，只有本次 IM 交互运行会明确提示升级；它不会回退到可能静默采用默认答案的 exec。bridge 以 0.107 app-server 协议作为向前兼容基线，并在不增加版本专用分支的前提下接受协议兼容的后续版本。
+
+Codex profile 里已有的两个选项在 IM 模式下需要特别注意：
+
+- `ignoreUserConfig: true` 会明确失败，因为 app-server 没有等价的用户配置隔离能力。
+- `ignoreRules: true` 无法阻止 app-server 加载 Codex `.rules`。bridge 会输出一次高可见告警后继续运行；这些规则可能让 IM 运行比 exec 入口更严格。
+
 ## 回复展示与 COT
 
 `/config` 可以调整三类展示选项：
