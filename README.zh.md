@@ -309,6 +309,16 @@ grep '"event":"enter"' ~/.lark-channel/profiles/<profile>/logs/bridge-$(date +%Y
 
 **agent 子进程假死（卡片停在最后一帧不动）**：支持 idle 探活。agent 一段时间没输出就会被 SIGTERM kill，卡片末尾会标出自动终止原因。默认关闭。开启方式：`/config` 设全局值（分钟），或 `/timeout 10` 只对当前会话生效；`/timeout off` 关掉当前会话的探活；`/timeout default` 清掉会话覆盖，回退到全局设置。
 
+agent 发出终态事件后，bridge 默认再给进程 30 秒完成自身清理，超时才停止真正卡住的进程。如果 agent 在结果之后还有合理的长时间后台工作，可把对应 profile 的 `preferences.postDoneExitGraceMs` 调高（5,000-900,000 毫秒）。这个宽限不会延迟显式 `/stop`。
+
+```json
+{
+  "preferences": {
+    "postDoneExitGraceMs": 120000
+  }
+}
+```
+
 **图片发过去 agent 说看不到**：升级到最新版，0.1.0 之前的版本有文件名去重 bug。
 
 ## 测试与 CI

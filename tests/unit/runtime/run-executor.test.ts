@@ -35,6 +35,28 @@ describe('RunExecutor policy runtime options', () => {
 
     await collect(execution.subscribe());
   });
+
+  it('allows 30 seconds for a healthy process to exit after its terminal event', async () => {
+    const agent = new FakeAgentAdapter({
+      events: [{ type: 'done', terminationReason: 'normal' }],
+    });
+    const executor = new RunExecutor({
+      agent,
+      pool: new ProcessPool(() => 1),
+      activeRuns: new ActiveRuns(),
+      createRunId: () => 'run-cleanup-grace',
+      now: () => 1000,
+    });
+
+    const execution = await executor.submit({
+      scopeId: 'scope-cleanup-grace',
+      policy: policy(),
+    });
+    await collect(execution.subscribe());
+
+    expect(agent.runs[0]?.waitForExitTimeouts).toEqual([30_000]);
+    expect(agent.runs[0]?.stopped).toBe(false);
+  });
 });
 
 function policy(overrides: Partial<RunPolicyAllow> = {}): RunPolicyAllow {

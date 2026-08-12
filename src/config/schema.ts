@@ -155,6 +155,13 @@ export interface AppPreferences {
    * Range 100-30000; out-of-range values fall back to default.
    */
   agentStopGraceMs?: number;
+  /**
+   * How long the bridge waits for an agent process to exit naturally after a
+   * terminal stream event before treating it as stuck and calling stop().
+   * This is separate from explicit user interruption, which calls stop()
+   * immediately. Default 30000ms; clamped to 5000-900000ms.
+   */
+  postDoneExitGraceMs?: number;
 }
 
 /**
@@ -269,6 +276,13 @@ export function getAgentStopGraceMs(cfg: AppConfig): number {
   const raw = cfg.preferences?.agentStopGraceMs;
   if (typeof raw !== 'number' || !Number.isFinite(raw)) return 5000;
   return Math.min(30_000, Math.max(100, Math.floor(raw)));
+}
+
+/** Resolve the bounded grace period for natural post-terminal process exit. */
+export function getPostDoneExitGraceMs(cfg: AppConfig): number {
+  const raw = cfg.preferences?.postDoneExitGraceMs;
+  if (typeof raw !== 'number' || !Number.isFinite(raw)) return 30_000;
+  return Math.min(900_000, Math.max(5_000, Math.floor(raw)));
 }
 
 export function getRunIdleTimeoutMs(cfg: AppConfig): number | undefined {

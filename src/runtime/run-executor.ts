@@ -37,11 +37,13 @@ export interface RunExecution {
   scopeId: string;
   run: AgentRun;
   handle: RunHandle;
+  /** Settles after the subprocess exits or its bounded stop completes. */
+  cleanupSettled: Promise<void>;
   subscribe(): AsyncIterable<AgentEvent>;
   stop(): Promise<void>;
 }
 
-const DEFAULT_POST_DONE_EXIT_GRACE_MS = 2000;
+const DEFAULT_POST_DONE_EXIT_GRACE_MS = 30_000;
 
 export class RunExecutor {
   private readonly agent: AgentAdapter;
@@ -157,28 +159,78 @@ export class RunExecutor {
         err instanceof Error ? err.message : 'another run is already active for this scope',
       );
     }
-    let cleaned = false;
-    const cleanup = async (waitForExit: boolean): Promise<void> => {
-      if (cleaned) return;
-      cleaned = true;
-      this.activeRuns.unregister(input.scopeId, run);
-      release();
-      if (waitForExit) {
-        const exited = await run.waitForExit(this.postDoneExitGraceMs);
-        if (!exited) {
-          log.warn('run', 'post-done-exit-timeout', {
-            ...dimensions,
-            graceMs: this.postDoneExitGraceMs,
-          });
-          await run.stop().catch((err) => {
-            log.warn('run', 'post-done-stop-failed', {
+    let resolveCleanupSettled!: () => void;
+    const cleanupSettled = new Promise<void>((resolve) => {
+      resolveCleanupSettled = resolve;
+    });
+    let cleanupPromise: Promise<void> | undefined;
+    let stopPromise: Promise<void> | undefined;
+    let stopRequested = false;
+    let signalStopRequested!: () => void;
+    const stopRequestedSignal = new Promise<void>((resolve) => {
+      signalStopRequested = resolve;
+    });
+    const stopRun = (): Promise<void> => {
+      stopPromise ??= run.stop();
+      return stopPromise;
+    };
+    const logStopFailure = (err: unknown): void => {
+      log.warn('run', 'post-done-stop-failed', {
+        ...dimensions,
+        err: err instanceof Error ? err.message : String(err),
+      });
+    };
+    const cleanup = (waitForExit: boolean): Promise<void> => {
+      if (cleanupPromise) return cleanupPromise;
+      cleanupPromise = (async () => {
+        try {
+          if (!waitForExit) return;
+          const outcome = await Promise.race([
+            run.waitForExit(this.postDoneExitGraceMs).then((exited) => ({
+              kind: 'exit' as const,
+              exited,
+            })),
+            stopRequestedSignal.then(() => ({ kind: 'stop' as const })),
+          ]);
+          if (outcome.kind === 'stop') {
+            await stopRun().catch(logStopFailure);
+            return;
+          }
+          if (!outcome.exited) {
+            log.warn('run', 'post-done-exit-timeout', {
               ...dimensions,
-              err: err instanceof Error ? err.message : String(err),
+              graceMs: this.postDoneExitGraceMs,
             });
+            await stopRun().catch(logStopFailure);
+          }
+        } catch (err) {
+          log.warn('run', 'post-done-wait-failed', {
+            ...dimensions,
+            err: err instanceof Error ? err.message : String(err),
           });
+          await stopRun().catch(logStopFailure);
+        } finally {
+          this.activeRuns.unregister(input.scopeId, run);
+          release();
+          resolveCleanupSettled();
         }
+      })();
+      return cleanupPromise;
+    };
+    const requestStop = async (): Promise<void> => {
+      handle.interrupted = true;
+      const stopping = stopRun();
+      if (!stopRequested) {
+        stopRequested = true;
+        signalStopRequested();
+      }
+      try {
+        await stopping;
+      } finally {
+        await cleanup(false);
       }
     };
+    handle.requestStop = requestStop;
     const fanout = new EventFanout(observeRunEvents(run.events, {
       dimensions,
       startedAt,
@@ -192,13 +244,9 @@ export class RunExecutor {
       scopeId: input.scopeId,
       run,
       handle,
+      cleanupSettled,
       subscribe: () => fanout.subscribe(),
-      stop: async () => {
-        handle.interrupted = true;
-        await run.stop();
-        await run.waitForExit(this.postDoneExitGraceMs);
-        await cleanup(false);
-      },
+      stop: requestStop,
     };
   }
 }

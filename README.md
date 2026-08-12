@@ -309,6 +309,16 @@ Cloud-doc comments do not need a separate workspace binding or document allowlis
 
 **The agent subprocess looks frozen (card stuck on the last frame).** The bridge supports an idle watchdog: if the agent emits nothing for N minutes, the process is killed and the card is annotated with the auto-termination reason. Disabled by default. Enable with `/config` globally, or `/timeout 10` for the current session; `/timeout off` disables it for the session; `/timeout default` clears the session override.
 
+After a terminal event, the bridge allows 30 seconds for the agent process to finish its own cleanup before stopping a genuinely stuck process. Agents with legitimate longer post-result background work can raise the matching profile's `preferences.postDoneExitGraceMs` (5,000-900,000 ms). This grace does not delay an explicit `/stop`.
+
+```json
+{
+  "preferences": {
+    "postDoneExitGraceMs": 120000
+  }
+}
+```
+
 **The agent says it cannot see an image I sent.** Upgrade to the latest version. Releases before 0.1.0 had a filename-dedup bug.
 
 ## Testing and CI

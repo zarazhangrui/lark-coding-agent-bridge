@@ -274,26 +274,50 @@ export async function runCommandHandler(
 
 /**
  * Send a plain markdown reply, swallowing any send error. Used by command
- * handlers where a failed reply shouldn't bubble up and crash the bot —
- * losing the message is better than dying.
+ * handlers where a failed reply shouldn't bubble up and crash the bot.
+ * Audit-safe fallback is normally reserved for audit rejection; callers with
+ * no other renderer can request the same single fallback for any failed or
+ * receipt-less send.
  */
-async function reply(ctx: CommandContext, markdown: string): Promise<void> {
+async function reply(
+  ctx: CommandContext,
+  markdown: string,
+  auditSafeFallbackOnAnyFailure = false,
+): Promise<boolean> {
   try {
-    await ctx.channel.send(ctx.msg.chatId, { markdown }, commandReplyOptions(ctx));
+    const result = await ctx.channel.send(
+      ctx.msg.chatId,
+      { markdown },
+      commandReplyOptions(ctx),
+    );
+    requireCommandReplyReceipt(result);
+    return true;
   } catch (err) {
     log.fail('command', err, { step: 'reply' });
     reportMetric('command_fail', 1, { step: 'reply' });
-    if (!isMessageAuditReject(err) || markdown === AUDIT_SAFE_COMMAND_REPLY) return;
+    const shouldTryAuditSafeFallback =
+      markdown !== AUDIT_SAFE_COMMAND_REPLY &&
+      (auditSafeFallbackOnAnyFailure || isMessageAuditReject(err));
+    if (!shouldTryAuditSafeFallback) return false;
     try {
-      await ctx.channel.send(
+      const result = await ctx.channel.send(
         ctx.msg.chatId,
         { markdown: AUDIT_SAFE_COMMAND_REPLY },
         commandReplyOptions(ctx),
       );
+      requireCommandReplyReceipt(result);
+      return true;
     } catch (fallbackErr) {
       log.fail('command', fallbackErr, { step: 'reply-audit-fallback' });
       reportMetric('command_fail', 1, { step: 'reply-audit-fallback' });
+      return false;
     }
+  }
+}
+
+function requireCommandReplyReceipt(result: { messageId?: string }): void {
+  if (!result.messageId?.trim()) {
+    throw new Error('command reply missing message receipt');
   }
 }
 
@@ -853,7 +877,17 @@ async function handleStop(args: string, ctx: CommandContext): Promise<void> {
     return;
   }
   const scope = targetScope || ctx.scope;
-  const ok = ctx.activeRuns.interrupt(scope);
+  let settleAcknowledgement: ((delivered: boolean) => void) | undefined;
+  const interruptionAcknowledgement = targetScope
+    ? undefined
+    : new Promise<boolean>((resolve) => {
+        settleAcknowledgement = resolve;
+      });
+  const ok = ctx.activeRuns.interrupt(scope, {
+    ...(interruptionAcknowledgement
+      ? { interruptionAcknowledgement }
+      : {}),
+  });
   log.info('command', 'stop', {
     scope,
     targeted: Boolean(targetScope),
@@ -866,9 +900,17 @@ async function handleStop(args: string, ctx: CommandContext): Promise<void> {
         ? `已请求停止 \`${scope}\`。`
         : `未找到正在运行的任务：\`${scope}\`。`,
     );
+    return;
   }
-  // No reply for the current IM scope: if there was a run, its in-flight
-  // render loop will mark the card as interrupted and re-render.
+  const delivered = await reply(
+    ctx,
+    ok ? '⏹ 已请求停止当前任务。' : '当前没有正在运行的任务。',
+    !ok,
+  );
+  // The SDK request timeout configured by startChannel bounds this await. The
+  // run renderer follows only this actual receipt-backed result—there is no
+  // independent deadline that can race a late successful send.
+  settleAcknowledgement?.(ok && delivered);
 }
 
 async function handleTimeout(args: string, ctx: CommandContext): Promise<void> {

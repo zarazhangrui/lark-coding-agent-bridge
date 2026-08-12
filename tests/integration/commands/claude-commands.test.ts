@@ -254,25 +254,72 @@ describe('Claude slash command visible behavior', () => {
     expect(lastMarkdown(h.channel)).toContain('用法:`/timeout <1-120>`');
   });
 
-  it('handles /stop without sending a new reply', async () => {
+  it('acknowledges /stop after interrupting the active run', async () => {
     const h = await createHarness();
     const activeRun = h.agent.run({ runId: 'run-active', prompt: 'running' }) as FakeAgentRun;
-    h.activeRuns.register('chat-1', activeRun);
+    const handle = h.activeRuns.register('chat-1', activeRun);
 
     await expect(h.run('/stop')).resolves.toBe(true);
 
-    expect(h.channel.sent).toEqual([]);
     expect(activeRun.stopped).toBe(true);
+    await expect(handle.interruptionAcknowledgement).resolves.toBe(true);
+    expect(h.channel.sent).toHaveLength(1);
+    expect(lastMarkdown(h.channel)).toBe('⏹ 已请求停止当前任务。');
+  });
+
+  it('acknowledges /stop when the current scope is idle', async () => {
+    const h = await createHarness();
+
+    await expect(h.run('/stop')).resolves.toBe(true);
+
+    expect(h.channel.sent).toHaveLength(1);
+    expect(lastMarkdown(h.channel)).toBe('当前没有正在运行的任务。');
+  });
+
+  it('makes one audit-safe fallback attempt when an idle /stop reply rejects', async () => {
+    const h = await createHarness();
+    const send = vi.spyOn(h.channel, 'send');
+    send
+      .mockRejectedValueOnce(new Error('idle stop reply rejected'))
+      .mockResolvedValueOnce({ messageId: 'idle_stop_fallback' });
+
+    await expect(h.run('/stop')).resolves.toBe(true);
+
+    expect(send).toHaveBeenCalledTimes(2);
+    expect(send.mock.calls[0]?.[1]).toEqual({ markdown: '当前没有正在运行的任务。' });
+    expect(send.mock.calls[1]?.[1]).toEqual({ markdown: '命令已处理。' });
+  });
+
+  it('makes one audit-safe fallback attempt when an idle /stop reply has no receipt', async () => {
+    const h = await createHarness();
+    const send = vi.spyOn(h.channel, 'send');
+    send
+      .mockResolvedValueOnce({ messageId: '' })
+      .mockResolvedValueOnce({ messageId: 'idle_stop_fallback' });
+
+    await expect(h.run('/stop')).resolves.toBe(true);
+
+    expect(send).toHaveBeenCalledTimes(2);
+    expect(send.mock.calls[0]?.[1]).toEqual({ markdown: '当前没有正在运行的任务。' });
+    expect(send.mock.calls[1]?.[1]).toEqual({ markdown: '命令已处理。' });
+  });
+
+  it('leaves natural-language pause requests as ordinary agent messages', async () => {
+    const h = await createHarness();
+
+    await expect(h.run('暂停')).resolves.toBe(false);
+    expect(h.channel.sent).toEqual([]);
   });
 
   it('lets admins stop and configure comment scopes explicitly', async () => {
     const h = await createHarness();
     const commentScope = 'comment:abc123';
     const activeRun = h.agent.run({ runId: 'run-comment', prompt: 'running' }) as FakeAgentRun;
-    h.activeRuns.register(commentScope, activeRun);
+    const handle = h.activeRuns.register(commentScope, activeRun);
 
     await expect(h.run(`/stop ${commentScope}`)).resolves.toBe(true);
     expect(activeRun.stopped).toBe(true);
+    expect(handle.interruptionAcknowledgement).toBeUndefined();
     expect(lastMarkdown(h.channel)).toContain('已请求停止');
 
     await expect(h.run(`/timeout ${commentScope} 2`)).resolves.toBe(true);
