@@ -23,7 +23,7 @@ describe('signed card callback dispatch', () => {
 
   it('runs built-in command callbacks only when the bridge token verifies', async () => {
     const h = await createHarness();
-    const activeRun = h.agent.run({ runId: 'run-active', prompt: 'running' }) as FakeAgentRun;
+    const activeRun = h.agent.run({ userInput: { kind: 'unavailable', reason: 'caller-does-not-support-interactive-turns' }, runId: 'run-active', prompt: 'running' }) as FakeAgentRun;
     h.activeRuns.register('oc_group', activeRun);
 
     await h.dispatch({
@@ -34,7 +34,7 @@ describe('signed card callback dispatch', () => {
 
     expect(activeRun.stopped).toBe(true);
 
-    const deniedRun = h.agent.run({ runId: 'run-active', prompt: 'running' }) as FakeAgentRun;
+    const deniedRun = h.agent.run({ userInput: { kind: 'unavailable', reason: 'caller-does-not-support-interactive-turns' }, runId: 'run-active', prompt: 'running' }) as FakeAgentRun;
     h.activeRuns.register('oc_group', deniedRun);
     await h.dispatch({
       cmd: 'stop',
@@ -47,7 +47,7 @@ describe('signed card callback dispatch', () => {
 
   it('forwards signed bridge callbacks without leaking auth fields into the agent payload', async () => {
     const h = await createHarness();
-    const activeRun = h.agent.run({ runId: 'run-active', prompt: 'running' });
+    const activeRun = h.agent.run({ userInput: { kind: 'unavailable', reason: 'caller-does-not-support-interactive-turns' }, runId: 'run-active', prompt: 'running' });
     h.activeRuns.register('oc_group', activeRun);
 
     await h.dispatch(
@@ -67,7 +67,7 @@ describe('signed card callback dispatch', () => {
 
   it('drops legacy Claude callback markers before command dispatch', async () => {
     const h = await createHarness();
-    const activeRun = h.agent.run({ runId: 'run-active', prompt: 'running' }) as FakeAgentRun;
+    const activeRun = h.agent.run({ userInput: { kind: 'unavailable', reason: 'caller-does-not-support-interactive-turns' }, runId: 'run-active', prompt: 'running' }) as FakeAgentRun;
     h.activeRuns.register('oc_group', activeRun);
 
     await h.dispatch({
@@ -86,7 +86,7 @@ describe('signed card callback dispatch', () => {
     // channel.fetchMessage, whose normalized shape drops thread_id) would fall
     // back to the bare chatId and route the click into the wrong session.
     h.channel.rawThreadIds.set('om_card', 'th_topic');
-    h.activeRuns.register('oc_group:th_topic', h.agent.run({ runId: 'run-active', prompt: 'running' }));
+    h.activeRuns.register('oc_group:th_topic', h.agent.run({ userInput: { kind: 'unavailable', reason: 'caller-does-not-support-interactive-turns' }, runId: 'run-active', prompt: 'running' }));
 
     await h.dispatch({
       __bridge_cb: true,
@@ -105,7 +105,7 @@ describe('signed card callback dispatch', () => {
     h.channel.rawThreadIds.set('om_card', 'th_topic');
     h.activeRuns.register(
       'oc_group:th_topic',
-      h.agent.run({ runId: 'run-active', prompt: 'running' }),
+      h.agent.run({ userInput: { kind: 'unavailable', reason: 'caller-does-not-support-interactive-turns' }, runId: 'run-active', prompt: 'running' }),
     );
 
     await h.dispatch({
@@ -124,7 +124,7 @@ describe('signed card callback dispatch', () => {
 
   it('rejects bridge callbacks when callback auth is unavailable', async () => {
     const h = await createHarness({ callbackAuth: false });
-    const activeRun = h.agent.run({ runId: 'run-active', prompt: 'running' }) as FakeAgentRun;
+    const activeRun = h.agent.run({ userInput: { kind: 'unavailable', reason: 'caller-does-not-support-interactive-turns' }, runId: 'run-active', prompt: 'running' }) as FakeAgentRun;
     h.activeRuns.register('oc_group', activeRun);
 
     await h.dispatch({

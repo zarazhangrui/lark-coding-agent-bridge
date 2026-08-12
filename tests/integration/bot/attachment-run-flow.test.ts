@@ -26,6 +26,7 @@ describe('attachment run flow', () => {
       scopeId: 'chat-1',
       scope: { source: 'im', chatId: 'chat-1', actorId: 'ou_user' },
       prompt: 'inspect attachments',
+      userInput: { kind: 'unavailable', reason: 'caller-does-not-support-interactive-turns' },
       attachments: [
         {
           kind: 'image',

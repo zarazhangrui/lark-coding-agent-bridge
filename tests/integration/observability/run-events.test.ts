@@ -22,6 +22,7 @@ describe('run observability events', () => {
 
     const execution = await h.executor.submit({
       scopeId: 'chat-1',
+      userInput: { kind: 'unavailable', reason: 'caller-does-not-support-interactive-turns' },
       policy: policy(h.tmp.workspace),
       observability: {
         profile: 'claude',

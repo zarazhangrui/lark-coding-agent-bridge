@@ -110,6 +110,7 @@ describe('Claude stream-json reader behavior', () => {
     const run = new ClaudeAdapter({ binary: binary.path }).run({
       runId: 'run-reader',
       prompt: 'hi',
+      userInput: { kind: 'unavailable', reason: 'caller-does-not-support-interactive-turns' },
       cwd: tmpdir(),
     });
     const events = await collect(run.events);

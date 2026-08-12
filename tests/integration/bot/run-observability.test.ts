@@ -31,6 +31,7 @@ describe('bot run observability', () => {
       scopeId: 'chat-1',
       scope: { source: 'im', chatId: 'chat-1', actorId: 'ou_user' },
       prompt: 'hello',
+      userInput: { kind: 'unavailable', reason: 'caller-does-not-support-interactive-turns' },
       attachments: [],
       access: { ok: true, reason: 'allowed-user' },
       capability: claudeCapability(h.profileConfig),

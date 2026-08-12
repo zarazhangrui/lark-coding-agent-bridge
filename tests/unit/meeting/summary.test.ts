@@ -110,6 +110,14 @@ describe('summarizeEndedMeeting', () => {
     await summarizeEndedMeeting(d.args);
 
     expect(mocks.startRunFlow).toHaveBeenCalledTimes(1);
+    expect(mocks.startRunFlow).toHaveBeenCalledWith(
+      expect.objectContaining({
+        userInput: {
+          kind: 'unavailable',
+          reason: 'meeting-does-not-support-interactive-turns',
+        },
+      }),
+    );
     expect(d.sent).toHaveLength(1);
     expect(d.sent[0]?.to).toBe('oc_team');
     expect(String((d.sent[0]?.input as { markdown: string }).markdown)).toContain('会议纪要 · 周会');

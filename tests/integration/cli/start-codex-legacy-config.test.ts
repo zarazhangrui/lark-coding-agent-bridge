@@ -51,6 +51,7 @@ describe('Codex startup compatibility with legacy binary metadata', () => {
       agent.prepareRun?.({
         runId: 'run-1',
         prompt: 'hello',
+        userInput: { kind: 'unavailable', reason: 'caller-does-not-support-interactive-turns' },
         cwd: h.workspace,
       }),
     ).resolves.toBeUndefined();

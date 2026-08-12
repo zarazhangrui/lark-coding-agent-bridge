@@ -317,6 +317,10 @@ async function runMeetingAgent(
     ...(deps.sessionCatalog ? { sessionCatalog: deps.sessionCatalog } : {}),
     workspaces: deps.workspaces,
     executor: deps.executor,
+    userInput: {
+      kind: 'unavailable',
+      reason: 'meeting-does-not-support-interactive-turns',
+    },
     now: Date.now(),
     observability: {
       profile: controls.profile,

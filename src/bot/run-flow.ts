@@ -1,6 +1,6 @@
 import type { AgentCapability } from '../agent/capability';
 import { resolveModelArg } from '../agent/models';
-import type { AgentEvent } from '../agent/types';
+import type { AgentEvent, AgentUserInputMode } from '../agent/types';
 import type { ProfileConfig } from '../config/profile-schema';
 import type { AccessDecision } from '../policy/access';
 import {
@@ -33,6 +33,7 @@ export interface StartRunFlowInput {
   sessionCatalog?: SessionCatalog;
   workspaces: WorkspaceStore;
   executor: RunExecutor;
+  userInput: AgentUserInputMode;
   now: number;
   stopGraceMs?: number;
   observability?: {
@@ -142,6 +143,7 @@ export async function startRunFlow(input: StartRunFlowInput): Promise<StartRunFl
     execution = await input.executor.submit({
       scopeId: input.scopeId,
       policy,
+      userInput: input.userInput,
       sessionId,
       threadId,
       model: resolveModelArg(

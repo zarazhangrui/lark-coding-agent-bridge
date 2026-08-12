@@ -1183,6 +1183,10 @@ async function handleDoctor(args: string, ctx: CommandContext): Promise<void> {
     execution = await ctx.runExecutor.submit({
       scopeId: `${ctx.scope}:doctor`,
       policy,
+      userInput: {
+        kind: 'unavailable',
+        reason: 'doctor-uses-non-interactive-diagnostics',
+      },
       nowait: true,
       stopGraceMs: getAgentStopGraceMs(ctx.controls.cfg),
       observability: {

@@ -28,9 +28,63 @@ export type AgentEvent =
 
 export const CLAUDE_DEFAULT_PERMISSION_MODE: ClaudePermissionMode = 'bypassPermissions';
 
+export type NonEmptyReadonlyArray<T> = readonly [T, ...T[]];
+
+export interface AgentUserInputOption {
+  label: string;
+  description: string;
+}
+
+export interface AgentUserInputQuestion {
+  id: string;
+  header: string;
+  question: string;
+  allowOther: boolean;
+  options: NonEmptyReadonlyArray<AgentUserInputOption>;
+}
+
+export interface AgentUserInputRequest {
+  id: string;
+  questions: NonEmptyReadonlyArray<AgentUserInputQuestion>;
+}
+
+export interface AgentUserInputAnswer {
+  questionId: string;
+  value: string;
+}
+
+export interface AgentUserInputResponse {
+  answers: NonEmptyReadonlyArray<AgentUserInputAnswer>;
+}
+
+export type AgentUserInputUnavailableReason =
+  | 'document-comment-does-not-support-interactive-turns'
+  | 'meeting-does-not-support-interactive-turns'
+  | 'doctor-uses-non-interactive-diagnostics'
+  | 'caller-does-not-support-interactive-turns';
+
+/**
+ * Whether this particular run can pause for a native agent question.
+ *
+ * This is deliberately required on every run. A caller must either provide
+ * the complete interactive lifecycle or state why that entry point cannot
+ * accept an answer; there is no implicit default-answer path.
+ */
+export type AgentUserInputMode =
+  | {
+      kind: 'interactive';
+      signal: AbortSignal;
+      handle(request: AgentUserInputRequest, signal: AbortSignal): Promise<AgentUserInputResponse>;
+    }
+  | {
+      kind: 'unavailable';
+      reason: AgentUserInputUnavailableReason;
+    };
+
 export interface AgentRunOptions {
   runId: string;
   prompt: string;
+  userInput: AgentUserInputMode;
   cwd?: string;
   sessionId?: string;
   threadId?: string;

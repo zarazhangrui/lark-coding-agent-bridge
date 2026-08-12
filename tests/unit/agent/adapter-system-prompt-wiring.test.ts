@@ -52,7 +52,7 @@ describe('ClaudeAdapter system prompt wiring', () => {
     const adapter = new ClaudeAdapter();
     adapter.setBotIdentity({ openId: 'ou_bot_self', name: 'Bridge' });
 
-    adapter.run({ runId: 'r1', prompt: 'hi', cwd: '/tmp' });
+    adapter.run({ userInput: { kind: 'unavailable', reason: 'caller-does-not-support-interactive-turns' }, runId: 'r1', prompt: 'hi', cwd: '/tmp' });
 
     // The prompt goes via stdin, never argv (cmd.exe would mangle it on Windows).
     expect(await readAll(child.stdin)).toBe('hi');
@@ -66,7 +66,7 @@ describe('ClaudeAdapter system prompt wiring', () => {
     spawnMock.spawnProcess.mockReturnValue(child);
     const adapter = new ClaudeAdapter();
 
-    adapter.run({ runId: 'r1', prompt: 'hi', cwd: '/tmp' });
+    adapter.run({ userInput: { kind: 'unavailable', reason: 'caller-does-not-support-interactive-turns' }, runId: 'r1', prompt: 'hi', cwd: '/tmp' });
 
     expect(await readAll(child.stdin)).toBe('hi');
     expect(systemPromptFileContent()).toBe(buildBridgeSystemPrompt(undefined));
@@ -95,7 +95,7 @@ describe('CodexAdapter system prompt wiring', () => {
     const adapter = codexAdapter();
     adapter.setBotIdentity({ openId: 'ou_bot_self', name: 'Bridge' });
 
-    adapter.run({ runId: 'r1', prompt: 'hi', cwd: '/tmp' });
+    adapter.run({ userInput: { kind: 'unavailable', reason: 'caller-does-not-support-interactive-turns' }, runId: 'r1', prompt: 'hi', cwd: '/tmp' });
 
     const stdin = await readAll(child.stdin);
     expect(stdin).toBe(
@@ -108,7 +108,7 @@ describe('CodexAdapter system prompt wiring', () => {
     spawnMock.spawnProcess.mockReturnValue(child);
     const adapter = codexAdapter();
 
-    adapter.run({ runId: 'r1', prompt: 'hi', cwd: '/tmp' });
+    adapter.run({ userInput: { kind: 'unavailable', reason: 'caller-does-not-support-interactive-turns' }, runId: 'r1', prompt: 'hi', cwd: '/tmp' });
 
     const stdin = await readAll(child.stdin);
     expect(stdin).toBe(prefixBridgeSystemPrompt('hi', undefined));

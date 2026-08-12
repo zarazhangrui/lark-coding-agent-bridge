@@ -20,6 +20,7 @@ describe('RunExecutor prepareRun preflight', () => {
 
     const execution = await h.executor.submit({
       scopeId: 'scope-1',
+      userInput: { kind: 'unavailable', reason: 'caller-does-not-support-interactive-turns' },
       policy: policy(h.tmp.workspace),
     });
 
@@ -38,6 +39,7 @@ describe('RunExecutor prepareRun preflight', () => {
     await expect(
       h.executor.submit({
         scopeId: 'scope-1',
+        userInput: { kind: 'unavailable', reason: 'caller-does-not-support-interactive-turns' },
         policy: policy(h.tmp.workspace),
       }),
     ).rejects.toMatchObject({ code: 'agent-prepare-failed' });

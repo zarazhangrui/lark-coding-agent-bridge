@@ -21,4 +21,12 @@ describe('agent type contract', () => {
     expect(source).toMatch(/interface AgentRun[^}]*readonly runId:\s*string/s);
     expect(source).toMatch(/interface AgentRunOptions[^}]*threadId\?:\s*string/s);
   });
+
+  it('requires callers to choose an interactive or unavailable user-input mode', () => {
+    expect(source).toMatch(/type AgentUserInputMode[\s\S]*kind:\s*'interactive'[\s\S]*kind:\s*'unavailable'/);
+    expect(source).toMatch(/interface AgentRunOptions[^}]*userInput:\s*AgentUserInputMode/s);
+    expect(source).toMatch(/type NonEmptyReadonlyArray<T>\s*=\s*readonly \[T, \.\.\.T\[\]\]/);
+    expect(source).toMatch(/interface AgentUserInputAnswer[^}]*value:\s*string/s);
+    expect(source).not.toMatch(/interface AgentUserInputAnswer[^}]*values:/s);
+  });
 });

@@ -31,6 +31,7 @@ describe('ClaudeAdapter process contract', () => {
     const run = new ClaudeAdapter({ binary: fake.path }).run({
       runId: 'run-fresh',
       prompt: 'hello',
+      userInput: { kind: 'unavailable', reason: 'caller-does-not-support-interactive-turns' },
       cwd: fake.dir,
       permissionMode: 'acceptEdits',
     });
@@ -88,6 +89,7 @@ describe('ClaudeAdapter process contract', () => {
     }).run({
       runId: 'run-profile-env',
       prompt: 'profile',
+      userInput: { kind: 'unavailable', reason: 'caller-does-not-support-interactive-turns' },
       cwd: fake.dir,
     });
 
@@ -112,6 +114,7 @@ describe('ClaudeAdapter process contract', () => {
     const run = new ClaudeAdapter({ binary: fake.path }).run({
       runId: 'run-resume',
       prompt: 'continue',
+      userInput: { kind: 'unavailable', reason: 'caller-does-not-support-interactive-turns' },
       cwd: fake.dir,
       sessionId: 'sess-old',
       model: 'sonnet',
@@ -137,6 +140,7 @@ describe('ClaudeAdapter process contract', () => {
     const run = new ClaudeAdapter({ binary: fake.path }).run({
       runId: 'run-fail',
       prompt: 'fail',
+      userInput: { kind: 'unavailable', reason: 'caller-does-not-support-interactive-turns' },
       cwd: fake.dir,
     });
 
@@ -162,6 +166,7 @@ describe('ClaudeAdapter process contract', () => {
       run = new ClaudeAdapter({ binary: fake.path }).run({
         runId: 'run-missing',
         prompt: 'hi',
+        userInput: { kind: 'unavailable', reason: 'caller-does-not-support-interactive-turns' },
         cwd: fake.dir,
       });
     } else {
@@ -169,6 +174,7 @@ describe('ClaudeAdapter process contract', () => {
       run = new ClaudeAdapter({ binary: missing }).run({
         runId: 'run-missing',
         prompt: 'hi',
+        userInput: { kind: 'unavailable', reason: 'caller-does-not-support-interactive-turns' },
         cwd: tmpdir(),
       });
     }
@@ -192,6 +198,7 @@ describe('ClaudeAdapter process contract', () => {
     const run = new ClaudeAdapter({ binary: fake.path }).run({
       runId: 'run-tail',
       prompt: 'tail',
+      userInput: { kind: 'unavailable', reason: 'caller-does-not-support-interactive-turns' },
       cwd: fake.dir,
     });
     const iterator = run.events[Symbol.asyncIterator]();
@@ -207,7 +214,7 @@ describe('ClaudeAdapter process contract', () => {
 
   it('requires cwd to be resolved by policy before spawning', () => {
     expect(() =>
-      new ClaudeAdapter({ binary: 'unused' }).run({ runId: 'run-no-cwd', prompt: 'hi' }),
+      new ClaudeAdapter({ binary: 'unused' }).run({ userInput: { kind: 'unavailable', reason: 'caller-does-not-support-interactive-turns' }, runId: 'run-no-cwd', prompt: 'hi' }),
     ).toThrow(/cwd is required/);
   });
 });

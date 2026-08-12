@@ -971,6 +971,10 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
     sessionCatalog,
     workspaces,
     executor,
+    userInput: {
+      kind: 'unavailable',
+      reason: 'caller-does-not-support-interactive-turns',
+    },
     now: Date.now(),
     stopGraceMs: getAgentStopGraceMs(controls.cfg),
     observability: {

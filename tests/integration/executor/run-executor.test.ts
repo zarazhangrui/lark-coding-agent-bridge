@@ -26,6 +26,7 @@ describe('RunExecutor', () => {
 
     const execution = await h.executor.submit({
       scopeId: 'scope-1',
+      userInput: { kind: 'unavailable', reason: 'caller-does-not-support-interactive-turns' },
       policy: policy(h.tmp.workspace),
       stopGraceMs: 123,
     });
@@ -53,6 +54,7 @@ describe('RunExecutor', () => {
     const h = await createHarness({ events });
     const execution = await h.executor.submit({
       scopeId: 'scope-1',
+      userInput: { kind: 'unavailable', reason: 'caller-does-not-support-interactive-turns' },
       policy: policy(h.tmp.workspace),
     });
 
@@ -76,12 +78,14 @@ describe('RunExecutor', () => {
     });
     const first = await h.executor.submit({
       scopeId: 'scope-1',
+      userInput: { kind: 'unavailable', reason: 'caller-does-not-support-interactive-turns' },
       policy: policy(h.tmp.workspace),
     });
 
     await expect(
       h.executor.submit({
         scopeId: 'scope-nowait',
+        userInput: { kind: 'unavailable', reason: 'caller-does-not-support-interactive-turns' },
         policy: policy(h.tmp.workspace),
         nowait: true,
       }),
@@ -89,6 +93,7 @@ describe('RunExecutor', () => {
 
     const secondPromise = h.executor.submit({
       scopeId: 'scope-2',
+      userInput: { kind: 'unavailable', reason: 'caller-does-not-support-interactive-turns' },
       policy: policy(h.tmp.workspace),
     });
     expect(h.pool.snapshot()).toMatchObject({ active: 1, waiting: 1 });
@@ -105,6 +110,7 @@ describe('RunExecutor', () => {
     await expect(
       h.executor.submit({
         scopeId: 'scope-1',
+        userInput: { kind: 'unavailable', reason: 'caller-does-not-support-interactive-turns' },
         policy: policy(h.tmp.workspace, { expiresAt: 999 }),
       }),
     ).rejects.toBeInstanceOf(RunRejected);
@@ -118,6 +124,7 @@ describe('RunExecutor', () => {
       await expect(
         h.executor.submit({
           scopeId: 'scope-1',
+          userInput: { kind: 'unavailable', reason: 'caller-does-not-support-interactive-turns' },
           policy: policy(h.tmp.workspace),
         }),
       ).rejects.toMatchObject({ code: 'reconnect-in-progress' });
@@ -133,12 +140,14 @@ describe('RunExecutor', () => {
 
     const first = await h.executor.submit({
       scopeId: 'scope-1',
+      userInput: { kind: 'unavailable', reason: 'caller-does-not-support-interactive-turns' },
       policy: policy(h.tmp.workspace),
     });
 
     await expect(
       h.executor.submit({
         scopeId: 'scope-1',
+        userInput: { kind: 'unavailable', reason: 'caller-does-not-support-interactive-turns' },
         policy: policy(h.tmp.workspace),
       }),
     ).rejects.toMatchObject({ code: 'run-already-active' });
@@ -156,6 +165,7 @@ describe('RunExecutor', () => {
 
     const execution = await h.executor.submit({
       scopeId: 'scope-1',
+      userInput: { kind: 'unavailable', reason: 'caller-does-not-support-interactive-turns' },
       policy: policy(h.tmp.workspace),
     });
 
@@ -173,11 +183,13 @@ describe('RunExecutor', () => {
     });
     const first = await h.executor.submit({
       scopeId: 'scope-1',
+      userInput: { kind: 'unavailable', reason: 'caller-does-not-support-interactive-turns' },
       policy: policy(h.tmp.workspace),
     });
 
     const second = h.executor.submit({
       scopeId: 'scope-2',
+      userInput: { kind: 'unavailable', reason: 'caller-does-not-support-interactive-turns' },
       policy: policy(h.tmp.workspace),
     });
     expect(h.pool.snapshot()).toMatchObject({ active: 1, waiting: 1 });
@@ -201,6 +213,7 @@ describe('RunExecutor', () => {
 
     const submit = h.executor.submit({
       scopeId: 'scope-1',
+      userInput: { kind: 'unavailable', reason: 'caller-does-not-support-interactive-turns' },
       policy: policy(h.tmp.workspace),
     });
     await agent.prepareStarted;
@@ -222,6 +235,7 @@ describe('RunExecutor', () => {
     await expect(
       h.executor.submit({
         scopeId: 'scope-1',
+        userInput: { kind: 'unavailable', reason: 'caller-does-not-support-interactive-turns' },
         policy: policy(h.tmp.workspace),
       }),
     ).rejects.toBeInstanceOf(SpawnFailed);
@@ -236,6 +250,7 @@ describe('RunExecutor', () => {
     });
     const execution = await h.executor.submit({
       scopeId: 'scope-1',
+      userInput: { kind: 'unavailable', reason: 'caller-does-not-support-interactive-turns' },
       policy: policy(h.tmp.workspace),
     });
 
@@ -253,6 +268,7 @@ describe('RunExecutor', () => {
     });
     const execution = await h.executor.submit({
       scopeId: 'scope-1',
+      userInput: { kind: 'unavailable', reason: 'caller-does-not-support-interactive-turns' },
       policy: policy(h.tmp.workspace),
     });
 

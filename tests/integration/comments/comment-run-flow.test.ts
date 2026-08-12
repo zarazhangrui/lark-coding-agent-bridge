@@ -56,6 +56,10 @@ describe('comment run flow', () => {
 
     expect(h.agent.runOptions).toHaveLength(1);
     const opts = h.agent.runOptions[0]!;
+    expect(opts.userInput).toEqual({
+      kind: 'unavailable',
+      reason: 'document-comment-does-not-support-interactive-turns',
+    });
     await expect(realpath(h.tmp.workspace)).resolves.toBe(opts.cwd);
     expect(opts.prompt).toContain('file_token：doc-token');
     expect(opts.prompt).toContain(

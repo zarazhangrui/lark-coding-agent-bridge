@@ -35,7 +35,7 @@ describe('/status and /doctor diagnostics', () => {
   it('shows passive status for active run, queue, stale session, and owner API state', async () => {
     const h = await createHarness({ configuredWorkspace: true });
     h.sessions.set('chat-1', 'sess-old', '/old');
-    const activeRun = h.agent.run({ runId: 'run-active', prompt: 'running' }) as FakeAgentRun;
+    const activeRun = h.agent.run({ userInput: { kind: 'unavailable', reason: 'caller-does-not-support-interactive-turns' }, runId: 'run-active', prompt: 'running' }) as FakeAgentRun;
     h.activeRuns.register('chat-1', activeRun);
     const release = await h.pool.acquire();
 
@@ -76,6 +76,10 @@ describe('/status and /doctor diagnostics', () => {
     await expect(realpath(h.tmp.workspace)).resolves.toBe(opts.cwd);
     expect(opts.sessionId).toBeUndefined();
     expect(opts.threadId).toBeUndefined();
+    expect(opts.userInput).toEqual({
+      kind: 'unavailable',
+      reason: 'doctor-uses-non-interactive-diagnostics',
+    });
     expect(opts.images).toBeUndefined();
     expect(opts.permissionMode).toBe('plan');
     expect(opts.prompt).toContain('OK');

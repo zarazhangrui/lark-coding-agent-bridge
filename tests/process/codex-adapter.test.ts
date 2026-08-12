@@ -55,6 +55,7 @@ describe('CodexAdapter process contract', () => {
     }).run({
       runId: 'run-fresh',
       prompt: 'hello from lark',
+      userInput: { kind: 'unavailable', reason: 'caller-does-not-support-interactive-turns' },
       cwd,
     });
 
@@ -110,6 +111,7 @@ describe('CodexAdapter process contract', () => {
     }).run({
       runId: 'run-profile-env',
       prompt: 'profile',
+      userInput: { kind: 'unavailable', reason: 'caller-does-not-support-interactive-turns' },
       cwd: await realpath(fake.dir),
     });
 
@@ -139,6 +141,7 @@ describe('CodexAdapter process contract', () => {
     }).run({
       runId: 'run-default-home',
       prompt: 'home',
+      userInput: { kind: 'unavailable', reason: 'caller-does-not-support-interactive-turns' },
       cwd: await realpath(fake.dir),
     });
 
@@ -162,6 +165,7 @@ describe('CodexAdapter process contract', () => {
     }).run({
       runId: 'run-resume',
       prompt: 'continue',
+      userInput: { kind: 'unavailable', reason: 'caller-does-not-support-interactive-turns' },
       cwd,
       threadId: 'thread-old',
       images: [image],
@@ -195,6 +199,7 @@ describe('CodexAdapter process contract', () => {
     }).run({
       runId: 'run-policy-sandbox',
       prompt: 'policy sandbox',
+      userInput: { kind: 'unavailable', reason: 'caller-does-not-support-interactive-turns' },
       cwd,
       sandbox: 'read-only',
     });
@@ -219,6 +224,7 @@ describe('CodexAdapter process contract', () => {
     }).run({
       runId: 'run-home',
       prompt: 'home',
+      userInput: { kind: 'unavailable', reason: 'caller-does-not-support-interactive-turns' },
       cwd,
     });
 
@@ -241,6 +247,7 @@ describe('CodexAdapter process contract', () => {
     }).run({
       runId: 'run-profile-local-home',
       prompt: 'home',
+      userInput: { kind: 'unavailable', reason: 'caller-does-not-support-interactive-turns' },
       cwd: await realpath(fake.dir),
     });
 
@@ -264,6 +271,7 @@ describe('CodexAdapter process contract', () => {
     }).run({
       runId: 'run-flags',
       prompt: 'flags',
+      userInput: { kind: 'unavailable', reason: 'caller-does-not-support-interactive-turns' },
       cwd,
     });
 
@@ -286,6 +294,7 @@ describe('CodexAdapter process contract', () => {
     }).run({
       runId: 'run-ignore-user-config',
       prompt: 'flags',
+      userInput: { kind: 'unavailable', reason: 'caller-does-not-support-interactive-turns' },
       cwd: await realpath(fake.dir),
     });
 
@@ -305,6 +314,7 @@ describe('CodexAdapter process contract', () => {
     const run = new CodexAdapter({ binary: fake.path, profileStateDir: fake.dir }).run({
       runId: 'run-fail',
       prompt: 'fail',
+      userInput: { kind: 'unavailable', reason: 'caller-does-not-support-interactive-turns' },
       cwd: await realpath(fake.dir),
     });
 
@@ -335,6 +345,7 @@ describe('CodexAdapter process contract', () => {
     const run = new CodexAdapter({ binary: fake.path, profileStateDir: fake.dir }).run({
       runId: 'run-retry',
       prompt: 'retry',
+      userInput: { kind: 'unavailable', reason: 'caller-does-not-support-interactive-turns' },
       cwd: await realpath(fake.dir),
     });
 
@@ -357,6 +368,7 @@ describe('CodexAdapter process contract', () => {
       run = new CodexAdapter({ binary: fake.path, profileStateDir: fake.dir }).run({
         runId: 'run-missing',
         prompt: 'hi',
+        userInput: { kind: 'unavailable', reason: 'caller-does-not-support-interactive-turns' },
         cwd: await realpath(fake.dir),
       });
     } else {
@@ -364,6 +376,7 @@ describe('CodexAdapter process contract', () => {
       run = new CodexAdapter({ binary: missing, profileStateDir: tmpdir() }).run({
         runId: 'run-missing',
         prompt: 'hi',
+        userInput: { kind: 'unavailable', reason: 'caller-does-not-support-interactive-turns' },
         cwd: tmpdir(),
       });
     }
@@ -391,6 +404,7 @@ describe('CodexAdapter process contract', () => {
     }).run({
       runId: 'run-stop',
       prompt: 'stop',
+      userInput: { kind: 'unavailable', reason: 'caller-does-not-support-interactive-turns' },
       cwd: await realpath(fake.dir),
     });
     const iterator = run.events[Symbol.asyncIterator]();
@@ -413,6 +427,7 @@ describe('CodexAdapter process contract', () => {
       new CodexAdapter({ binary: 'unused', profileStateDir: tmpdir() }).run({
         runId: 'run-no-cwd',
         prompt: 'hi',
+        userInput: { kind: 'unavailable', reason: 'caller-does-not-support-interactive-turns' },
       }),
     ).toThrow(/cwd is required/);
   });

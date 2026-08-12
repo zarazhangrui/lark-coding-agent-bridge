@@ -259,6 +259,10 @@ export async function handleCommentMention(deps: CommentDeps): Promise<void> {
       const execution = await deps.executor.submit({
         scopeId: runScopeId,
         policy,
+        userInput: {
+          kind: 'unavailable',
+          reason: 'document-comment-does-not-support-interactive-turns',
+        },
         sessionId,
         threadId,
         stopGraceMs: getAgentStopGraceMs(controls.cfg),

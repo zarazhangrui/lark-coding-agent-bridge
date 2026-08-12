@@ -256,7 +256,7 @@ describe('Claude slash command visible behavior', () => {
 
   it('handles /stop without sending a new reply', async () => {
     const h = await createHarness();
-    const activeRun = h.agent.run({ runId: 'run-active', prompt: 'running' }) as FakeAgentRun;
+    const activeRun = h.agent.run({ userInput: { kind: 'unavailable', reason: 'caller-does-not-support-interactive-turns' }, runId: 'run-active', prompt: 'running' }) as FakeAgentRun;
     h.activeRuns.register('chat-1', activeRun);
 
     await expect(h.run('/stop')).resolves.toBe(true);
@@ -268,7 +268,7 @@ describe('Claude slash command visible behavior', () => {
   it('lets admins stop and configure comment scopes explicitly', async () => {
     const h = await createHarness();
     const commentScope = 'comment:abc123';
-    const activeRun = h.agent.run({ runId: 'run-comment', prompt: 'running' }) as FakeAgentRun;
+    const activeRun = h.agent.run({ userInput: { kind: 'unavailable', reason: 'caller-does-not-support-interactive-turns' }, runId: 'run-comment', prompt: 'running' }) as FakeAgentRun;
     h.activeRuns.register(commentScope, activeRun);
 
     await expect(h.run(`/stop ${commentScope}`)).resolves.toBe(true);
@@ -283,7 +283,7 @@ describe('Claude slash command visible behavior', () => {
   it('surfaces active comment scopes in /status for targeted controls', async () => {
     const h = await createHarness();
     const commentScope = 'comment:abc123';
-    const activeRun = h.agent.run({ runId: 'run-comment', prompt: 'running' }) as FakeAgentRun;
+    const activeRun = h.agent.run({ userInput: { kind: 'unavailable', reason: 'caller-does-not-support-interactive-turns' }, runId: 'run-comment', prompt: 'running' }) as FakeAgentRun;
     h.activeRuns.register(commentScope, activeRun);
 
     await expect(h.run('/status')).resolves.toBe(true);

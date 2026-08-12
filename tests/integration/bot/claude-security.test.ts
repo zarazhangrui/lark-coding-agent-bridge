@@ -56,7 +56,7 @@ describe('Claude shared security regressions', () => {
 
   it('forwards signed bridge card callbacks with the real group chat type', async () => {
     const h = await createHarness();
-    const activeRun = h.agent.run({ runId: 'run-active', prompt: 'running' });
+    const activeRun = h.agent.run({ userInput: { kind: 'unavailable', reason: 'caller-does-not-support-interactive-turns' }, runId: 'run-active', prompt: 'running' });
     h.activeRuns.register('oc_group', activeRun);
 
     await handleCardAction({
