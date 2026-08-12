@@ -17,6 +17,7 @@ import type {
 } from '../types';
 import { buildCodexArgs } from './argv';
 import { CodexJsonlTranslator, type CodexFinishReason } from './jsonl';
+import { runCodexAppServer } from './app-server';
 
 export interface CodexAdapterOptions {
   binary: string;
@@ -93,6 +94,28 @@ export class CodexAdapter implements AgentAdapter {
       throw new Error('cwd is required for CodexAdapter.run');
     }
 
+    if (opts.userInput.kind === 'interactive') {
+      if (this.ignoreUserConfig) {
+        return failedRun(
+          opts.runId,
+          'Codex app-server 不支持 --ignore-user-config；请关闭 codex.ignoreUserConfig 后重试。',
+        );
+      }
+      if (this.ignoreRules) warnAppServerRulesOnce();
+      const envOverrides = this.buildEnv();
+      return runCodexAppServer({
+        binary: this.binary,
+        env: envOverrides,
+        run: {
+          ...opts,
+          sandbox: opts.sandbox ?? this.sandbox,
+          userInput: opts.userInput,
+        },
+        botIdentity: this.botIdentity,
+        stopGraceMs: opts.stopGraceMs ?? this.defaultStopGraceMs,
+      });
+    }
+
     const args = buildCodexArgs({
       cwd: opts.cwd,
       sandbox: opts.sandbox ?? this.sandbox,
@@ -102,12 +125,7 @@ export class CodexAdapter implements AgentAdapter {
       ignoreRules: this.ignoreRules,
       model: opts.model,
     });
-    const envOverrides: NodeJS.ProcessEnv = buildLarkChannelEnv(this.larkChannel);
-    if (this.codexHome) {
-      envOverrides.CODEX_HOME = this.codexHome;
-    } else if (!this.inheritCodexHome) {
-      envOverrides.CODEX_HOME = join(this.profileStateDir, 'codex-home');
-    }
+    const envOverrides = this.buildEnv();
     const child = spawnProcess(this.binary, args, {
       cwd: opts.cwd,
       env: mergeProcessEnv(process.env, envOverrides),
@@ -201,6 +219,42 @@ export class CodexAdapter implements AgentAdapter {
       },
     };
   }
+
+  private buildEnv(): NodeJS.ProcessEnv {
+    const envOverrides: NodeJS.ProcessEnv = buildLarkChannelEnv(this.larkChannel);
+    if (this.codexHome) {
+      envOverrides.CODEX_HOME = this.codexHome;
+    } else if (!this.inheritCodexHome) {
+      envOverrides.CODEX_HOME = join(this.profileStateDir, 'codex-home');
+    }
+    return envOverrides;
+  }
+}
+
+let appServerRulesWarningShown = false;
+
+function warnAppServerRulesOnce(): void {
+  if (appServerRulesWarningShown) return;
+  appServerRulesWarningShown = true;
+  const message =
+    '⚠️ Codex IM 交互模式使用 app-server；当前版本没有 --ignore-rules 等价能力，Codex .rules 仍会加载，权限可能比 exec 路径更严格。';
+  log.warn('agent', 'app-server-rules-loaded', { message });
+  console.error(message);
+}
+
+function failedRun(runId: string, message: string): AgentRun {
+  return {
+    runId,
+    events: {
+      async *[Symbol.asyncIterator](): AsyncGenerator<AgentEvent> {
+        yield { type: 'error', message, terminationReason: 'failed' };
+      },
+    },
+    async stop() {},
+    async waitForExit() {
+      return true;
+    },
+  };
 }
 
 async function* createEventStream(
