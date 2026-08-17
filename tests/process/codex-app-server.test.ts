@@ -69,6 +69,7 @@ describe('Codex app-server interactive process contract', () => {
     });
 
     const events = await collect(run.events);
+    expect(JSON.stringify(events)).not.toContain('RAW_REASONING_MUST_NOT_LEAK');
     expect(requests).toEqual([
       {
         id: 'request-item',
@@ -1015,6 +1016,7 @@ rl.on('line', (line) => {
       return;
     }
     send({ method: 'item/reasoning/summaryTextDelta', params: { threadId, turnId: 'turn-1', itemId: 'reasoning-1', summaryIndex: 0, delta: '正在判断' } });
+    send({ method: 'item/reasoning/textDelta', params: { threadId, turnId: 'turn-1', itemId: 'reasoning-1', contentIndex: 0, delta: 'RAW_REASONING_MUST_NOT_LEAK' } });
     send({ method: 'item/started', params: { threadId, turnId: 'turn-1', startedAtMs: 1, item: { type: 'commandExecution', id: 'command-1', command: 'pwd', commandActions: [], cwd: process.cwd(), status: 'inProgress' } } });
     send({ method: 'item/commandExecution/outputDelta', params: { threadId, turnId: 'turn-1', itemId: 'command-1', delta: process.cwd() + '\\n' } });
     send({ method: 'item/completed', params: { threadId, turnId: 'turn-1', completedAtMs: 2, item: { type: 'commandExecution', id: 'command-1', command: 'pwd', commandActions: [], cwd: process.cwd(), status: 'completed', aggregatedOutput: process.cwd() + '\\n', exitCode: 0 } } });

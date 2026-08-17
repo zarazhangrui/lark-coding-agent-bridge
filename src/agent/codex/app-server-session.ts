@@ -59,6 +59,9 @@ type TurnState =
 
 type StartupStage = 'initialize' | 'thread/start' | 'thread/resume' | 'turn/start';
 type TerminalEvent = Extract<AgentEvent, { type: 'done' | 'error' }>;
+type ReasoningDeltaMethod =
+  | 'item/reasoning/summaryTextDelta'
+  | 'item/reasoning/textDelta';
 
 const HANDSHAKE_TIMEOUT_MS = 10_000;
 const APP_SERVER_UPGRADE_MESSAGE =
@@ -121,10 +124,14 @@ export class AppServerSession implements AppServerInboundHandler {
         if (valid) this.pushAll(this.translator.agentMessageDelta(valid));
         return;
       }
-      case 'item/reasoning/summaryTextDelta':
-      case 'item/reasoning/textDelta': {
+      case 'item/reasoning/summaryTextDelta': {
         const valid = this.validateReasoningDelta(method, paramsInput);
-        if (valid) this.pushAll(this.translator.reasoningDelta(valid));
+        if (valid) this.pushAll(this.translator.reasoningSummaryDelta(valid));
+        return;
+      }
+      case 'item/reasoning/textDelta': {
+        // Raw reasoning is protocol-validated but intentionally not exposed to users.
+        this.validateReasoningDelta(method, paramsInput);
         return;
       }
       case 'item/started': {
@@ -212,7 +219,7 @@ export class AppServerSession implements AppServerInboundHandler {
   }
 
   private validateReasoningDelta(
-    method: string,
+    method: ReasoningDeltaMethod,
     paramsInput: unknown,
   ): Record<string, unknown> | undefined {
     const params = this.validateDeltaNotification(method, paramsInput);

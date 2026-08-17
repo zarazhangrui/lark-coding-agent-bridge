@@ -92,7 +92,10 @@ describe('Codex app-server response races', () => {
     await readyEvent;
     await run.stop();
 
-    const terminalEvents = (await eventsPromise).filter(
+    const events = await eventsPromise;
+    expect(events).toContainEqual({ type: 'thinking', delta: '已进入运行状态' });
+    expect(JSON.stringify(events)).not.toContain('RAW_REASONING_MUST_NOT_LEAK');
+    const terminalEvents = events.filter(
       (event) => event.type === 'done' || event.type === 'error',
     );
     expect(terminalEvents).toEqual([{
@@ -254,8 +257,18 @@ function fakeRacingAppServerChild(scenario: RaceScenario): FakeAppServerChild {
                 threadId: 'thread-race',
                 turnId: 'turn-race',
                 itemId: 'reasoning-race',
-                summaryIndex: 0,
+                summaryIndex: 1,
                 delta: '已进入运行状态',
+              },
+            });
+            send({
+              method: 'item/reasoning/textDelta',
+              params: {
+                threadId: 'thread-race',
+                turnId: 'turn-race',
+                itemId: 'reasoning-race',
+                contentIndex: 0,
+                delta: 'RAW_REASONING_MUST_NOT_LEAK',
               },
             });
           });

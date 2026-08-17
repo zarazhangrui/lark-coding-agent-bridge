@@ -21,7 +21,7 @@ export class AppServerEventTranslator {
     return [{ type: 'text', delta }];
   }
 
-  reasoningDelta(params: Record<string, unknown> | undefined): AgentEvent[] {
+  reasoningSummaryDelta(params: Record<string, unknown> | undefined): AgentEvent[] {
     const delta = nonEmptyText(params?.delta);
     return delta ? [{ type: 'thinking', delta }] : [];
   }
