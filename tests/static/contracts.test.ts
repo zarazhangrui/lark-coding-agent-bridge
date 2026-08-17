@@ -54,4 +54,12 @@ describe('static architecture contracts', () => {
       expect(source, file).not.toMatch(/\bwriteFile\(/);
     }
   });
+
+  it('keeps interactive card replies selectable in both config surfaces', () => {
+    const configCard = read('src/card/config-card.ts');
+    const configView = read('web/src/views/ConfigView.tsx');
+
+    expect(configCard).toMatch(/content: '交互卡片' }, value: 'card'/);
+    expect(configView).toContain('["card", "交互卡片"]');
+  });
 });
