@@ -10,8 +10,35 @@ const ENDPOINTS: Record<TenantBrand, string> = {
 };
 
 const COT_UPDATE_THROTTLE_MS = 600;
-const COT_TOOL_OUTPUT_MAX = 1200;
 const COT_TEXT_MAX = 1200;
+// Atomic events cannot be split. This lower text cap keeps their content
+// within the 4096-character event limit even in the worst JSON escaping case
+// (`\uXXXX`, six chars per code unit).
+const COT_ATOMIC_TEXT_MAX = 512;
+const COT_TOOL_OUTPUT_MAX = COT_ATOMIC_TEXT_MAX;
+// Request-level transport limits, measured against production Feishu with a
+// bisection probe on 2026-08-17 (fresh CoT bubble per crafted PUT):
+//   - Events per PUT: the server accepts exactly 50 and rejects 51+ with
+//     HTTP 400 code=99992402, regardless of body size (a 51-event/6163-byte
+//     request fails while a 3-event/10961-byte one passes). 32 keeps a 36%
+//     margin below the measured limit.
+//   - Body bytes: 32 KiB is the highest measured PASS (including 50 events
+//     x 32 KiB combined); no server byte rejection was ever observed, so
+//     this cap only keeps batches inside proven territory.
+const COT_UPDATE_SAFE_EVENTS = 32;
+const COT_UPDATE_SAFE_BYTES = 32 * 1024;
+// Individual event content limit, measured exact on 2026-08-17: 4096 chars
+// passes and 4097 is rejected with HTTP 200 code=10001 (AppendCOTEvents).
+// Count Unicode code points so an astral character is never split.
+const COT_EVENT_CONTENT_MAX_CHARS = 4096;
+// Buffered deltas are split at flush time into fixed-size events. Same
+// derivation as COT_ATOMIC_TEXT_MAX: 512 code points survive the worst-case
+// 6-char JSON escape (3072 chars) inside the 4096-char content limit with
+// ample room for the id envelope. A pathological multi-KB id would push
+// content past the limit; the server then rejects the PUT (measured:
+// HTTP 200 code=10001) and the publisher degrades through the normal
+// failure path.
+const COT_DELTA_CHUNK_CODE_POINTS = 512;
 // Bounds every CoT HTTP call. Without it a hung message_cot endpoint pins
 // start() — which runs before any agent event is drained and before the
 // plain-reply fallback — to undici's ~300s default.
@@ -61,13 +88,29 @@ export class CotClient {
         ...(init.headers ?? {}),
       },
     });
-    if (!resp.ok) throw new Error(`COT HTTP ${resp.status}`);
     const text = await resp.text();
-    if (!text) return {};
-    const data = JSON.parse(text) as { code?: number; msg?: string; data?: Record<string, unknown> } & Record<string, unknown>;
-    if (data.code !== undefined && data.code !== 0) {
-      throw new Error(`COT API failed: code=${data.code} msg=${data.msg ?? '<no msg>'}`);
+    const data = parseCotResponse(text);
+    const apiCode = data && typeof data.code === 'number' ? data.code : undefined;
+    const apiMessage = data && typeof data.msg === 'string' && data.msg.trim()
+      ? data.msg
+      : undefined;
+    const ttLogId = nonEmptyString(resp.headers.get('x-tt-logid'));
+    if (!resp.ok || (apiCode !== undefined && apiCode !== 0)) {
+      throw new CotRequestError({
+        httpStatus: resp.status,
+        ...(apiCode !== undefined ? { apiCode } : {}),
+        ...(apiMessage ? { apiMessage } : {}),
+        ...(ttLogId ? { ttLogId } : {}),
+      });
     }
+    if (text.trim().length > 0 && !data) {
+      throw new CotRequestError({
+        httpStatus: resp.status,
+        apiMessage: 'response body is not a JSON object',
+        ...(ttLogId ? { ttLogId } : {}),
+      });
+    }
+    if (!data) return {};
     return data.data ?? data;
   }
 
@@ -95,14 +138,24 @@ export class CotClient {
 
   async update(ref: CotRef, events: readonly CotEvent[]): Promise<void> {
     if (events.length === 0) return;
-    await this.request('/open-apis/im/v1/message_cot', {
-      method: 'PUT',
-      body: JSON.stringify({
-        cot_id: ref.cotId,
-        message_id: ref.messageId,
-        events,
-      }),
-    });
+    const body = cotUpdateBody(ref, events);
+    try {
+      await this.request('/open-apis/im/v1/message_cot', {
+        method: 'PUT',
+        body,
+      });
+    } catch (err) {
+      log.warn('cot', 'update-request-failed', {
+        err: errorMessage(err),
+        ...cotRequestErrorFields(err),
+        bodyBytes: Buffer.byteLength(body, 'utf8'),
+        eventStats: events.map((event) => ({
+          eventType: event.event_type,
+          contentBytes: Buffer.byteLength(event.content, 'utf8'),
+        })),
+      });
+      throw err;
+    }
   }
 
   async complete(ref: CotRef, reason: string): Promise<void> {
@@ -126,6 +179,43 @@ interface CotEvent {
   timestamp: number;
 }
 
+type CotDeltaInput =
+  | {
+      eventType: 'TEXT_MESSAGE_CONTENT' | 'REASONING_MESSAGE_CONTENT';
+      messageId: string;
+      delta: string;
+    }
+  | {
+      eventType: 'TOOL_CALL_ARGS';
+      toolCallId: string;
+      delta: string;
+    };
+
+type BufferedCotEvent =
+  | { kind: 'atomic'; event: CotEvent }
+  // input.delta holds the accumulated delta of all merged adjacent inputs.
+  | { kind: 'delta'; input: CotDeltaInput; timestamp: number };
+
+export interface CotRequestErrorDetails {
+  httpStatus: number;
+  apiCode?: number;
+  apiMessage?: string;
+  ttLogId?: string;
+}
+
+export class CotRequestError extends Error {
+  override readonly name = 'CotRequestError';
+
+  constructor(readonly details: CotRequestErrorDetails) {
+    super([
+      `COT HTTP ${details.httpStatus}`,
+      ...(details.apiCode !== undefined ? [`code=${details.apiCode}`] : []),
+      ...(details.apiMessage ? [`msg=${details.apiMessage}`] : []),
+      ...(details.ttLogId ? [`ttLogId=${details.ttLogId}`] : []),
+    ].join(' '));
+  }
+}
+
 export class CotPublisher {
   private readonly client: Pick<CotClient, 'create' | 'update' | 'complete'>;
   readonly chatId: string;
@@ -134,11 +224,19 @@ export class CotPublisher {
   readonly scope: string;
   readonly inputPreview: string;
   ref: CotRef | undefined;
+  // Lifecycle invariants (all mutations go through start/finish/markDegraded):
+  //   disabled=true  ⇒ accepting=false and pending is empty;
+  //   ref=undefined  ⇒ nothing was ever buffered (enqueue* require ref).
   disabled = false;
   degradedReason: string | undefined;
-  private buffer: CotEvent[] = [];
+  // Buffered logical events. Deltas stay unsplit strings here; drain() swaps
+  // the whole array out before materializing wire events, so a tail-merge can
+  // never mutate a batch that is already serialized into an in-flight PUT.
+  private pending: BufferedCotEvent[] = [];
   private flushing: Promise<void> | undefined;
   private timer: NodeJS.Timeout | undefined;
+  private accepting = true;
+  private finishPromise: Promise<void> | undefined;
 
   constructor(opts: {
     client: Pick<CotClient, 'create' | 'update' | 'complete'>;
@@ -157,6 +255,7 @@ export class CotPublisher {
   }
 
   async start(): Promise<void> {
+    if (!this.accepting || this.disabled) return;
     // Single chat_id-addressed create. In topics the bubble follows
     // originMessageId's thread (see CotClient.create); the caller passes an
     // in-topic origin so it lands in the topic. On any failure we disable CoT
@@ -168,6 +267,7 @@ export class CotPublisher {
       created = await this.client.create(this.chatId, this.originMessageId);
     } catch (err) {
       this.disabled = true;
+      this.accepting = false;
       log.warn('cot', 'create-failed', { err: err instanceof Error ? err.message : String(err) });
       return;
     }
@@ -175,6 +275,7 @@ export class CotPublisher {
     const messageId = stringValue(created.message_id ?? created.messageId);
     if (!cotId || !messageId) {
       this.disabled = true;
+      this.accepting = false;
       log.warn('cot', 'create-failed', {
         err: `CreateCOT missing ids: ${JSON.stringify(created).slice(0, 200)}`,
       });
@@ -185,7 +286,8 @@ export class CotPublisher {
     this.enqueue('RUN_STARTED', {
       threadId: this.scope,
       runId: this.runId,
-      input: { query: this.inputPreview },
+      // RUN_STARTED is atomic and therefore cannot be transport-split.
+      input: { query: truncateCot(this.inputPreview, COT_ATOMIC_TEXT_MAX) },
     });
     this.enqueue('STEP_STARTED', {
       stepId: `step-understand-${this.runId}`,
@@ -194,21 +296,60 @@ export class CotPublisher {
   }
 
   enqueue(eventType: string, content: unknown): void {
-    if (this.disabled || !this.ref) return;
-    this.buffer.push({
+    if (!this.accepting || this.disabled || !this.ref) return;
+    const serialized = safeStringify(content);
+    if (serialized === undefined) {
+      // A custom toJSON() can throw a message containing its source value;
+      // keep degradation logs metadata-only.
+      this.markDegraded(`COT ${eventType} content 序列化失败`);
+      return;
+    }
+    const event: CotEvent = {
       event_type: eventType,
-      content: JSON.stringify(content),
+      content: serialized,
       timestamp: Date.now(),
-    });
+    };
+    const invalidReason = cotEventContentError(event);
+    if (invalidReason) {
+      this.markDegraded(invalidReason);
+      return;
+    }
+    this.pending.push({ kind: 'atomic', event });
+    this.scheduleFlush();
+  }
+
+  enqueueDelta(input: CotDeltaInput): void {
+    if (!this.accepting || this.disabled || !this.ref || input.delta.length === 0) return;
+    // Deltas are buffered as plain strings; splitting into fixed-size events
+    // happens once, at flush time. Merging adjacent deltas for the same
+    // target is therefore unconditional here.
+    const tail = this.pending[this.pending.length - 1];
+    const merged = tail ? mergeCotDeltaInput(tail, input) : undefined;
+    if (merged) {
+      this.pending[this.pending.length - 1] = merged;
+    } else {
+      this.pending.push({ kind: 'delta', input: { ...input }, timestamp: Date.now() });
+    }
     this.scheduleFlush();
   }
 
   async finish(reason: string): Promise<void> {
-    if (this.timer) {
-      clearTimeout(this.timer);
-      this.timer = undefined;
+    if (!this.finishPromise) {
+      // Closing intake before draining makes the queue finite and guarantees
+      // complete is never raced by a late event.
+      this.accepting = false;
+      this.clearFlushTimer();
+      this.finishPromise = this.finishAndComplete(reason);
     }
-    await this.flush();
+    await this.finishPromise;
+  }
+
+  private async finishAndComplete(reason: string): Promise<void> {
+    // A flush may have observed an empty queue just before finish closed
+    // intake. Re-check until the now-stable pending queue is fully drained.
+    do {
+      await this.flush();
+    } while (!this.disabled && this.pending.length > 0);
     if (this.disabled || !this.ref) return;
     try {
       await this.client.complete(this.ref, reason);
@@ -219,33 +360,64 @@ export class CotPublisher {
   }
 
   private scheduleFlush(): void {
-    if (this.timer || this.flushing) return;
+    if (!this.accepting || this.timer || this.flushing) return;
     this.timer = setTimeout(() => {
       this.timer = undefined;
       void this.flush();
     }, COT_UPDATE_THROTTLE_MS);
   }
 
-  private async flush(): Promise<void> {
-    if (this.disabled || !this.ref) return;
-    if (this.flushing) {
-      await this.flushing;
-      if (this.buffer.length > 0 && !this.disabled) await this.flush();
-      return;
+  private flush(): Promise<void> {
+    if (this.disabled || !this.ref || this.pending.length === 0) {
+      return this.flushing ?? Promise.resolve();
     }
-    const events = this.buffer.splice(0);
-    if (events.length === 0) return;
-    this.flushing = this.client.update(this.ref, events)
+    if (this.flushing) return this.flushing;
+    const ref = this.ref;
+    const operation = this.drain(ref)
       .catch((err) => {
-        this.disabled = true;
-        this.degradedReason = err instanceof Error ? err.message : String(err);
-        log.warn('cot', 'update-failed', { err: this.degradedReason });
+        this.markDegraded(errorMessage(err));
       })
       .finally(() => {
-        this.flushing = undefined;
-        if (this.buffer.length > 0 && !this.disabled) this.scheduleFlush();
+        if (this.flushing === operation) this.flushing = undefined;
+        if (this.pending.length > 0 && !this.disabled) this.scheduleFlush();
       });
-    await this.flushing;
+    this.flushing = operation;
+    return operation;
+  }
+
+  private async drain(ref: CotRef): Promise<void> {
+    // Freeze this flush window. Events arriving while a PUT is in flight stay
+    // pending for the next throttled window (finish drains that final window
+    // immediately after closing intake). Buffered deltas are split into
+    // fixed-size wire events here, exactly once per logical delta.
+    const drainQueue = this.pending;
+    this.pending = [];
+    const wireQueue: CotEvent[] = [];
+    for (const buffered of drainQueue) wireQueue.push(...wireCotEvents(buffered));
+    while (!this.disabled && wireQueue.length > 0) {
+      const batch = wireQueue.splice(0, cotTransportBatchLength(ref, wireQueue));
+      // No retry on failure: the batch limits sit inside the probe-measured
+      // server acceptance zone, so a rejection means something is genuinely
+      // wrong, and a timeout/transport/5xx result might have committed
+      // server-side where a retry would duplicate events. flush() degrades.
+      await this.client.update(ref, batch);
+    }
+  }
+
+  private markDegraded(reason: string): void {
+    this.disabled = true;
+    this.accepting = false;
+    this.degradedReason = reason;
+    this.pending = [];
+    this.clearFlushTimer();
+    log.warn('cot', 'update-failed', { err: reason });
+  }
+
+  private clearFlushTimer(): void {
+    if (this.timer) {
+      clearTimeout(this.timer);
+      this.timer = undefined;
+    }
   }
 }
 
@@ -267,7 +439,6 @@ export async function consumeCotEvents(
 ): Promise<void> {
   let reasoningOpen = false;
   let textStepOpen = false;
-  let textMessageOpen = false;
   let textMessageIndex = 0;
   let textMessageId: string | undefined;
   const toolBrief = new Map<string, { name: string; input: unknown }>();
@@ -287,7 +458,8 @@ export async function consumeCotEvents(
             role: 'reasoning',
           });
         }
-        publisher.enqueue('REASONING_MESSAGE_CONTENT', {
+        publisher.enqueueDelta({
+          eventType: 'REASONING_MESSAGE_CONTENT',
           messageId: reasoningMessageId,
           delta: truncateCot(evt.delta, COT_TEXT_MAX),
         });
@@ -308,10 +480,16 @@ export async function consumeCotEvents(
           toolCallName: showSummary ? evt.name : 'tool',
         });
         if (detailed && evt.input !== undefined) {
-          publisher.enqueue('TOOL_CALL_ARGS', {
-            toolCallId,
-            delta: JSON.stringify(evt.input),
-          });
+          const serializedInput = safeStringify(evt.input);
+          if (serializedInput !== undefined) {
+            publisher.enqueueDelta({
+              eventType: 'TOOL_CALL_ARGS',
+              toolCallId,
+              // Same display cap as text/reasoning deltas. Without it a huge
+              // Write-style input floods one drain window with dozens of PUTs.
+              delta: truncateCot(serializedInput, COT_TEXT_MAX),
+            });
+          }
         }
         publisher.enqueue('TOOL_CALL_END', { toolCallId });
         continue;
@@ -341,12 +519,12 @@ export async function consumeCotEvents(
             stepName: '输出过程',
           });
         }
-        if (!textMessageOpen) {
-          textMessageOpen = true;
+        if (!textMessageId) {
           textMessageId = `text-${publisher.runId}-${++textMessageIndex}`;
           publisher.enqueue('TEXT_MESSAGE_START', { messageId: textMessageId, role: 'assistant' });
         }
-        publisher.enqueue('TEXT_MESSAGE_CONTENT', {
+        publisher.enqueueDelta({
+          eventType: 'TEXT_MESSAGE_CONTENT',
           messageId: textMessageId,
           delta: truncateCot(evt.delta, COT_TEXT_MAX),
         });
@@ -363,7 +541,12 @@ export async function consumeCotEvents(
           });
         }
         if (evt.type === 'error') {
-          publisher.enqueue('RUN_ERROR', { message: evt.message, code: evt.terminationReason ?? 'error' });
+          // RUN_ERROR is atomic; keep arbitrary provider error text within the
+          // same explicit display cap as other COT text.
+          publisher.enqueue('RUN_ERROR', {
+            message: truncateCot(evt.message, COT_ATOMIC_TEXT_MAX),
+            code: evt.terminationReason ?? 'error',
+          });
           await publisher.finish('error');
         } else {
           const status = evt.terminationReason === 'normal' ? 'done' : evt.terminationReason ?? 'done';
@@ -393,9 +576,8 @@ export async function consumeCotEvents(
   }
 
   function closeTextIfNeeded(): void {
-    if (!textMessageOpen || !textMessageId) return;
+    if (!textMessageId) return;
     publisher.enqueue('TEXT_MESSAGE_END', { messageId: textMessageId });
-    textMessageOpen = false;
     textMessageId = undefined;
   }
 }
@@ -422,9 +604,138 @@ function cotToolIcon(name: string): string {
 
 function truncateCot(value: unknown, max: number): string {
   const text = String(value ?? '');
-  return text.length > max ? `${text.slice(0, max)}...` : text;
+  if (text.length <= max) return text;
+  let end = max;
+  const last = text.charCodeAt(end - 1);
+  const next = text.charCodeAt(end);
+  if (isHighSurrogate(last) && isLowSurrogate(next)) end--;
+  return `${text.slice(0, end)}...`;
 }
 
 function stringValue(value: unknown): string | undefined {
   return typeof value === 'string' ? value : undefined;
+}
+
+function mergeCotDeltaInput(
+  tail: BufferedCotEvent,
+  next: CotDeltaInput,
+): BufferedCotEvent | undefined {
+  if (tail.kind !== 'delta') return undefined;
+  const prev = tail.input;
+  if (prev.eventType === 'TOOL_CALL_ARGS' || next.eventType === 'TOOL_CALL_ARGS') {
+    if (prev.eventType !== 'TOOL_CALL_ARGS' || next.eventType !== 'TOOL_CALL_ARGS') return undefined;
+    if (prev.toolCallId !== next.toolCallId) return undefined;
+  } else if (prev.eventType !== next.eventType || prev.messageId !== next.messageId) {
+    return undefined;
+  }
+  return { ...tail, input: { ...prev, delta: prev.delta + next.delta } };
+}
+
+/** Materialize one buffered logical event into fixed-size wire events. */
+function wireCotEvents(buffered: BufferedCotEvent): CotEvent[] {
+  if (buffered.kind === 'atomic') return [buffered.event];
+  const { input } = buffered;
+  const codePoints = Array.from(input.delta);
+  const events: CotEvent[] = [];
+  for (let offset = 0; offset < codePoints.length; offset += COT_DELTA_CHUNK_CODE_POINTS) {
+    const delta = codePoints.slice(offset, offset + COT_DELTA_CHUNK_CODE_POINTS).join('');
+    const content = input.eventType === 'TOOL_CALL_ARGS'
+      ? { toolCallId: input.toolCallId, delta }
+      : { messageId: input.messageId, delta };
+    events.push({
+      event_type: input.eventType,
+      content: JSON.stringify(content),
+      timestamp: buffered.timestamp,
+    });
+  }
+  return events;
+}
+
+function cotTransportBatchLength(ref: CotRef, events: readonly CotEvent[]): number {
+  // Exact incremental byte math: a serialized JSON array is its elements
+  // joined by commas inside the envelope, so summing per-event bytes plus
+  // separators reproduces Buffer.byteLength(cotUpdateBody(...)) without
+  // re-serializing the whole request per candidate batch.
+  let bodyBytes = Buffer.byteLength(cotUpdateBody(ref, []), 'utf8');
+  let count = 0;
+  for (const event of events) {
+    if (count >= COT_UPDATE_SAFE_EVENTS) break;
+    const eventBytes = Buffer.byteLength(JSON.stringify(event), 'utf8') + (count > 0 ? 1 : 0);
+    // Always take at least one event: a single content-legal event tops out
+    // near 29 KiB (4096 code points at worst-case UTF-8/escape expansion),
+    // under the 32 KiB measured-pass boundary.
+    if (count > 0 && bodyBytes + eventBytes > COT_UPDATE_SAFE_BYTES) break;
+    bodyBytes += eventBytes;
+    count++;
+  }
+  return count;
+}
+
+function cotEventContentError(event: CotEvent): string | undefined {
+  const contentChars = Array.from(event.content).length;
+  if (contentChars > COT_EVENT_CONTENT_MAX_CHARS) {
+    return `COT ${event.event_type} content 超过限制：${contentChars}/${COT_EVENT_CONTENT_MAX_CHARS} chars`;
+  }
+  return undefined;
+}
+
+function cotUpdateBody(ref: CotRef, events: readonly CotEvent[]): string {
+  return JSON.stringify({
+    cot_id: ref.cotId,
+    message_id: ref.messageId,
+    events,
+  });
+}
+
+function parseCotResponse(
+  text: string,
+): ({ code?: number; msg?: string; data?: Record<string, unknown> } & Record<string, unknown>) | undefined {
+  if (text.trim().length === 0) return undefined;
+  try {
+    const parsed = JSON.parse(text) as unknown;
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? parsed as { code?: number; msg?: string; data?: Record<string, unknown> } & Record<string, unknown>
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function cotRequestErrorFields(error: unknown): Record<string, unknown> {
+  if (!(error instanceof CotRequestError)) return {};
+  return {
+    httpStatus: error.details.httpStatus,
+    apiCode: error.details.apiCode,
+    apiMessage: error.details.apiMessage,
+    ttLogId: error.details.ttLogId,
+  };
+}
+
+function nonEmptyString(value: string | null): string | undefined {
+  return typeof value === 'string' && value.trim().length > 0 ? value : undefined;
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+/**
+ * JSON.stringify that treats every failure mode (circular refs, BigInt, a
+ * throwing toJSON, or an unserializable root) as `undefined` so callers can
+ * degrade without letting user-controlled error text escape into logs.
+ */
+function safeStringify(value: unknown): string | undefined {
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return undefined;
+  }
+}
+
+function isHighSurrogate(value: number): boolean {
+  return value >= 0xD800 && value <= 0xDBFF;
+}
+
+function isLowSurrogate(value: number): boolean {
+  return value >= 0xDC00 && value <= 0xDFFF;
 }
