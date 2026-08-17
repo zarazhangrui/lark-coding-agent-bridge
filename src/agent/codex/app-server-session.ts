@@ -165,7 +165,16 @@ export class AppServerSession implements AppServerInboundHandler {
         this.turnCompleted(paramsInput);
         return;
       default:
-        log.info('app-server', 'notification-ignored', { method });
+        // Unknown methods are protocol noise by design (observed: warning,
+        // remoteControl/status/changed, thread/goal/cleared,
+        // account/rateLimits/updated). Log structural metadata only —
+        // arbitrary payloads may carry user content or credentials, and a
+        // truncated JSON string could even defeat downstream redaction.
+        log.info('app-server', 'notification-ignored', {
+          method,
+          paramsKeys: params ? Object.keys(params).slice(0, 16) : [],
+          paramsBytes: Buffer.byteLength(JSON.stringify(paramsInput ?? null), 'utf8'),
+        });
     }
   }
 
@@ -258,20 +267,44 @@ export class AppServerSession implements AppServerInboundHandler {
   private validateUsageNotification(
     paramsInput: unknown,
   ): Record<string, unknown> | undefined {
-    const method = 'thread/tokenUsage/updated';
-    const params = this.validateTurnParams(method, paramsInput);
-    const tokenUsage = recordValue(params?.tokenUsage);
+    const params = recordValue(paramsInput);
+    const requestThreadId = nonEmptyString(params?.threadId);
+    const requestTurnId = nonEmptyString(params?.turnId);
+    if (!params || !requestThreadId || !requestTurnId) {
+      log.warn('app-server', 'token-usage-ignored', { reason: 'invalid-context' });
+      return undefined;
+    }
+
+    // Resuming a thread can replay the previous turn's latest usage both
+    // before thread/resume settles and while the next turn/start is in
+    // flight. Usage is optional telemetry, so those startup/late snapshots
+    // must not terminate the new turn. Notifications for the turn being
+    // started are buffered by onNotification() and reach this branch only
+    // after the active turn id is known.
+    if (this.turnState.kind !== 'active' || !this.threadId) {
+      log.info('app-server', 'token-usage-ignored', { reason: 'turn-not-active' });
+      return undefined;
+    }
+    if (requestThreadId !== this.threadId) {
+      log.info('app-server', 'token-usage-ignored', { reason: 'other-thread' });
+      return undefined;
+    }
+    if (requestTurnId !== this.turnState.turnId) {
+      log.info('app-server', 'token-usage-ignored', { reason: 'stale-turn' });
+      return undefined;
+    }
+
+    const tokenUsage = recordValue(params.tokenUsage);
     const last = recordValue(tokenUsage?.last);
     const total = recordValue(tokenUsage?.total);
     if (
-      !params
-      || !tokenUsage
+      !tokenUsage
       || !last
       || !total
       || !isUsageBreakdown(last)
       || !isUsageBreakdown(total)
     ) {
-      if (params) this.fail(`Codex ${method} 通知字段不合法`);
+      log.warn('app-server', 'token-usage-ignored', { reason: 'invalid-fields' });
       return undefined;
     }
     return params;
