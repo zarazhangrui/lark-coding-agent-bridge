@@ -655,7 +655,7 @@ async function handleResume(args: string, ctx: CommandContext): Promise<void> {
 
 async function handleResumeCx(_args: string, ctx: CommandContext): Promise<void> {
   if (!requireCodexHistory(ctx)) return;
-  await beginSessionSelection(ctx, 'selectable');
+  await beginSessionSelection(ctx, 'route');
 }
 
 async function handleSessions(args: string, ctx: CommandContext): Promise<void> {
@@ -874,10 +874,13 @@ async function loadBrowserSessions(
   const cwd = scope === 'route' ? selectedResumeCwd(ctx) : undefined;
   if (scope === 'route' && !cwd) return [];
   const history = await listCodexResumeHistory(ctx, cwd, 100);
+  const scopedHistory = scope === 'route' && cwd
+    ? history.filter((thread) => thread.cwd === cwd)
+    : history;
   const current = ctx.sessionCatalogIdentity && ctx.sessionCatalog
     ? ctx.sessionCatalog.activeFor(ctx.sessionCatalogIdentity)?.threadId
     : undefined;
-  return history.map((thread) => ({
+  return scopedHistory.map((thread) => ({
     threadId: thread.threadId,
     title: thread.name || thread.preview,
     cwd: thread.cwd,

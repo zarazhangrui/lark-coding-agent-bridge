@@ -284,7 +284,7 @@ describe('agent-aware resume commands', () => {
     expect(output).toContain('发送 `/sessions all next` / `/sessions all prev` 翻页；发送 `/use` 进入切换选择。');
   });
 
-  it('switches selectable Codex sessions across working directories', async () => {
+  it('lists only the current working directory in /resume-cx', async () => {
     const h = await createHarness('codex');
     const targetCwd = join(h.tmp.profile, 'target-workspace');
     await mkdir(targetCwd);
@@ -297,15 +297,17 @@ describe('agent-aware resume commands', () => {
     await expect(h.run('/resume-cx')).resolves.toBe(true);
     expect(lastMarkdown(h.channel)).toContain('**切换 Codex 会话**');
     expect(lastMarkdown(h.channel)).toContain('范围: 可切换会话');
+    expect(lastMarkdown(h.channel)).toContain('thread-current');
+    expect(lastMarkdown(h.channel)).not.toContain('thread-target');
 
-    await expect(h.run('2')).resolves.toBe(true);
+    await expect(h.run('1')).resolves.toBe(true);
 
     expect(h.catalog.entries().some((entry) =>
-      entry.threadId === 'thread-target'
+      entry.threadId === 'thread-current'
       && entry.status === 'active'
-      && entry.cwdRealpath.endsWith('/target-workspace'),
+      && entry.cwdRealpath.endsWith('/workspace'),
     )).toBe(true);
-    expect(h.workspaces.cwdFor('chat-1')).toMatch(/\/target-workspace$/);
+    expect(h.workspaces.cwdFor('chat-1')).toMatch(/\/workspace$/);
     expect(lastMarkdown(h.channel)).toContain('已完成');
   });
 
