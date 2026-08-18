@@ -161,10 +161,46 @@ interface ResumeCandidate {
   expiresAt: number;
 }
 
+type SessionBrowserScope = 'route' | 'all' | 'selectable';
+
+interface BrowserSessionItem {
+  threadId: string;
+  title: string;
+  cwd: string;
+  updatedAtMs: number;
+  current: boolean;
+}
+
+interface SessionListState {
+  items: BrowserSessionItem[];
+  page: number;
+  scope: SessionBrowserScope;
+}
+
+interface SessionBrowserState {
+  items: BrowserSessionItem[];
+  directories: SessionDirectoryItem[];
+  stage: 'sessions' | 'cwd' | 'cwd-sessions';
+  page: number;
+  selectedCwd?: string;
+  createdAt: number;
+}
+
+interface SessionDirectoryItem {
+  cwd: string;
+  totalSessions: number;
+  current: boolean;
+  updatedAtMs: number;
+}
+
 const RESUME_CANDIDATE_TTL_MS = 10 * 60 * 1000;
 const resumeCandidates = new Map<string, ResumeCandidate>();
+const sessionListStates = new Map<string, SessionListState>();
+const sessionBrowserStates = new Map<string, SessionBrowserState>();
 const AUDIT_SAFE_COMMAND_REPLY = '命令已处理。';
 const RESUME_APPLIED_REPLY = '已完成，请继续发送下一条消息。';
+const SESSION_BROWSER_PAGE_SIZE = 10;
+const SESSION_BROWSER_TTL_MS = 10 * 60 * 1000;
 
 const handlers: Record<string, Handler> = {
   '/new': handleNew,
@@ -172,6 +208,10 @@ const handlers: Record<string, Handler> = {
   '/cd': handleCd,
   '/ws': handleWs,
   '/resume': handleResume,
+  '/resume-cx': handleResumeCx,
+  '/sessions': handleSessions,
+  '/use': handleUse,
+  '/cancel': handleCancel,
   '/status': handleStatus,
   '/help': handleHelp,
   '/account': handleAccount,
@@ -215,6 +255,10 @@ function isAdminCommand(cmd: string): boolean {
 
 export async function tryHandleCommand(ctx: CommandContext): Promise<boolean> {
   const trimmed = ctx.msg.content.trim();
+  if (sessionBrowserStates.has(ctx.scope) && !trimmed.startsWith('/')) {
+    await handleSessionBrowserReply(trimmed, ctx);
+    return true;
+  }
   if (!trimmed.startsWith('/')) return false;
   const parts = trimmed.split(/\s+/);
   const cmd = parts[0] ?? '';
@@ -609,6 +653,343 @@ async function handleResume(args: string, ctx: CommandContext): Promise<void> {
   await ctx.channel.send(ctx.msg.chatId, { card }, commandReplyOptions(ctx));
 }
 
+async function handleResumeCx(_args: string, ctx: CommandContext): Promise<void> {
+  if (!requireCodexHistory(ctx)) return;
+  await beginSessionSelection(ctx, 'selectable');
+}
+
+async function handleSessions(args: string, ctx: CommandContext): Promise<void> {
+  if (!requireCodexHistory(ctx)) return;
+  const parts = args.trim().toLowerCase().split(/\s+/).filter(Boolean);
+  const scope: SessionBrowserScope = parts[0] === 'all' ? 'all' : 'route';
+  if (parts[0] === 'cwd') {
+    await beginCwdSelection(ctx);
+    return;
+  }
+  const action = parts.at(-1);
+  const stateKey = `${ctx.scope}:${scope}`;
+  const existing = sessionListStates.get(stateKey);
+  const reusable = existing && (action === 'next' || action === 'prev') ? existing : undefined;
+  const items = reusable?.items ?? await loadBrowserSessions(ctx, scope);
+  const requestedPage = reusable
+    ? reusable.page + (action === 'next' ? 1 : -1)
+    : 1;
+  const page = paginate(items, requestedPage);
+  sessionListStates.set(stateKey, { items, page: page.page, scope });
+  await reply(ctx, formatSessionList(page, {
+    title: 'Codex 会话',
+    scopeLabel: scope === 'all' ? '全部可发现' : '当前聊天',
+    pageCommand: scope === 'all' ? '/sessions all' : '/sessions',
+  }));
+}
+
+async function handleUse(args: string, ctx: CommandContext): Promise<void> {
+  if (!requireCodexHistory(ctx)) return;
+  const value = args.trim();
+  if (!value) {
+    await beginSessionSelection(ctx, 'selectable');
+    return;
+  }
+  const state = sessionBrowserStates.get(ctx.scope);
+  if (state && /^\d+$/.test(value)) {
+    await handleSessionBrowserReply(value, ctx);
+    return;
+  }
+  const items = await loadBrowserSessions(ctx, 'all');
+  if (/^\d+$/.test(value)) {
+    const selected = paginate(items, 1).items[Number(value) - 1];
+    if (!selected) {
+      await reply(ctx, `没有第 ${value} 项。发送 \`/use\` 进入切换选择。`);
+      return;
+    }
+    await applyBrowserSession(selected, ctx);
+    return;
+  }
+  const selected = items.find((item) => item.threadId === value);
+  if (!selected) {
+    await reply(ctx, '没有找到该会话。发送 `/use` 进入切换选择。');
+    return;
+  }
+  await applyBrowserSession(selected, ctx);
+}
+
+async function handleCancel(_args: string, ctx: CommandContext): Promise<void> {
+  if (!sessionBrowserStates.delete(ctx.scope)) {
+    await reply(ctx, '当前没有进行中的会话选择。');
+    return;
+  }
+  await reply(ctx, '已退出会话选择。');
+}
+
+function requireCodexHistory(ctx: CommandContext): boolean {
+  if (ctx.controls.profileConfig.agentKind === 'codex') return true;
+  void reply(ctx, '此命令仅适用于 Codex profile。');
+  return false;
+}
+
+async function beginSessionSelection(ctx: CommandContext, scope: SessionBrowserScope): Promise<void> {
+  const items = await loadBrowserSessions(ctx, scope === 'selectable' ? 'all' : scope);
+  const state: SessionBrowserState = {
+    items,
+    directories: [],
+    stage: 'sessions',
+    page: 1,
+    createdAt: Date.now(),
+  };
+  sessionBrowserStates.set(ctx.scope, state);
+  await reply(ctx, formatSessionList(paginate(items, 1), {
+    title: '切换 Codex 会话',
+    scopeLabel: '可切换会话',
+    selectionMode: true,
+  }));
+}
+
+async function beginCwdSelection(ctx: CommandContext): Promise<void> {
+  const items = await loadBrowserSessions(ctx, 'all');
+  const state: SessionBrowserState = {
+    items,
+    directories: buildSessionDirectories(items),
+    stage: 'cwd',
+    page: 1,
+    createdAt: Date.now(),
+  };
+  sessionBrowserStates.set(ctx.scope, state);
+  await reply(ctx, formatSessionDirectory(paginate(state.directories, 1)));
+}
+
+async function handleSessionBrowserReply(value: string, ctx: CommandContext): Promise<void> {
+  const state = sessionBrowserStates.get(ctx.scope);
+  if (!state) return;
+  const normalized = value.trim().toLowerCase();
+  if (['取消', '退出', 'q', 'quit'].includes(normalized)) {
+    sessionBrowserStates.delete(ctx.scope);
+    await reply(ctx, state.stage === 'cwd' ? '已退出会话目录浏览。' : '已退出切换会话。');
+    return;
+  }
+  if (Date.now() - state.createdAt > SESSION_BROWSER_TTL_MS) {
+    sessionBrowserStates.delete(ctx.scope);
+    await reply(ctx, state.stage === 'cwd' ? '会话目录选择已过期，请重新发送 `/sessions cwd`。' : '会话选择已过期，请重新发送 `/resume-cx` 或 `/use`。');
+    return;
+  }
+  const pageAction = normalized === 'n' || normalized === 'next' || normalized === '下一页'
+    ? 1
+    : normalized === 'p' || normalized === 'prev' || normalized === 'previous' || normalized === '上一页'
+      ? -1
+      : 0;
+  if (pageAction) {
+    state.page += pageAction;
+    state.createdAt = Date.now();
+    await reply(ctx, formatBrowserState(state));
+    return;
+  }
+  if (!/^\d+$/.test(normalized) || Number(normalized) < 1) {
+    await reply(ctx, state.stage === 'cwd'
+      ? '正在按工作目录浏览 Codex 会话。请直接回复目录编号，例如 1；回复 `n` 下一页，`p` 上一页；回复“取消”退出。'
+      : '正在切换 Codex 会话。请直接回复当前页列表编号，例如 1；回复 `n` 下一页，`p` 上一页；回复“取消”退出。');
+    return;
+  }
+  const choice = Number(normalized);
+  if (state.stage === 'cwd') {
+    const page = paginate(state.directories, state.page);
+    state.page = page.page;
+    const directory = page.items[choice - 1];
+    if (!directory) {
+      await reply(ctx, `${formatSessionDirectory(page)}\n\n没有第 ${choice} 个目录，请重新选择。`);
+      return;
+    }
+    state.stage = 'cwd-sessions';
+    state.selectedCwd = directory.cwd;
+    state.page = 1;
+    state.createdAt = Date.now();
+    await reply(ctx, formatBrowserState(state));
+    return;
+  }
+  const items = state.stage === 'cwd-sessions'
+    ? state.items.filter((item) => item.cwd === state.selectedCwd)
+    : state.items;
+  const page = paginate(items, state.page);
+  state.page = page.page;
+  const selected = page.items[choice - 1];
+  if (!selected) {
+    await reply(ctx, `${formatBrowserState(state)}\n\n没有第 ${choice} 项，请重新选择。`);
+    return;
+  }
+  await applyBrowserSession(selected, ctx);
+}
+
+async function applyBrowserSession(item: BrowserSessionItem, ctx: CommandContext): Promise<void> {
+  const identity = ctx.sessionCatalogIdentity;
+  if (!identity) {
+    await reply(ctx, '当前上下文无法切换会话，请先使用 `/cd` 选择有效工作目录。');
+    return;
+  }
+  const workspace = await resolveWorkingDirectory(item.cwd);
+  if (!workspace.ok) {
+    await reply(ctx, `无法切换到该会话的工作目录：${workspace.userVisible}`);
+    return;
+  }
+  const capability = codexCapability(ctx.controls.profileConfig);
+  const access = ctx.chatMode === 'p2p'
+    ? canUseDm(ctx.controls.profileConfig, ctx.controls, ctx.msg.senderId)
+    : canUseGroup(ctx.controls.profileConfig, ctx.controls, ctx.msg.chatId, ctx.msg.senderId);
+  const policy = evaluateRunPolicy({
+    scope: {
+      source: 'im',
+      chatId: ctx.msg.chatId,
+      actorId: ctx.msg.senderId,
+      ...(ctx.chatMode === 'topic' && ctx.msg.threadId ? { threadId: ctx.msg.threadId } : {}),
+    },
+    attachments: [],
+    prompt: '',
+    requestedCwd: item.cwd,
+    cwdRealpath: workspace.cwdRealpath,
+    access,
+    capability,
+    profileConfig: ctx.controls.profileConfig,
+    now: Date.now(),
+    codexHome: ctx.controls.profileConfig.codex?.codexHome,
+    inheritCodexHome: ctx.controls.profileConfig.codex?.inheritCodexHome,
+  });
+  if (!policy.ok) {
+    await reply(ctx, `当前上下文不可切换到该会话：${policy.rejectReason.userVisible}`);
+    return;
+  }
+  ctx.activeRuns.interrupt(ctx.scope);
+  ctx.workspaces.setCwd(ctx.scope, workspace.cwdRealpath);
+  ctx.sessionCatalog?.upsertActive({
+    scopeId: identity.scopeId,
+    agentId: 'codex',
+    cwdRealpath: workspace.cwdRealpath,
+    policyFingerprint: policy.policyFingerprint,
+    threadId: item.threadId,
+  });
+  sessionBrowserStates.delete(ctx.scope);
+  await reply(ctx, RESUME_APPLIED_REPLY);
+}
+
+async function loadBrowserSessions(
+  ctx: CommandContext,
+  scope: Exclude<SessionBrowserScope, 'selectable'>,
+): Promise<BrowserSessionItem[]> {
+  const cwd = scope === 'route' ? selectedResumeCwd(ctx) : undefined;
+  if (scope === 'route' && !cwd) return [];
+  const history = await listCodexResumeHistory(ctx, cwd, 100);
+  const current = ctx.sessionCatalogIdentity && ctx.sessionCatalog
+    ? ctx.sessionCatalog.activeFor(ctx.sessionCatalogIdentity)?.threadId
+    : undefined;
+  return history.map((thread) => ({
+    threadId: thread.threadId,
+    title: thread.name || thread.preview,
+    cwd: thread.cwd,
+    updatedAtMs: thread.updatedAtMs,
+    current: thread.threadId === current,
+  }));
+}
+
+function buildSessionDirectories(items: BrowserSessionItem[]): SessionDirectoryItem[] {
+  const directories = new Map<string, SessionDirectoryItem>();
+  for (const item of items) {
+    const existing = directories.get(item.cwd);
+    directories.set(item.cwd, {
+      cwd: item.cwd,
+      totalSessions: (existing?.totalSessions ?? 0) + 1,
+      current: Boolean(existing?.current || item.current),
+      updatedAtMs: Math.max(existing?.updatedAtMs ?? 0, item.updatedAtMs),
+    });
+  }
+  return [...directories.values()].sort((left, right) => right.updatedAtMs - left.updatedAtMs || left.cwd.localeCompare(right.cwd));
+}
+
+function paginate<T>(items: T[], requestedPage: number): { items: T[]; page: number; totalPages: number; totalItems: number } {
+  const totalPages = Math.max(1, Math.ceil(items.length / SESSION_BROWSER_PAGE_SIZE));
+  const page = Math.min(Math.max(requestedPage, 1), totalPages);
+  const start = (page - 1) * SESSION_BROWSER_PAGE_SIZE;
+  return { items: items.slice(start, start + SESSION_BROWSER_PAGE_SIZE), page, totalPages, totalItems: items.length };
+}
+
+function formatBrowserState(state: SessionBrowserState): string {
+  if (state.stage === 'cwd') return formatSessionDirectory(paginate(state.directories, state.page));
+  const items = state.stage === 'cwd-sessions'
+    ? state.items.filter((item) => item.cwd === state.selectedCwd)
+    : state.items;
+  return formatSessionList(paginate(items, state.page), {
+    title: state.stage === 'cwd-sessions' ? '目录下 Codex 会话' : '切换 Codex 会话',
+    scopeLabel: state.stage === 'cwd-sessions' ? `工作目录 \`${formatCompactPath(state.selectedCwd ?? '')}\`` : '可切换会话',
+    selectionMode: true,
+  });
+}
+
+function formatSessionList(
+  page: { items: BrowserSessionItem[]; page: number; totalPages: number; totalItems: number },
+  options: { title: string; scopeLabel: string; selectionMode?: boolean; pageCommand?: string },
+): string {
+  const lines = [
+    `**${options.title}**`,
+    '',
+    `- 范围: ${options.scopeLabel}`,
+    `- 页码: \`${page.page} / ${page.totalPages}\``,
+    `- 数量: \`${page.totalItems}\``,
+    '',
+  ];
+  if (page.totalItems === 0) lines.push('未发现 Codex 历史会话。发送 `/new` 创建新会话。');
+  page.items.forEach((item, index) => {
+    lines.push(
+      `${index + 1}. Session: \`${item.threadId}\`${item.current ? '（当前）' : ''}`,
+      `   - 最近活跃: \`${formatSessionUpdatedAt(item.updatedAtMs)}\``,
+      `   - 标题: ${truncateSessionTitle(item.title)}`,
+      '   - 状态: 未知（not loaded）',
+      `   - 工作目录: \`${formatCompactPath(item.cwd)}\``,
+    );
+  });
+  lines.push('');
+  lines.push(options.selectionMode
+    ? '直接回复编号完成切换；回复 `n` 下一页，`p` 上一页；回复“取消”退出。'
+    : `发送 \`${options.pageCommand} next\` / \`${options.pageCommand} prev\` 翻页；发送 \`/use\` 进入切换选择。`);
+  return lines.join('\n').trimEnd();
+}
+
+function formatSessionDirectory(page: { items: SessionDirectoryItem[]; page: number; totalPages: number; totalItems: number }): string {
+  const lines = [
+    '**Codex 会话目录**',
+    '',
+    '- 范围: 全部可发现',
+    `- 页码: \`${page.page} / ${page.totalPages}\``,
+    `- 目录数: \`${page.totalItems}\``,
+    '',
+  ];
+  if (page.totalItems === 0) lines.push('未发现包含工作目录信息的 Codex 会话。发送 `/new` 创建新会话。');
+  page.items.forEach((item, index) => {
+    lines.push(
+      `${index + 1}. 工作目录: \`${formatCompactPath(item.cwd)}\`${item.current ? '（当前）' : ''}`,
+      `   - 会话数: \`${item.totalSessions}\``,
+      `   - 最近活跃: \`${formatSessionUpdatedAt(item.updatedAtMs)}\``,
+      `   - 可切换: \`${item.totalSessions}\``,
+    );
+  });
+  lines.push('', '直接回复编号查看该目录下的 session；回复 `n` 下一页，`p` 上一页；回复“取消”退出。');
+  return lines.join('\n').trimEnd();
+}
+
+function formatSessionUpdatedAt(timestamp: number): string {
+  if (!timestamp) return '未知';
+  const parts = new Intl.DateTimeFormat('zh-CN', {
+    timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23',
+  }).formatToParts(new Date(timestamp));
+  const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  return `${values.year}-${values.month}-${values.day} ${values.hour}:${values.minute}:${values.second}（Asia/Shanghai）`;
+}
+
+function formatCompactPath(value: string): string {
+  if (value.length <= 48) return value;
+  const parts = value.split('/').filter(Boolean);
+  return parts.length >= 2 ? `.../${parts.slice(-2).join('/')}` : `.../${value.slice(-44)}`;
+}
+
+function truncateSessionTitle(value: string): string {
+  return value.length > 60 ? `${value.slice(0, 57)}...` : value || '无标题';
+}
+
 async function applyResume(sessionId: string, ctx: CommandContext): Promise<void> {
   if (ctx.sessionCatalog && ctx.sessionCatalogIdentity) {
     const entry = ctx.sessionCatalog.activeFor(ctx.sessionCatalogIdentity);
@@ -724,7 +1105,7 @@ async function listClaudeResumeHistory(
 
 async function listCodexResumeHistory(
   ctx: CommandContext,
-  cwd: string,
+  cwd: string | undefined,
   limit: number,
 ): Promise<CodexThreadHistoryEntry[]> {
   const codex = ctx.controls.profileConfig.codex;

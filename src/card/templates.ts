@@ -126,6 +126,7 @@ export function statusCard(info: StatusInfo): object {
     actions([
       { text: '🆕 新会话', value: { cmd: 'new' }, style: 'primary' },
       { text: '🔁 恢复会话', value: { cmd: 'resume' } },
+      { text: '↩ 选择恢复', value: { cmd: 'resume-cx' } },
       { text: '📂 工作目录', value: { cmd: 'ws.list' } },
       { text: '💡 帮助', value: { cmd: 'help' } },
     ]),
@@ -187,6 +188,8 @@ export function helpCard(agentName = 'Agent'): object {
         '- `/new` `/reset` — 清空当前 chat 的会话',
         '- `/new chat [name]` — 新建群+新会话，自动拉你进群',
         '- `/resume [N]` — 列出并恢复历史会话（最多 N 条）',
+        '- `/resume-cx` `/use [编号|session]` — 浏览并切换 Codex 会话',
+        '- `/sessions [all|cwd]` — 查看全部会话或按工作目录浏览',
         '- `/cd <path>` — 切换工作目录（会重置 session）',
         '- `/ws list|save <name>|use <name>|remove <name>` — 工作目录',
         '- `/account` — 查看当前应用；`/account change` 换 appId/secret 并重连',
@@ -209,6 +212,7 @@ export function helpCard(agentName = 'Agent'): object {
     actions([
       { text: '📊 状态', value: { cmd: 'status' }, style: 'primary' },
       { text: '🔁 恢复会话', value: { cmd: 'resume' } },
+      { text: '↩ 选择恢复', value: { cmd: 'resume-cx' } },
       { text: '📂 工作目录', value: { cmd: 'ws.list' } },
       { text: '🆕 新会话', value: { cmd: 'new' } },
     ]),
