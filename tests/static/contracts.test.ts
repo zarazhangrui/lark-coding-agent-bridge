@@ -19,7 +19,7 @@ const collectTsFiles = (path: string): string[] => {
 };
 
 describe('static architecture contracts', () => {
-  it('does not route production runs by importing Codex internals in shared bot/card code', () => {
+  it('does not route production runs by importing agent internals in shared bot/card code', () => {
     const sharedFiles = [
       ...collectTsFiles('src/bot'),
       ...collectTsFiles('src/card'),
@@ -27,6 +27,7 @@ describe('static architecture contracts', () => {
     ];
     for (const file of sharedFiles) {
       expect(read(file), file).not.toMatch(/agent\/codex/);
+      expect(read(file), file).not.toMatch(/agent\/kimi/);
     }
   });
 

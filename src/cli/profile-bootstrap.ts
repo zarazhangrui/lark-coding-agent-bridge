@@ -1,5 +1,6 @@
 import { mkdir, realpath } from 'node:fs/promises';
 import { join } from 'node:path';
+import { defaultKimiBinaryPath } from '../agent/kimi/binary';
 import { AgentPreflightError } from '../agent/preflight';
 import { createDefaultProfileConfig, type AgentKind, type ProfileConfig } from '../config/profile-schema';
 import type { AppConfig } from '../config/schema';
@@ -14,6 +15,7 @@ export interface BootstrapProfileInput {
   workspace?: string;
   defaultWorkspace?: string;
   codexBinaryPath?: string;
+  kimiBinaryPath?: string;
   profileDir?: string;
 }
 
@@ -29,12 +31,17 @@ export async function createBootstrapProfileConfig(
     input.agentKind === 'codex'
       ? await createBootstrapCodexConfig(input.codexBinaryPath)
       : undefined;
+  const kimi =
+    input.agentKind === 'kimi'
+      ? await createBootstrapKimiConfig(input.kimiBinaryPath)
+      : undefined;
   const profile = createDefaultProfileConfig({
     agentKind: input.agentKind,
     accounts: input.accounts,
     preferences: input.preferences,
     secrets: input.secrets,
     ...(codex ? { codex } : {}),
+    ...(kimi ? { kimi } : {}),
   });
   if (workspace) {
     profile.workspaces = {
@@ -70,6 +77,25 @@ export async function createBootstrapCodexConfig(binaryPath: string | undefined)
       code: codexBootstrapBinaryErrorCode(errno),
       agentId: 'codex',
       agentName: 'Codex CLI',
+      command,
+      binaryPath: command,
+      errno,
+    });
+  }
+  return { binaryPath: resolvedBinary };
+}
+
+export async function createBootstrapKimiConfig(binaryPath: string | undefined) {
+  const command = binaryPath ?? defaultKimiBinaryPath();
+  let resolvedBinary: string;
+  try {
+    resolvedBinary = await resolveExecutablePath(command);
+  } catch (err) {
+    const errno = (err as NodeJS.ErrnoException).code;
+    throw new AgentPreflightError({
+      code: codexBootstrapBinaryErrorCode(errno),
+      agentId: 'kimi',
+      agentName: 'Kimi Code CLI',
       command,
       binaryPath: command,
       errno,

@@ -120,7 +120,7 @@ export async function startRunFlow(input: StartRunFlowInput): Promise<StartRunFl
       cwdRealpath: workspace.cwdRealpath,
       policyFingerprint: policy.policyFingerprint,
     });
-    if (catalogEntry?.agentId === 'claude') {
+    if (catalogEntry?.agentId === 'claude' || catalogEntry?.agentId === 'kimi') {
       sessionId = catalogEntry.sessionId;
       resumeFrom = sessionId;
     } else if (catalogEntry?.agentId === 'codex') {
@@ -195,6 +195,18 @@ export function recordRunSessionEvent(input: RecordRunSessionEventInput): void {
       scopeId: input.scopeId,
       agentId: 'claude',
       cwdRealpath,
+      policyFingerprint: input.policy.policyFingerprint,
+      sessionId: input.event.sessionId,
+    });
+    return;
+  }
+  if (input.capability.agentId === 'kimi' && input.event.sessionId) {
+    // kimi follows claude's sessionId semantics but has no legacy SessionStore
+    // fallback — the catalog is the only resume source.
+    input.sessionCatalog?.upsertActive({
+      scopeId: input.scopeId,
+      agentId: 'kimi',
+      cwdRealpath: input.event.cwd ?? input.policy.cwdRealpath,
       policyFingerprint: input.policy.policyFingerprint,
       sessionId: input.event.sessionId,
     });

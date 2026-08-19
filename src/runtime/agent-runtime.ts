@@ -1,6 +1,8 @@
 import { ClaudeAdapter } from '../agent/claude/adapter';
 import { CodexAdapter } from '../agent/codex/adapter';
-import { AgentPreflightError, type AgentAvailability } from '../agent/preflight';
+import { KimiAdapter } from '../agent/kimi/adapter';
+import { defaultKimiBinaryPath } from '../agent/kimi/binary';
+import { AgentPreflightError, type AgentAvailability, type LocalAgentId } from '../agent/preflight';
 import type { AgentAdapter } from '../agent/types';
 import type { AppPaths } from '../config/app-paths';
 import type { AgentKind, ProfileConfig } from '../config/profile-schema';
@@ -49,6 +51,14 @@ export function createRuntimeAgent(
       larkChannel,
     });
   }
+  if (profileConfig.agentKind === 'kimi') {
+    // kimi.binaryPath is optional: fall back to LARK_CHANNEL_KIMI_BIN /
+    // ~/.kimi-code/bin/kimi when the profile does not pin one.
+    return new KimiAdapter({
+      binary: profileConfig.kimi?.binaryPath ?? defaultKimiBinaryPath(),
+      larkChannel,
+    });
+  }
   return new ClaudeAdapter({ larkChannel });
 }
 
@@ -56,11 +66,13 @@ export async function checkRuntimeAgentAvailability(agent: AgentAdapter): Promis
   if (agent.checkAvailability) return agent.checkAvailability();
   const ok = await agent.isAvailable();
   if (ok) return { ok: true };
+  const agentId: LocalAgentId =
+    agent.id === 'codex' || agent.id === 'kimi' ? agent.id : 'claude';
   const diagnostic = {
     code: 'agent-binary-not-found' as const,
-    agentId: agent.id === 'codex' ? ('codex' as const) : ('claude' as const),
+    agentId,
     agentName: agent.displayName,
-    command: agent.id === 'codex' ? 'codex' : 'claude',
+    command: agent.id,
   };
   return { ok: false, diagnostic, error: new AgentPreflightError(diagnostic) };
 }
