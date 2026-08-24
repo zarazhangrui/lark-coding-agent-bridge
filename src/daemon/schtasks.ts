@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, rmSync } from 'node:fs';
 import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import {
@@ -10,6 +10,8 @@ import {
   windowsLauncherCmdPath,
 } from './paths';
 import { paths } from '../config/paths';
+import { resolveAppPaths } from '../config/app-paths';
+import { readAndPrune, unregisterSync } from '../runtime/registry';
 
 export interface LauncherInputs {
   /** Absolute path to node.exe. */
@@ -118,9 +120,47 @@ export function runTask(profile: string): SchtasksResult {
   return runSchtasks(['/Run', '/TN', windowsTaskName(profile)]);
 }
 
+/**
+ * Terminate the process tree that the launcher .cmd spawned, if /End left
+ * one behind, and clear its registry entry + lock files.
+ *
+ * Task Scheduler only terminates the process it started directly (the /TR
+ * target); the node daemon that the launcher .cmd starts survives /End as
+ * an orphan - it keeps the Feishu connection alive and holds the profile/app
+ * locks, so `stop` doesn't actually stop the bot and the next `start` is
+ * blocked by the stale locks. taskkill /T /F on the registry pid takes down
+ * the whole tree; the proper-lockfile artifacts (`<name>.lock`,
+ * `<name>.lock.meta.json` and the `<name>.lock.lock` mutex directory) are
+ * removed so a subsequent `start` starts from clean state.
+ *
+ * Best-effort: any failure here must not mask the /End result. Callers only
+ * reach endTask with a running task instance, so the registry entry belongs
+ * to the task-launched daemon, not a foreground `run` process.
+ */
+function terminateLauncherTree(profile: string): void {
+  try {
+    const entry = readAndPrune().find(
+      (e) => e.profileName === profile && typeof e.pid === 'number',
+    );
+    if (!entry) return;
+    spawnSync('taskkill', ['/PID', String(entry.pid), '/T', '/F'], { stdio: 'ignore' });
+    unregisterSync(entry.id);
+    const appPaths = resolveAppPaths({ profile });
+    for (const lockPath of [appPaths.profileLockFile, appPaths.appLockFile(entry.appId)]) {
+      for (const suffix of ['', '.meta.json', '.lock']) {
+        rmSync(`${lockPath}${suffix}`, { force: true, recursive: true });
+      }
+    }
+  } catch {
+    // best-effort; the /End result is what gets surfaced to the caller
+  }
+}
+
 /** End the running instance. Task stays registered for next logon. */
 export function endTask(profile: string): SchtasksResult {
-  return runSchtasks(['/End', '/TN', windowsTaskName(profile)]);
+  const r = runSchtasks(['/End', '/TN', windowsTaskName(profile)]);
+  terminateLauncherTree(profile);
+  return r;
 }
 
 /** Disable autostart (task stays registered but ONLOGON trigger won't fire). */
@@ -166,11 +206,37 @@ export function isTaskRegistered(profile: string): boolean {
  * Parse `/Query /V /FO LIST` output for the current run state. Looks for
  * `Status: Running` in the verbose listing. Other states include
  * "Ready" (registered, not currently running) and "Disabled".
+ *
+ * Localized Windows (e.g. zh-CN) prints translated labels in the console
+ * codepage, so `Status: Running` never matches - and since the output is
+ * decoded as UTF-8, the translated text arrives as U+FFFD mojibake that
+ * can't be matched either. The `Last Result` sentinel 267009
+ * (0x41301, SCHED_S_TASK_RUNNING) is plain ASCII digits and works across
+ * locales.
  */
 export function isTaskRunning(profile: string): boolean {
   const r = runSchtasks(['/Query', '/V', '/FO', 'LIST', '/TN', windowsTaskName(profile)]);
   if (!r.ok) return false;
-  return /Status:\s+Running/i.test(r.stdout);
+  return /Status:\s+Running/i.test(r.stdout) || /267009/.test(r.stdout);
+}
+
+/**
+ * Pid of the bot daemon this task launched, taken from the bridge's process
+ * registry. Localized verbose listings have no `Process ID:` line at all, so
+ * this is the locale-independent fallback for parseStatus.
+ *
+ * Only meaningful while the task is running: the registry also holds
+ * entries for foreground `run` processes, which must not be reported as
+ * service-managed pids.
+ */
+export function taskRuntimePid(profile: string): string | undefined {
+  try {
+    if (!isTaskRunning(profile)) return undefined;
+    const entry = readAndPrune().find((e) => e.profileName === profile);
+    return entry ? String(entry.pid) : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 export function describeTask(profile: string): string {

@@ -165,8 +165,12 @@ function makeSchtasksAdapter(profile: string, runArgs: string[]): ServiceAdapter
     },
     describeStatus: () => schtasks.describeTask(profile),
     parseStatus: (text) => ({
-      // `Process ID: <n>` shows up in verbose listing only when task is running.
-      pid: text.match(/Process ID:\s*(\d+)/i)?.[1],
+      // `Process ID: <n>` shows up in verbose listing only when task is
+      // running - and only on English Windows. Localized listings (e.g.
+      // zh-CN) have no PID line at all, so fall back to the registry pid
+      // of the daemon this task launched (only while the task is running,
+      // so a foreground `run` process is never misreported as the service).
+      pid: text.match(/Process ID:\s*(\d+)/i)?.[1] ?? schtasks.taskRuntimePid(profile),
       // `Last Result: <0|nonzero>` — `0` means last run succeeded.
       // Filter the `1056` ("task already running") and `267011` ("task hasn't
       // run") sentinels that aren't real exit codes.
