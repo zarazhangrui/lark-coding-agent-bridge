@@ -2,6 +2,7 @@ import { Command } from 'commander';
 import pkg from '../../package.json';
 import { formatAgentPreflightDiagnostic, getAgentPreflightDiagnostic } from '../agent/preflight';
 import { runMigrate } from './commands/migrate';
+import { runProfileLarkCli } from './commands/lark-cli';
 import { runKillCli, runPs } from './commands/ps';
 import {
   runSecretsGet,
@@ -135,6 +136,17 @@ profile
       includeSecrets: opts.includeSecrets,
       yes: opts.yes,
     });
+  });
+
+program
+  .command('lark-cli [args...]')
+  .description('Run lark-cli with the selected bridge profile credentials')
+  .option('-c, --config <path>', 'path to bridge config file')
+  .option('--profile <name>', 'profile name (defaults to active profile)')
+  .allowUnknownOption(true)
+  .action(async (args: string[], opts: { config?: string; profile?: string }) => {
+    const code = await runProfileLarkCli(args, opts);
+    if (code !== 0) process.exitCode = code;
   });
 
 program
