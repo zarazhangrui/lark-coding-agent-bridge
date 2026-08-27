@@ -1,5 +1,6 @@
 import type { LarkChannel } from '@larksuite/channel';
 import { fetchKnownChats } from '../bot/lark-info';
+import { t } from '../i18n';
 import {
   ADD_BOT_SCOPES,
   addBotToChat,
@@ -287,7 +288,7 @@ export async function applyConfig(rt: UiRuntime, body: unknown): Promise<ConfigV
   try {
     if (p.identityChanged) {
       const ok = await applyProfileLarkCliIdentity(rt, p.nextEffectiveIdentity);
-      if (!ok) throw new ApiError(500, 'lark-cli 身份策略未生效');
+      if (!ok) throw new ApiError(500, t('config.fail.policyNotApplied'));
       identityApplied = true;
     }
     await savePreferencesConfig(
@@ -305,7 +306,7 @@ export async function applyConfig(rt: UiRuntime, body: unknown): Promise<ConfigV
       );
     }
     if (err instanceof ApiError) throw err;
-    throw new ApiError(500, `保存失败：${err instanceof Error ? err.message : String(err)}`);
+    throw new ApiError(500, t('config.failed.body', { reason: err instanceof Error ? err.message : String(err) }));
   }
   log.info('ui', 'config-saved', { profile: rt.profile, mode: p.mode, live: true });
   return buildConfigView(rt, true);
@@ -333,7 +334,7 @@ export async function applyConfigToDisk(
       p.meeting,
     );
   } catch (err) {
-    throw new ApiError(500, `保存失败：${err instanceof Error ? err.message : String(err)}`);
+    throw new ApiError(500, t('config.failed.body', { reason: err instanceof Error ? err.message : String(err) }));
   }
   log.info('ui', 'config-saved', { profile: state.profile, mode: p.mode, live: false });
   return buildConfigView(state, false);
@@ -440,7 +441,7 @@ export function meetingsView(manager: MeetingManager | undefined, enabled: boole
   if (!enabled) {
     return {
       available: false,
-      reason: '该 profile 未启用会议智能体',
+      reason: t('uiapi.meetingNotEnabled'),
       sessions: [],
       push: { hooked: false, received: 0 },
     };
@@ -448,7 +449,7 @@ export function meetingsView(manager: MeetingManager | undefined, enabled: boole
   if (!manager) {
     return {
       available: false,
-      reason: 'profile 未在线（会议能力只在运行中的进程里可用）',
+      reason: t('uiapi.profileOffline'),
       sessions: [],
       push: { hooked: false, received: 0 },
     };
@@ -478,10 +479,10 @@ export async function meetingJoin(
   manager: MeetingManager | undefined,
   body: unknown,
 ): Promise<{ ok: true; session: MeetingSessionStatus }> {
-  if (!manager) throw new ApiError(400, '会议能力不可用：profile 未在线或未启用');
+  if (!manager) throw new ApiError(400, t('uiapi.meetingUnavailable'));
   const fv = asRecord(body);
   const meetingNo = typeof fv.meetingNo === 'string' ? fv.meetingNo.replace(/\s/g, '') : '';
-  if (!isMeetingNo(meetingNo)) throw new ApiError(400, '会议号必须是 9 位数字');
+  if (!isMeetingNo(meetingNo)) throw new ApiError(400, t('uiapi.invalidMeetingNo'));
   try {
     const session = await manager.join(meetingNo);
     return { ok: true, session: session.status() };
@@ -495,7 +496,7 @@ export async function meetingLeave(
   manager: MeetingManager | undefined,
   body: unknown,
 ): Promise<{ ok: boolean }> {
-  if (!manager) throw new ApiError(400, '会议能力不可用：profile 未在线或未启用');
+  if (!manager) throw new ApiError(400, t('uiapi.meetingUnavailable'));
   const fv = asRecord(body);
   const meetingId = typeof fv.meetingId === 'string' ? fv.meetingId : '';
   if (!meetingId) throw new ApiError(400, 'meetingId is required');
@@ -528,7 +529,7 @@ export async function userLoginComplete(profile: string, rootDir: string | undef
   const deviceCode = typeof fv.deviceCode === 'string' ? fv.deviceCode : '';
   if (!deviceCode) throw new ApiError(400, 'deviceCode is required');
   const r = await completeDeviceLogin({ profile, rootDir }, deviceCode);
-  if (!r.ok) throw new ApiError(400, r.message ?? '授权尚未完成');
+  if (!r.ok) throw new ApiError(400, r.message ?? t('uiapi.authIncomplete'));
   return { ok: true };
 }
 
@@ -582,10 +583,10 @@ export async function addBotToChatView(
   // than surfacing a confusing permission error from the API.
   const status = await getUserAuthStatus({ profile, rootDir });
   if (!status.loggedIn || !hasScope(status, ADD_BOT_SCOPES)) {
-    return { ok: false, pending: false, needAuth: true, message: '拉bot进群需要额外授权（添加群成员）' };
+    return { ok: false, pending: false, needAuth: true, message: t('uiapi.addBotNeedsAuth') };
   }
   const state = await loadProfileState(profile, rootDir);
   const botAppId = state.cfg.accounts?.app?.id;
-  if (!botAppId) throw new ApiError(400, 'profile 未配置 app');
+  if (!botAppId) throw new ApiError(400, t('uiapi.noApp'));
   return addBotToChat({ profile, rootDir }, chatId, botAppId);
 }

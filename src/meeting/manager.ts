@@ -1,4 +1,5 @@
 import { log } from '../core/logger';
+import { t } from '../i18n';
 import type { MeetingConfig } from '../config/profile-schema';
 import { joinMeeting, VcApiError, type RawActivityItem, type VcRequestClient } from './api';
 import { MeetingSession, type MeetingSessionStatus } from './session';
@@ -103,7 +104,7 @@ export class MeetingManager {
     if (!dispatcher || typeof dispatcher.register !== 'function') {
       this.push = {
         hooked: false,
-        reason: 'channel 未暴露事件 dispatcher（SDK 版本变动？），已降级为轮询',
+        reason: t('meeting.push.noDispatcher'),
         received: 0,
       };
       log.warn('meeting', 'push-hook-unavailable', { reason: this.push.reason });
@@ -127,7 +128,7 @@ export class MeetingManager {
       this.push = { hooked: true, received: 0 };
       log.info('meeting', 'push-hooked', {});
     } catch (err) {
-      this.push = { hooked: false, reason: `注册事件失败：${String(err)}`, received: 0 };
+      this.push = { hooked: false, reason: t('meeting.push.registerFailed', { err: String(err) }), received: 0 };
       log.warn('meeting', 'push-hook-failed', { err: String(err) });
     }
     return this.pushHealth();
@@ -247,7 +248,7 @@ export class MeetingManager {
 /** Human-readable hint for the allowlisted-beta failure, else the raw message. */
 export function describeMeetingError(err: unknown): string {
   if (err instanceof VcApiError && err.notInGray) {
-    return '智能体入会能力尚未对本应用开通（错误码 20017）。需要先申请加入内测，再重试。';
+    return t('meeting.notInGray');
   }
   return err instanceof Error ? err.message : String(err);
 }

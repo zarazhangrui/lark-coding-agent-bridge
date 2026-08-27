@@ -1,3 +1,4 @@
+import { t } from '../../i18n';
 import { resolveAppPaths, type AppPaths } from '../../config/app-paths';
 import { getSecret, listSecretIds, removeSecret, setSecret } from '../../config/keystore';
 import { paths } from '../../config/paths';
@@ -86,26 +87,26 @@ export async function runSecretsSet(
   opts: SecretProfileOptions = {},
 ): Promise<void> {
   if (!appId) {
-    console.error('用法: lark-channel-bridge secrets set --app-id <id>');
+    console.error(t('secrets.setUsage'));
     process.exit(1);
   }
-  const plaintext = await promptPassword(`输入 ${appId} 的 App Secret: `);
+  const plaintext = await promptPassword(t('secrets.prompt', { appId }));
   if (!plaintext) {
-    console.error('✗ 取消(secret 为空)');
+    console.error(t('secrets.cancelledEmpty'));
     process.exit(1);
   }
   await setAppSecret(appId, plaintext, opts);
-  console.log(`✓ 已加密存到 ~/.lark-channel/secrets.enc`);
+  console.log(t('secrets.saved'));
 }
 
 export async function runSecretsList(opts: SecretProfileOptions = {}): Promise<void> {
   const appPaths = await resolveSecretProfilePaths(opts);
   const ids = await listSecretIds(appPaths);
   if (ids.length === 0) {
-    console.log('当前没有加密存储的 secret。');
+    console.log(t('secrets.none'));
     return;
   }
-  console.log(`# 当前共 ${ids.length} 个 secret 在加密存储里\n`);
+  console.log(t('secrets.listHeader', { n: ids.length }));
   for (const id of ids) {
     console.log(`  - ${id}`);
   }
@@ -116,16 +117,16 @@ export async function runSecretsRemove(
   opts: SecretProfileOptions = {},
 ): Promise<void> {
   if (!appId) {
-    console.error('用法: lark-channel-bridge secrets remove --app-id <id>');
+    console.error(t('secrets.removeUsage'));
     process.exit(1);
   }
   const id = secretKeyForApp(appId);
   const removed = await removeAppSecret(appId, opts);
   if (!removed) {
-    console.error(`✗ 没找到 secret: ${id}`);
+    console.error(t('secrets.notFound', { id }));
     process.exit(1);
   }
-  console.log(`✓ 已删除 ${id}`);
+  console.log(t('secrets.removed', { id }));
 }
 
 export async function resolveSecretAcrossProfiles(

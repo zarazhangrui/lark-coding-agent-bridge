@@ -3,6 +3,7 @@ import { readdir, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline';
+import { t } from '../i18n';
 import { normalizeSessionPreview } from './preview';
 
 export interface SessionSummary {
@@ -84,7 +85,7 @@ async function summarize(path: string): Promise<{ preview: string; lineCount: nu
     rl.close();
     stream.destroy();
   }
-  return { preview: preview || '(空会话)', lineCount };
+  return { preview: preview || t('session.empty'), lineCount };
 }
 
 function extractUserText(content: unknown): string {
@@ -108,13 +109,13 @@ function extractUserText(content: unknown): string {
 export function formatRelTime(mtime: number): string {
   const diffMs = Date.now() - mtime;
   const min = Math.floor(diffMs / 60_000);
-  if (min < 1) return '刚刚';
-  if (min < 60) return `${min} 分钟前`;
+  if (min < 1) return t('time.rel.justNow');
+  if (min < 60) return t('time.rel.minutes', { n: min });
   const hr = Math.floor(min / 60);
-  if (hr < 24) return `${hr} 小时前`;
+  if (hr < 24) return t('time.rel.hours', { n: hr });
   const day = Math.floor(hr / 24);
-  if (day === 1) return '昨天';
-  if (day < 30) return `${day} 天前`;
+  if (day === 1) return t('time.rel.yesterday');
+  if (day < 30) return t('time.rel.days', { n: day });
   const mo = Math.floor(day / 30);
-  return `${mo} 个月前`;
+  return t('time.rel.months', { n: mo });
 }

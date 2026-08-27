@@ -2,6 +2,7 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import { createWriteStream, mkdirSync, type WriteStream } from 'node:fs';
 import { open, readdir, rm, stat } from 'node:fs/promises';
 import { join } from 'node:path';
+import { t } from '../i18n';
 import { telemetry } from './telemetry';
 
 export interface LoggerOptions {
@@ -327,12 +328,12 @@ function formatStdout(
       const bot = fields.bot ?? '-';
       const appId = fields.appId ? ` (${fields.appId})` : '';
       const agent = fields.agent ?? '-';
-      const proc = fields.procId ? `  进程: ${fields.procId}` : '';
-      return `✓ 已连接  bot: ${bot}${appId}  agent: ${agent}${proc}`;
+      const proc = fields.procId ? t('log.ws.procSuffix', { procId: String(fields.procId) }) : '';
+      return t('log.ws.connected', { bot: String(bot), appId, agent: String(agent), proc });
     }
-    if (event === 'reconnecting') return '↻ 正在重连…';
-    if (event === 'reconnected') return '✓ 已重连';
-    if (event === 'fail') return `✗ WS 错误: ${fields.err ?? ''}`;
+    if (event === 'reconnecting') return t('log.ws.reconnecting');
+    if (event === 'reconnected') return t('log.ws.reconnected');
+    if (event === 'fail') return t('log.ws.fail', { err: String(fields.err ?? '') });
   }
   if (phase === 'intake' && event === 'enter') {
     const c = ctx.chatId ? ctx.chatId.slice(-6) : '-';

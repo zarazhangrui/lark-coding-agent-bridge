@@ -1,5 +1,6 @@
 import { isComplete } from '../../config/schema';
 import { createInterface } from 'node:readline';
+import { t } from '../../i18n';
 import { paths } from '../../config/paths';
 import { loadRootConfig, readActiveProfile } from '../../config/profile-store';
 import { daemonStderrPath, daemonStdoutPath, SUPERVISOR_SERVICE_ID } from '../../daemon/paths';
@@ -67,7 +68,7 @@ async function resolveServiceTarget(
   // keeps respawning it after every `kill`. An explicit `--profile` is left
   // alone: the user asked for that per-profile service, not the machine-wide one.
   if (!opts.profile && !serviceFileExists(profile) && serviceFileExists(SUPERVISOR_SERVICE_ID)) {
-    console.log(`ℹ profile「${profile}」没有独立的后台服务,已指向控制面 supervisor 服务(等同 --web-ui)。`);
+    console.log(t('svc.fallbackToSupervisor', { profile }));
     return { serviceId: SUPERVISOR_SERVICE_ID, webUi: true };
   }
   return { serviceId: profile, profile, webUi: false };
@@ -95,10 +96,8 @@ async function lookupProfileEntry(profile: string): Promise<ProcessEntry | undef
 function requireAdapter(cmdName: string, serviceId: string, runArgs?: string[]): ServiceAdapter {
   const adapter = getServiceAdapter(serviceId, runArgs);
   if (!adapter) {
-    console.error(
-      `${cmdName}: 当前系统不支持后台运行。`,
-    );
-    console.error('  目前支持: macOS (launchd) / Linux (systemd) / Windows (Task Scheduler)');
+    console.error(t('svc.unsupportedPlatform', { cmd: cmdName }));
+    console.error(t('svc.supportedPlatforms'));
     process.exit(1);
   }
   return adapter;
@@ -125,23 +124,23 @@ function formatServiceStderr(stderr: string): string {
  */
 function printServiceFailure(verb: 'started' | 'restarted', stderr: string): void {
   const cleaned = formatServiceStderr(stderr);
-  const action = verb === 'started' ? '启动' : '重启';
+  const action = verb === 'started' ? t('svc.action.start') : t('svc.action.restart');
 
   if (/bootstrap failed.*input\/output error/i.test(cleaned)) {
-    console.error(`✗ bot ${action}失败。`);
+    console.error(t('svc.failVerb', { action }));
     console.error('');
-    console.error('最常见原因:旧的 bot 实例还在收尾。请试以下任一种:');
-    console.error('  1. 稍等几秒,重新运行 `start`');
-    console.error('  2. 或彻底清除注册再启动:');
+    console.error(t('svc.failCommonCause'));
+    console.error(t('svc.failHint1'));
+    console.error(t('svc.failHint2'));
     console.error('       unregister');
     console.error('       start');
     console.error('');
-    console.error('原始错误:');
+    console.error(t('svc.rawError'));
     console.error(`  ${cleaned}`);
     return;
   }
 
-  console.error(`✗ bot ${action}失败:`);
+  console.error(t('svc.failVerbColon', { action }));
   console.error(cleaned);
 }
 
@@ -160,15 +159,15 @@ async function ensureBridgeConfigured(
     allowBootstrap: true,
     handleActiveBridgeMigrationConflict: async (err) => {
       const handled = await promptAndStopActiveBridgeMigrationConflict(err, {
-        cancelMessage: '已取消启动。',
+        cancelMessage: t('cli.startCancelled'),
       });
       if (!handled) process.exit(0);
       return true;
     },
   });
   if (!isComplete(cfg)) {
-    console.error('bot 还没配置 app 凭据。');
-    console.error('请重新运行 `start` 完成首次扫码向导或传入已有应用信息。');
+    console.error(t('svc.noCredentials'));
+    console.error(t('svc.rerunStart'));
     process.exit(1);
   }
   return { profile, cfg, profileConfig, appPaths, configPath };
@@ -187,10 +186,10 @@ async function assertLockNotHeldByAnotherRuntime(
     const servicePid = adapter.isRunning() ? adapter.parseStatus(adapter.describeStatus()).pid : undefined;
     if (servicePid && lock.meta?.pid === Number(servicePid)) return;
 
-    console.error(`✗ 当前 ${kind === 'profile' ? 'profile' : 'app'} 已有 bridge 进程占用。`);
+    console.error(t('svc.lockHeld', { kind: kind === 'profile' ? 'profile' : 'app' }));
     if (!lock.meta) {
       console.error(`  lock: ${target}`);
-      console.error('  请先停止正在运行的占用进程，再执行 start。');
+      console.error(t('svc.lockStopFirst'));
       process.exit(1);
     }
     const app = lock.meta.appId ? ` app=${lock.meta.appId}` : '';
@@ -199,10 +198,7 @@ async function assertLockNotHeldByAnotherRuntime(
     );
 
     if (!opts.confirmStopRuntimeLockProcess && (!process.stdin.isTTY || !process.stdout.isTTY)) {
-      console.error(
-        `  非交互模式无法确认停止 ${kind === 'profile' ? 'profile' : 'app'} 占用进程。` +
-          '请先用 `lark-channel-bridge ps` 查看并用 `lark-channel-bridge kill <bot id>` 停止后重试。',
-      );
+      console.error(t('svc.lockNonInteractive', { kind: kind === 'profile' ? 'profile' : 'app' }));
       process.exit(1);
     }
 
@@ -210,7 +206,7 @@ async function assertLockNotHeldByAnotherRuntime(
       ? await opts.confirmStopRuntimeLockProcess(lock.meta)
       : await confirmStopRuntimeLockProcess();
     if (!confirmed) {
-      console.log('已取消启动。');
+      console.log(t('cli.startCancelled'));
       process.exit(0);
     }
 
@@ -218,9 +214,9 @@ async function assertLockNotHeldByAnotherRuntime(
       ? await opts.stopRuntimeLockProcess(lock.meta)
       : await stopProcessEntry({ pid: lock.meta.pid });
     if (result === 'killed') {
-      console.log(`✓ 已强制停止 pid ${lock.meta.pid}`);
+      console.log(t('cli.killedPid', { pid: lock.meta.pid }));
     } else {
-      console.log(`✓ 已停止 pid ${lock.meta.pid}`);
+      console.log(t('cli.stoppedPid', { pid: lock.meta.pid }));
     }
   }
 }
@@ -229,7 +225,7 @@ async function confirmStopRuntimeLockProcess(): Promise<boolean> {
   const rl = createInterface({ input: process.stdin, output: process.stdout });
   try {
     const answer = await new Promise<string>((resolve) =>
-      rl.question('是否停止旧进程并继续启动后台服务? [y/N]: ', resolve),
+      rl.question(t('svc.confirmStopAndStart'), resolve),
     );
     const normalized = answer.trim().toLowerCase();
     return normalized === 'y' || normalized === 'yes';
@@ -295,20 +291,27 @@ async function reportConnectAfter(
     process.exit(1);
   }
 
-  const action = verb === 'started' ? '正在等待 bot 连接...' : '正在等待 bot 重新连接...';
+  const action = verb === 'started' ? t('svc.waitingConnect') : t('svc.waitingReconnect');
   console.log(action);
 
   const entry = await waitForServiceConnect(appId, profile, beforePids);
   if (entry) {
-    const verbZh = verb === 'started' ? '已启动' : '已重启';
+    const verbZh = verb === 'started' ? t('svc.verbStarted') : t('svc.verbRestarted');
     const agent = agentDisplay(entry.agentKind);
     console.log(
-      `✓ ${verbZh}  bot: ${entry.botName} (${entry.appId})  agent: ${agent.displayName} (${agent.id})  进程: ${entry.id}`,
+      t('svc.connected', {
+        verb: verbZh,
+        botName: entry.botName ?? '',
+        appId: entry.appId,
+        agentName: agent.displayName,
+        agentId: agent.id,
+        procId: entry.id,
+      }),
     );
     return;
   }
-  console.warn(`⚠ 已下发指令,但 30 秒内未观察到 bot 连接成功 (${verb})。`);
-  console.warn(`  查看日志: tail -f ${daemonStderrPath(profile)}`);
+  console.warn(t('svc.notObserved', { verb }));
+  console.warn(t('svc.tailLog', { path: daemonStderrPath(profile) }));
   console.warn(`              tail -f ${daemonStdoutPath(profile)}`);
 }
 
@@ -354,18 +357,18 @@ export async function runServiceStart(opts: ServiceStartOptions = {}): Promise<v
 
   // If already running, stop first so start operations don't race.
   if (adapter.isRunning()) {
-    console.log('检测到旧 bot 实例,先停掉再重启...');
+    console.log(t('svc.oldInstanceStopping'));
     const r = await adapter.stop();
     if (!r.ok) {
-      console.warn(`⚠ 停止旧实例时有警告(继续重启):\n${formatServiceStderr(r.stderr)}`);
+      console.warn(t('svc.stopWarn', { stderr: formatServiceStderr(r.stderr) }));
     }
     // Stop is async at the OS level (especially launchd) — wait until it
     // really takes effect before start, otherwise some platforms refuse.
     const ok = await adapter.waitUntilStopped();
     if (!ok) {
-      console.error('✗ 旧 bot 实例没有完全停止。请稍后重试,或:');
-      console.error('  unregister  # 强制清除注册');
-      console.error('  start       # 再次启动');
+      console.error(t('svc.oldInstanceNotStopped'));
+      console.error(t('svc.hintUnregister'));
+      console.error(t('svc.hintStart'));
       process.exit(1);
     }
   }
@@ -410,22 +413,22 @@ async function runServiceStartWebUi(opts: ServiceStartOptions): Promise<void> {
   await adapter.install();
 
   if (adapter.isRunning()) {
-    console.log('检测到 supervisor 服务已在运行,先停掉再重启...');
+    console.log(t('svc.supervisorRunningRestart'));
     const r = await adapter.stop();
     if (!r.ok) {
-      console.warn(`⚠ 停止旧 supervisor 时有警告(继续重启):\n${formatServiceStderr(r.stderr)}`);
+      console.warn(t('svc.stopSupervisorWarn', { stderr: formatServiceStderr(r.stderr) }));
     }
     const ok = await adapter.waitUntilStopped();
     if (!ok) {
-      console.error('✗ 旧 supervisor 服务没有完全停止。请稍后重试,或:');
-      console.error('  unregister --web-ui  # 强制清除注册');
-      console.error('  start --web-ui       # 再次启动');
+      console.error(t('svc.oldSupervisorNotStopped'));
+      console.error(t('svc.hintUnregisterWebUi'));
+      console.error(t('svc.hintStartWebUi'));
       process.exit(1);
     }
   }
 
   await reportConnectAfter('started', profile, adapter.start);
-  console.log('  控制台由后台 supervisor 托管；用 `lark-channel-bridge ui` 打开');
+  console.log(t('svc.consoleManaged'));
 }
 
 /**
@@ -443,7 +446,7 @@ export async function runServiceStop(opts: ServiceProfileOptions = {}): Promise<
   const { serviceId, profile, webUi } = await resolveServiceTarget(opts);
   const adapter = requireAdapter('stop', serviceId);
   if (!adapter.fileExists()) {
-    console.log(webUi ? 'supervisor 还没在后台运行过,无需停止。' : 'bot 还没在后台运行过,无需停止。');
+    console.log(webUi ? t('svc.neverRanSupervisor') : t('svc.neverRanBot'));
     return;
   }
   if (!adapter.isRunning()) {
@@ -451,8 +454,8 @@ export async function runServiceStop(opts: ServiceProfileOptions = {}): Promise<
     // autostart (launchd RunAtLoad / systemd WantedBy) — which is exactly how
     // a "stopped" daemon comes back on its own. Make `stop` mean stopped.
     const r = await adapter.disableAutostart();
-    console.log(webUi ? 'supervisor 当前没在后台运行。' : 'bot 当前没在后台运行。');
-    if (r.ok) console.log('  已关闭开机自启。');
+    console.log(webUi ? t('svc.notRunningSupervisor') : t('svc.notRunningBot'));
+    if (r.ok) console.log(t('svc.autostartDisabled'));
     return;
   }
 
@@ -464,20 +467,20 @@ export async function runServiceStop(opts: ServiceProfileOptions = {}): Promise<
 
   const r = await adapter.stopAndDisableAutostart();
   if (!r.ok) {
-    console.error(`✗ 停止失败:\n${formatServiceStderr(r.stderr)}`);
+    console.error(t('svc.stopFailed', { stderr: formatServiceStderr(r.stderr) }));
     process.exit(1);
   }
   if (webUi) {
-    console.log('✓ 控制面 supervisor 已停止运行');
-    console.log('  通过 `start --web-ui` 可再次重启');
+    console.log(t('svc.supervisorStopped'));
+    console.log(t('svc.restartViaWebUi'));
     return;
   }
   if (entry) {
-    console.log(`✓ bot ${entry.botName} (${entry.appId}) 已停止运行`);
+    console.log(t('svc.botStoppedNamed', { botName: entry.botName ?? '', appId: entry.appId }));
   } else {
-    console.log('✓ bot 已停止运行');
+    console.log(t('svc.botStopped'));
   }
-  console.log('  通过 `start` 可再次重启');
+  console.log(t('svc.restartVia'));
 }
 
 /**
@@ -494,11 +497,7 @@ export async function runServiceRestart(opts: ServiceProfileOptions = {}): Promi
     webUi ? WEB_UI_RUN_ARGS : classicRunArgs(serviceId),
   );
   if (!adapter.fileExists()) {
-    console.error(
-      webUi
-        ? 'supervisor 还没在后台运行过。请先运行 `start --web-ui` 启动。'
-        : 'bot 还没在后台运行过。请先运行 `start` 启动。',
-    );
+    console.error(webUi ? t('svc.neverRanSupervisorStartHint') : t('svc.neverRanBotStartHint'));
     process.exit(1);
   }
   // Health-check waits on a profile connecting: classic → the service's own
@@ -516,15 +515,15 @@ export async function runServiceStatus(opts: ServiceProfileOptions = {}): Promis
   const { serviceId, profile, webUi } = await resolveServiceTarget(opts);
   const adapter = requireAdapter('status', serviceId);
   const startHint = webUi ? '`start --web-ui`' : '`start`';
-  const label = webUi ? '控制面 supervisor' : 'bot';
+  const label = webUi ? t('svc.label.supervisorConsole') : 'bot';
   if (!adapter.fileExists()) {
-    console.log(`${label} 当前没在后台运行(从未启动过)`);
-    console.log(`  通过 ${startHint} 启动`);
+    console.log(t('svc.neverStartedLabel', { label }));
+    console.log(t('svc.startVia', { hint: startHint }));
     return;
   }
   if (!adapter.isRunning()) {
-    console.log(`${label} 当前没在后台运行`);
-    console.log(`  通过 ${startHint} 重新启动`);
+    console.log(t('svc.notRunningLabel', { label }));
+    console.log(t('svc.restartViaHint', { hint: startHint }));
     return;
   }
 
@@ -533,22 +532,22 @@ export async function runServiceStatus(opts: ServiceProfileOptions = {}): Promis
   const { pid, lastExit } = adapter.parseStatus(adapter.describeStatus());
 
   if (webUi) {
-    console.log('✓ 控制面 supervisor 正在后台运行');
+    console.log(t('svc.supervisorRunning'));
     const online = readAndPrune().filter((e) => Boolean(e.botName));
     if (online.length) {
-      console.log(`  在线 bot: ${online.map((e) => e.botName).join('、')}`);
+      console.log(t('svc.onlineBots', { names: online.map((e) => e.botName).join(t('common.listSeparator')) }));
     }
   } else if (entry) {
-    console.log(`✓ bot ${entry.botName} (${entry.appId}) 正在后台运行`);
+    console.log(t('svc.botRunningNamed', { botName: entry.botName ?? '', appId: entry.appId }));
   } else {
-    console.log('✓ bot 正在后台运行');
+    console.log(t('svc.botRunning'));
   }
-  if (pid) console.log(`  进程 ID: ${pid}`);
-  console.log('  日志:');
+  if (pid) console.log(t('svc.pid', { pid }));
+  console.log(t('svc.logs'));
   console.log(`    ${daemonStdoutPath(serviceId)}`);
   console.log(`    ${daemonStderrPath(serviceId)}`);
   // -1 is launchd's "no meaningful exit recorded" marker; hide it.
-  if (lastExit && lastExit !== '-1') console.log(`  上次退出码: ${lastExit}`);
+  if (lastExit && lastExit !== '-1') console.log(t('svc.lastExit', { code: lastExit }));
 }
 
 /**
@@ -563,20 +562,20 @@ export async function runServiceUnregister(opts: ServiceProfileOptions = {}): Pr
   const adapter = requireAdapter('unregister', serviceId);
   const label = webUi ? 'supervisor' : 'bot';
   if (!adapter.fileExists()) {
-    console.log(`${label} 还没在后台运行过,无需清理。`);
+    console.log(t('svc.neverRanNoCleanup', { label }));
     return;
   }
   if (adapter.isRunning()) {
     const r = await adapter.stopAndDisableAutostart();
     if (!r.ok) {
-      console.warn(`⚠ 停止 ${label} 时有警告(继续清理):\n${formatServiceStderr(r.stderr)}`);
+      console.warn(t('svc.stopLabelWarn', { label, stderr: formatServiceStderr(r.stderr) }));
     } else {
-      console.log(`✓ 已停止 ${label}`);
+      console.log(t('svc.stoppedLabel', { label }));
     }
   }
   await adapter.deleteFile();
-  console.log('✓ 已清除后台运行注册');
-  console.log(`  (配置 / 日志 / 会话保留在 ${paths.rootDir})`);
+  console.log(t('svc.unregistered'));
+  console.log(t('svc.filesKept', { dir: paths.rootDir }));
 }
 
 async function resolveServiceProfile(explicitProfile: string | undefined): Promise<string> {

@@ -1,5 +1,6 @@
 import type { LarkChannel } from '@larksuite/channel';
 import { log } from '../core/logger';
+import { t } from '../i18n';
 
 export interface KnownChat {
   id: string;
@@ -11,7 +12,7 @@ export async function fetchKnownChats(channel: LarkChannel): Promise<KnownChat[]
     const summaries = await channel.listChats({ pageSize: 100, maxPages: 5 });
     const chats: KnownChat[] = summaries.map((c) => ({
       id: c.id,
-      name: c.name || '(无名)',
+      name: c.name || t('common.unnamed'),
     }));
     log.info('lark-info', 'chats-fetched', { count: chats.length });
     return chats;

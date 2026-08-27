@@ -1,3 +1,4 @@
+import { t } from '../i18n';
 import type { AgentKind } from '../config/profile-schema';
 
 /**
@@ -25,19 +26,21 @@ export interface ModelOption {
  * `opusplan` is kept as the one alias with no versioned equivalent (it runs
  * Opus for planning and Sonnet for execution).
  */
-const CLAUDE_MODELS: ModelOption[] = [
-  { value: DEFAULT_MODEL, label: '跟随默认（不指定）' },
-  { value: 'claude-opus-4-8', label: 'Opus 4.8（最新）' },
+// Built lazily (not module-level consts) so labels pick up the locale set by
+// the runtime via setLocale() after the profile loads.
+const claudeModels = (): ModelOption[] => [
+  { value: DEFAULT_MODEL, label: t('model.default') },
+  { value: 'claude-opus-4-8', label: t('model.latest', { name: 'Opus 4.8' }) },
   { value: 'claude-opus-4-7', label: 'Opus 4.7' },
-  { value: 'claude-sonnet-5', label: 'Sonnet 5（最新）' },
+  { value: 'claude-sonnet-5', label: t('model.latest', { name: 'Sonnet 5' }) },
   { value: 'claude-sonnet-4-6', label: 'Sonnet 4.6' },
-  { value: 'claude-haiku-4-5', label: 'Haiku 4.5（最新）' },
-  { value: 'opusplan', label: 'Opus Plan（规划用 Opus，执行用 Sonnet）' },
+  { value: 'claude-haiku-4-5', label: t('model.latest', { name: 'Haiku 4.5' }) },
+  { value: 'opusplan', label: t('model.opusplan') },
 ];
 
 /** Codex CLI models. Forwarded to `codex exec --model`. */
-const CODEX_MODELS: ModelOption[] = [
-  { value: DEFAULT_MODEL, label: '跟随默认（不指定）' },
+const codexModels = (): ModelOption[] => [
+  { value: DEFAULT_MODEL, label: t('model.default') },
   { value: 'gpt-5-codex', label: 'GPT-5 Codex' },
   { value: 'gpt-5', label: 'GPT-5' },
   { value: 'o3', label: 'o3' },
@@ -45,7 +48,7 @@ const CODEX_MODELS: ModelOption[] = [
 
 /** The model picker options for a profile's agent kind. */
 export function supportedModels(agentKind: AgentKind): ModelOption[] {
-  return agentKind === 'codex' ? CODEX_MODELS : CLAUDE_MODELS;
+  return agentKind === 'codex' ? codexModels() : claudeModels();
 }
 
 /** True when the selection means "use the agent default" (no `--model`). */

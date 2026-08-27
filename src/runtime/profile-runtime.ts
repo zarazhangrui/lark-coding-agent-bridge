@@ -1,6 +1,7 @@
 import { mkdir, readFile, realpath } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import * as p from '@clack/prompts';
+import { t } from '../i18n';
 import { runRegistrationWizard } from '../bot/wizard';
 import { detectInstalledAgents, type DetectedAgent } from '../cli/agent-detection';
 import {
@@ -220,7 +221,7 @@ export async function resolveProfileRuntime(
   const root = createRootConfig(profile, profileConfig, encrypted.secrets);
   await saveRootConfig(root, configPath);
   await writeActiveProfile(appPaths.rootDir, profile);
-  console.log(`配置已保存到 ${configPath}\n`);
+  console.log(t('bootstrap.configSaved', { path: configPath }));
   return { cfg: runtimeProfileConfig(root, profile), profileConfig, configPath, appPaths, profile };
 }
 
@@ -260,7 +261,7 @@ async function bootstrapProfileIntoExistingRoot(args: {
     },
   };
   await saveRootConfig(markPermissionDefaultsMigration(nextRoot, profile), configPath);
-  console.log(`配置已保存到 ${configPath}\n`);
+  console.log(t('bootstrap.configSaved', { path: configPath }));
   return {
     cfg: runtimeProfileConfig(nextRoot, profile),
     profileConfig,
@@ -429,23 +430,16 @@ async function migrateV1ToV2WithActiveBridgeHandling(
 async function resolveBootstrapAppConfig(opts: ResolveProfileRuntimeOptions): Promise<AppConfig> {
   if (!opts.appId) {
     if (!isInteractiveTerminal()) {
-      throw new Error(
-        '当前没有配置，非交互模式无法完成扫码创建应用。' +
-          '请先在终端运行 `lark-channel-bridge run` 完成首次初始化，' +
-          '或传入 --app-id 和 --app-secret。',
-      );
+      throw new Error(t('bootstrap.noConfigNonInteractive'));
     }
     return runRegistrationWizard();
   }
   let appSecret = opts.appSecret;
   if (!appSecret) {
     if (!isInteractiveTerminal()) {
-      throw new Error(
-        `非交互模式缺少 App Secret: ${opts.appId}。` +
-          '请传入 --app-secret <secret>，或在终端中重新运行命令后按提示输入。',
-      );
+      throw new Error(t('bootstrap.missingSecretNonInteractive', { appId: opts.appId }));
     }
-    appSecret = await promptPassword(`输入 ${opts.appId} 的 App Secret: `);
+    appSecret = await promptPassword(t('secrets.prompt', { appId: opts.appId }));
   }
   if (!appSecret) throw new Error('app secret is required');
   const tenant = tenantBrandFromString(opts.tenant);
@@ -454,9 +448,9 @@ async function resolveBootstrapAppConfig(opts: ResolveProfileRuntimeOptions): Pr
     throw new Error(`app credentials validation failed: ${result.reason ?? 'unknown'}`);
   }
   if (result.botName) {
-    console.log(`✓ 应用凭证校验通过: ${result.botName}`);
+    console.log(t('bootstrap.credentialsOkNamed', { botName: result.botName }));
   } else {
-    console.log('✓ 应用凭证校验通过');
+    console.log(t('bootstrap.credentialsOk'));
   }
   return {
     accounts: {
@@ -567,11 +561,7 @@ function formatAmbiguousAgentSelectionError(
   detected: Array<{ kind: AgentKind; binaryPath: string }>,
 ): string {
   const lines = detected.map((agent) => `  - ${agent.kind}: ${agent.binaryPath}`);
-  return [
-    '检测到多个本地 agent，请使用 --agent <claude|codex> 指定要初始化哪一个。',
-    '已检测到：',
-    ...lines,
-  ].join('\n');
+  return [t('bootstrap.ambiguousAgent'), t('bootstrap.detectedHeader'), ...lines].join('\n');
 }
 
 async function selectDetectedAgent(
@@ -587,9 +577,9 @@ async function selectDetectedAgent(
 
 async function promptForDetectedAgentSelection(detected: DetectedAgent[]): Promise<AgentKind | undefined> {
   if (!process.stdin.isTTY || !process.stdout.isTTY) return undefined;
-  p.intro('选择本地 agent');
+  p.intro(t('bootstrap.selectAgentIntro'));
   const selected = await p.select<AgentKind>({
-    message: '检测到多个本地 agent，本次要初始化哪一个？',
+    message: t('bootstrap.selectAgentMessage'),
     options: detected.map((agent) => ({
       value: agent.kind,
       label: displayAgentKind(agent.kind),
@@ -598,10 +588,10 @@ async function promptForDetectedAgentSelection(detected: DetectedAgent[]): Promi
     initialValue: detected[0]?.kind,
   });
   if (p.isCancel(selected)) {
-    p.cancel('已取消 agent 选择。');
-    throw new UserCancelledError('已取消启动。');
+    p.cancel(t('bootstrap.agentSelectionCancelled'));
+    throw new UserCancelledError(t('cli.startCancelled'));
   }
-  p.outro(`已选择 ${displayAgentKind(selected)}`);
+  p.outro(t('bootstrap.agentSelected', { agent: displayAgentKind(selected) }));
   return selected;
 }
 
@@ -692,7 +682,7 @@ async function maybeMigratePlaintextSecret(
       );
       await setSecret(secretKeyForApp(cfg.accounts.app.id), s, appPaths);
       await saveConfig(next, configPath);
-      console.log('🔒 已把 App Secret 加密迁移到 ~/.lark-channel/secrets.enc');
+      console.log(t('bootstrap.secretMigrated'));
       return next;
     } catch (err) {
       log.warn('config', 'migrate-encrypted-failed', {
@@ -714,7 +704,7 @@ async function maybeMigratePlaintextSecret(
         appPaths,
       );
       await saveConfig(next, configPath);
-      console.log('🔒 已把 secrets provider 切到 wrapper 形态');
+      console.log(t('bootstrap.providerRewritten'));
       return next;
     }
   } catch (err) {

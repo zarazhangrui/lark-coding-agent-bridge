@@ -6,6 +6,7 @@ import {
   spawnProcess,
   type SpawnedProcessByStdio,
 } from '../platform/spawn';
+import { t } from '../i18n';
 import { normalizeSessionPreview } from './preview';
 
 type CodexAppServerChild = SpawnedProcessByStdio<Writable, Readable, Readable>;
@@ -242,7 +243,7 @@ function normalizeThread(input: unknown): CodexThreadHistoryEntry | undefined {
   return {
     threadId,
     ...(stringValue(raw.sessionId) ? { sessionId: stringValue(raw.sessionId) } : {}),
-    preview: normalizeSessionPreview(stringValue(raw.preview) ?? '') || '(空会话)',
+    preview: normalizeSessionPreview(stringValue(raw.preview) ?? '') || t('session.empty'),
     cwd,
     createdAtMs: Math.round((createdAt ?? 0) * 1000),
     updatedAtMs: Math.round((updatedAt ?? 0) * 1000),

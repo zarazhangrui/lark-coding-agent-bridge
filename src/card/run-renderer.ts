@@ -1,3 +1,4 @@
+import { t } from '../i18n';
 import { deepMaskEmails } from './mask-email';
 import type { Block, FooterStatus, RunState, ToolEntry } from './run-state';
 import { toolBodyMd, toolHeaderText } from './tool-render';
@@ -37,14 +38,14 @@ export function renderCard(state: RunState, options: RunCardRenderOptions = {}):
   }
 
   if (state.terminal === 'interrupted') {
-    elements.push(noteMd('_⏹ 已被中断_'));
+    elements.push(noteMd(t('run.interrupted')));
   } else if (state.terminal === 'idle_timeout') {
     const mins = state.idleTimeoutMinutes ?? 0;
-    elements.push(noteMd(`_⏱ ${mins} 分钟无响应,已自动终止_`));
+    elements.push(noteMd(t('run.idleTimeout', { mins })));
   } else if (state.terminal === 'error' && state.errorMsg) {
-    elements.push(noteMd(`⚠️ agent 失败：${state.errorMsg}`));
+    elements.push(noteMd(t('run.errorCard', { msg: state.errorMsg })));
   } else if (state.terminal === 'done' && elements.length === 0) {
-    elements.push(noteMd('_（未返回内容）_'));
+    elements.push(noteMd(t('run.noContent')));
   }
 
   if (state.terminal === 'running') {
@@ -98,7 +99,7 @@ function renderToolGroup(tools: ToolEntry[], finalized: boolean): object[] {
 }
 
 function reasoningPanel(content: string, active: boolean): object {
-  const title = active ? '🧠 **思考中**' : '🧠 **思考完成，点击查看**';
+  const title = active ? t('run.reasoning.active') : t('run.reasoning.done');
   return collapsiblePanel({
     title,
     expanded: active,
@@ -112,7 +113,7 @@ function toolPanel(tool: ToolEntry, expanded: boolean): object {
     title: toolHeaderText(tool),
     expanded,
     border: tool.status === 'error' ? 'red' : 'grey',
-    body: toolBodyMd(tool) || '_无输出_',
+    body: toolBodyMd(tool) || t('run.tool.noOutput'),
   });
 }
 
@@ -129,8 +130,8 @@ function toolPanel(tool: ToolEntry, expanded: boolean): object {
  * `toolPanel(latest, true)` so live observation isn't sacrificed.
  */
 function collapsedToolSummary(tools: ToolEntry[], finalized: boolean): object {
-  const suffix = finalized ? '（已结束）' : '';
-  const title = `☕ **${tools.length} 个工具调用${suffix}**`;
+  const suffix = finalized ? t('run.toolGroup.finishedSuffix') : '';
+  const title = t('run.toolGroup.title', { n: tools.length, suffix });
   const headerList = tools.map((t) => `- ${toolHeaderText(t)}`).join('\n');
   return {
     tag: 'collapsible_panel',
@@ -188,7 +189,7 @@ function stopButton(options: RunCardRenderOptions): object {
   }
   return {
     tag: 'button',
-    text: { tag: 'plain_text', content: '⏹ 终止' },
+    text: { tag: 'plain_text', content: t('run.button.stop') },
     type: 'danger',
     behaviors: [{ type: 'callback', value }],
   };
@@ -197,21 +198,21 @@ function stopButton(options: RunCardRenderOptions): object {
 function footerStatus(status: Exclude<FooterStatus, null>): object {
   const text =
     status === 'thinking'
-      ? '🧠 正在思考'
+      ? t('run.footer.thinking')
       : status === 'tool_running'
-        ? '🧰 正在调用工具'
-        : '✍️ 正在输出';
+        ? t('run.footer.tool')
+        : t('run.footer.streaming');
   return noteMd(text);
 }
 
 function summaryText(state: RunState): string {
-  if (state.terminal === 'interrupted') return '已中断';
-  if (state.terminal === 'idle_timeout') return '已超时';
-  if (state.terminal === 'error') return '出错';
-  if (state.terminal === 'done') return '已完成';
-  if (state.footer === 'tool_running') return '正在调用工具';
-  if (state.footer === 'streaming') return '正在输出';
-  return '思考中';
+  if (state.terminal === 'interrupted') return t('run.status.interrupted');
+  if (state.terminal === 'idle_timeout') return t('run.status.idleTimeout');
+  if (state.terminal === 'error') return t('run.status.error');
+  if (state.terminal === 'done') return t('run.status.done');
+  if (state.footer === 'tool_running') return t('run.status.toolRunning');
+  if (state.footer === 'streaming') return t('run.status.streaming');
+  return t('run.status.thinking');
 }
 
 function truncate(s: string, max: number): string {

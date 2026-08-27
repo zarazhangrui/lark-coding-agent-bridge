@@ -3,6 +3,7 @@ import type { AgentEvent } from '../agent/types';
 import { claudeCapability, codexCapability } from '../agent/capability';
 import type { Controls } from '../commands';
 import { log } from '../core/logger';
+import { t } from '../i18n';
 import type { RunExecutor } from '../runtime/run-executor';
 import type { ActiveRuns } from '../bot/active-runs';
 import type { SessionCatalog } from '../session/catalog';
@@ -106,7 +107,7 @@ export function attachMeetingAgent(deps: MeetingAgentDeps): void {
     if (STOP_WORDS.has(question.toLowerCase())) {
       const stopped = deps.activeRuns.interrupt(meetingScopeId(session.meetingId));
       void session
-        .sendMessage(stopped ? '已中断当前任务。' : '当前没有正在执行的任务。')
+        .sendMessage(stopped ? t('meeting.inMeetingStopped') : t('meeting.inMeetingNoTask'))
         .catch((err) => log.warn('meeting', 'stop-reply-failed', { err: String(err) }));
       return;
     }
@@ -240,7 +241,7 @@ export async function summarizeEndedMeeting(deps: MeetingAgentDeps): Promise<voi
   // deliver:'caller' — the meeting is over, so never try the in-meeting lane.
   const answer = await answerInMeeting(
     deps,
-    '会议已结束。请基于以上会议字幕输出一份纪要：讨论了什么、达成的结论、待办（含负责人，如字幕里有）。',
+    t('meeting.endNotesPrompt'),
     { deliver: 'caller' },
   ).catch((err) => {
     log.warn('meeting', 'summary-run-failed', { meetingId: session.meetingId, err: String(err) });
@@ -250,7 +251,7 @@ export async function summarizeEndedMeeting(deps: MeetingAgentDeps): Promise<voi
 
   const title = session.topic ?? session.meetingNo;
   await deps.channel
-    .send(target.to, { markdown: `**会议纪要 · ${title}**\n\n${answer}` })
+    .send(target.to, { markdown: t('meeting.summaryHeader', { title, answer }) })
     .catch((err) => log.warn('meeting', 'summary-send-failed', { err: String(err) }));
   log.info('meeting', 'summary-sent', {
     meetingId: session.meetingId,
@@ -340,7 +341,7 @@ async function runMeetingAgent(
         usedPrefix ??
         triggerPrefixes(controls.profileConfig.meeting.trigger, deps.channel.botIdentity?.name)[0] ??
         controls.profileConfig.meeting.trigger;
-      return `上一个任务还在执行。发「${prefix} stop」可以中断它，然后再问我。`;
+      return t('meeting.previousTaskRunning', { prefix });
     }
     return result.rejectReason.userVisible;
   }

@@ -1,5 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import { registerApp } from '@larksuite/channel';
+import { t } from '../i18n';
 import { resolveAppPaths } from '../config/app-paths';
 import { loadRootConfig } from '../config/profile-store';
 import type { TenantBrand } from '../config/schema';
@@ -114,7 +115,7 @@ export async function startQrRegistration(rootDir?: string): Promise<{
         session.status = 'error';
         session.error = err instanceof Error ? err.message : String(err);
         // Failed before the QR was even shown → fail the start call too.
-        if (!readied) reject(new HttpError(502, `扫码创建启动失败：${session.error}`));
+        if (!readied) reject(new HttpError(502, t('qr.startFailed', { err: session.error ?? '' })));
       });
   });
 
@@ -149,8 +150,8 @@ export async function finishQrRegistration(
   const s = sessions.get(sessionId);
   if (!s) throw new HttpError(404, 'qr session not found or expired');
   if (s.status === 'done' && s.profile) return { profile: s.profile };
-  if (s.status === 'error') throw new HttpError(400, s.error ?? '扫码创建失败');
-  if (!s.app) throw new HttpError(409, '尚未完成扫码');
+  if (s.status === 'error') throw new HttpError(400, s.error ?? t('qr.createFailed'));
+  if (!s.app) throw new HttpError(409, t('qr.notScanned'));
 
   const agentKind: AgentKind = fv.agentKind === 'codex' ? 'codex' : 'claude';
   const profile = String(fv.profile ?? '').trim() || s.suggestedProfile || agentKind;

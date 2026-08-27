@@ -37,9 +37,11 @@ import {
   getMessageReplyMode,
   getRunIdleTimeoutMs,
   getShowToolCalls,
+  getUiLanguage,
 } from '../config/schema';
 import { resolveAppSecret } from '../config/secret-resolver';
 import { log, reportMetric, withTrace } from '../core/logger';
+import { setLocale, t } from '../i18n';
 import { MediaCache, type LocalAttachment } from '../media/cache';
 import {
   toPolicyAttachment,
@@ -183,6 +185,9 @@ export interface StartChannelDeps {
 
 export async function startChannel(deps: StartChannelDeps): Promise<BridgeChannel> {
   const { cfg, agent, sessions, sessionCatalog, workspaces, controls } = deps;
+  // Apply the UI language up front: gates like groupNotAllowed and the
+  // startup logs run before any run/command sets the locale.
+  setLocale(getUiLanguage(cfg));
   const activeRuns = new ActiveRuns();
   // ChatModeCache stays per-bridge-instance — invalidated on restart along
   // with everything else. Topic-mode chats only need one chat.get() call ever.
@@ -396,9 +401,9 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
       reportMetric('ws_reconnect', 1, { kind: 'ws' });
       // Stdout escalation — surface jitter that's hidden in the file log.
       if (consecutiveReconnects === 3) {
-        console.error('⚠️ 已连续重连 3 次,网络可能不稳。');
+        console.error(t('channel.reconnect3'));
       } else if (consecutiveReconnects === 10) {
-        console.error('❌ 已连续重连 10 次,建议在飞书发 /reconnect 或重启 bot。');
+        console.error(t('channel.reconnect10'));
       }
     },
     reconnected: () => {
@@ -491,7 +496,7 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
     appId: cfg.accounts.app.id,
     procId: controls.processId,
   });
-  console.log('正在监听消息。按 Ctrl+C 退出。\n');
+  console.log(t('channel.listening'));
 
   // App-level keepalive: 15s probe + wake-up detection + HTTP reachability.
   // Defense-in-depth — the SDK's pingTimeout watchdog handles half-dead WS,
@@ -567,9 +572,7 @@ async function sendNonAllowedGroupHint(
   chatId: string,
   replyToMessageId: string,
 ): Promise<void> {
-  const text =
-    '当前群尚未加入响应列表，所以 bot 不会处理消息。\n' +
-    'Bot owner/管理员可在本群发 /invite group 加入白名单。';
+  const text = t('channel.groupNotAllowed');
   try {
     await channel.send(chatId, { text }, { replyTo: replyToMessageId });
   } catch {
@@ -601,9 +604,7 @@ async function sendForwardFetchFailedHint(
   chatId: string,
   replyToMessageId: string,
 ): Promise<void> {
-  const text =
-    '这条合并转发的内容没能从飞书拉取到（上游超时/网络抖动，已自动重试仍失败），' +
-    '所以我没收到里面的消息。麻烦稍后重新转发一次。';
+  const text = t('channel.forwardFetchFailed');
   try {
     await channel.send(chatId, { text }, { replyTo: replyToMessageId });
   } catch {
@@ -1510,7 +1511,7 @@ async function sendCotDegradedNotice(input: {
   try {
     await input.channel.send(
       input.chatId,
-      { markdown: 'COT 过程消息更新失败，已停止展示过程；最终答案仍会继续发送。' },
+      { markdown: t('cot.degraded') },
       input.sendOpts,
     );
   } catch (err) {

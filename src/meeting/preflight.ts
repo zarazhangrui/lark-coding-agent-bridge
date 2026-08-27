@@ -2,6 +2,7 @@ import { resolveAppPaths } from '../config/app-paths';
 import { buildLarkChannelEnv } from '../agent/lark-channel-env';
 import { mergeProcessEnv, spawnProcess } from '../platform/spawn';
 import { log } from '../core/logger';
+import { t } from '../i18n';
 
 /**
  * Pre-flight for the in-meeting agent: does the **app (bot) identity** actually
@@ -136,15 +137,15 @@ export function classifyPreflight(payload: unknown): MeetingPreflight {
     requiredScopes: MEETING_REQUIRED_SCOPES,
   };
   if (!isRecord(payload)) {
-    return { ...base, status: 'unknown', message: '无法解析 lark-cli 输出' };
+    return { ...base, status: 'unknown', message: t('meeting.preflight.unparseable') };
   }
   if (payload.ok === true) {
-    return { ...base, status: 'ok', message: '应用身份权限已就绪' };
+    return { ...base, status: 'ok', message: t('meeting.preflight.ok') };
   }
   const err = isRecord(payload.error) ? payload.error : {};
   const code = typeof err.code === 'number' ? err.code : undefined;
   const subtype = typeof err.subtype === 'string' ? err.subtype : '';
-  const message = typeof err.message === 'string' ? err.message : '权限检查失败';
+  const message = typeof err.message === 'string' ? err.message : t('meeting.preflight.checkFailed');
   const consoleUrl = typeof err.console_url === 'string' ? err.console_url : undefined;
   const missingScopes = strings(err.missing_scopes);
 
@@ -154,7 +155,7 @@ export function classifyPreflight(payload: unknown): MeetingPreflight {
     return {
       ...base,
       status: 'not-in-beta',
-      message: '智能体入会能力尚未对本应用开通（内测灰度）',
+      message: t('meeting.preflight.notInBeta'),
       betaChatUrl: MEETING_BETA_CHAT_URL,
     };
   }
@@ -203,7 +204,7 @@ export async function checkMeetingPreflight(
   if (payload === undefined) {
     return {
       status: 'unknown',
-      message: r.stderr.trim().split('\n')[0] ?? '权限检查未返回结果（lark-cli 未安装或未绑定应用？）',
+      message: r.stderr.trim().split('\n')[0] ?? t('meeting.preflight.noResult'),
       missingScopes: [],
       requiredEvents: MEETING_REQUIRED_EVENTS,
       requiredScopes: MEETING_REQUIRED_SCOPES,

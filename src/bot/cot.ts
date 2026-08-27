@@ -1,6 +1,7 @@
 import type { AgentEvent } from '../agent/types';
 import type { CotMessagesMode, TenantBrand } from '../config/schema';
 import { log } from '../core/logger';
+import { t } from '../i18n';
 import { toolHeaderText } from '../card/tool-render';
 import type { RunState } from '../card/run-state';
 
@@ -153,7 +154,11 @@ export class CotPublisher {
     this.originMessageId = opts.originMessageId;
     this.runId = opts.runId;
     this.scope = opts.scope;
-    this.inputPreview = opts.inputPreview;
+    // Cap like every other CoT field: this goes out in RUN_STARTED's
+    // input.query on the FIRST update, so a long user message makes that
+    // update oversized and Lark rejects the whole thing with code=10001,
+    // freezing the bubble on its initial state for the rest of the run.
+    this.inputPreview = truncateCot(opts.inputPreview, COT_TEXT_MAX);
   }
 
   async start(): Promise<void> {
@@ -189,7 +194,7 @@ export class CotPublisher {
     });
     this.enqueue('STEP_STARTED', {
       stepId: `step-understand-${this.runId}`,
-      stepName: '理解用户问题',
+      stepName: t('cot.step.understand'),
     });
   }
 
@@ -299,7 +304,7 @@ export async function consumeCotEvents(
         const toolCallId = evt.id;
         const detailed = opts.detail === 'detailed';
         const showSummary = opts.detail === 'brief' || detailed;
-        const title = showSummary ? cotBriefToolTitle(evt.name, evt.input, 'running') : '正在调用工具';
+        const title = showSummary ? cotBriefToolTitle(evt.name, evt.input, 'running') : t('cot.toolRunning');
         toolBrief.set(toolCallId, { name: evt.name, input: evt.input });
         publisher.enqueue('TOOL_CALL_START', {
           toolCallId,
@@ -327,7 +332,7 @@ export async function consumeCotEvents(
             ? truncateCot(evt.output ?? '', COT_TOOL_OUTPUT_MAX)
             : brief
               ? cotBriefToolTitle(brief.name, brief.input, evt.isError ? 'error' : 'done')
-              : '工具调用已完成',
+              : t('cot.toolDone'),
         });
         toolBrief.delete(evt.id);
         continue;
@@ -338,7 +343,7 @@ export async function consumeCotEvents(
           textStepOpen = true;
           publisher.enqueue('STEP_STARTED', {
             stepId: finalStepId,
-            stepName: '输出过程',
+            stepName: t('cot.step.output'),
           });
         }
         if (!textMessageOpen) {
@@ -359,7 +364,7 @@ export async function consumeCotEvents(
         if (textStepOpen) {
           publisher.enqueue('STEP_FINISHED', {
             stepId: finalStepId,
-            stepName: '输出过程',
+            stepName: t('cot.step.output'),
           });
         }
         if (evt.type === 'error') {

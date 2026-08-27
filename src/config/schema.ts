@@ -68,6 +68,7 @@ export interface SecretsConfig {
  */
 export type MessageReplyMode = 'card' | 'markdown' | 'text';
 export type CotMessagesMode = 'off' | 'brief' | 'detailed';
+export type UiLanguage = 'zh' | 'en';
 
 /**
  * Access control settings. Empty lists are fail-closed in the v2 policy:
@@ -155,6 +156,11 @@ export interface AppPreferences {
    * Range 100-30000; out-of-range values fall back to default.
    */
   agentStopGraceMs?: number;
+  /**
+   * Language for bot-authored chat chrome (status/session messages, card
+   * labels, buttons). Default 'zh' so existing deployments are unaffected.
+   */
+  uiLanguage?: UiLanguage;
 }
 
 /**
@@ -276,4 +282,9 @@ export function getRunIdleTimeoutMs(cfg: AppConfig): number | undefined {
   if (typeof raw !== 'number' || !Number.isFinite(raw) || raw <= 0) return undefined;
   const clamped = Math.min(Math.max(Math.floor(raw), 1), 120);
   return clamped * 60_000;
+}
+
+/** Resolve the UI language preference with default fallback. */
+export function getUiLanguage(cfg: AppConfig): UiLanguage {
+  return cfg.preferences?.uiLanguage === 'en' ? 'en' : 'zh';
 }

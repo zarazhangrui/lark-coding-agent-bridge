@@ -1,4 +1,5 @@
 import { platform } from 'node:os';
+import { t } from '../../i18n';
 import { resolveAppPaths } from '../../config/app-paths';
 import { isAlive } from '../../runtime/registry';
 import { spawnProcess } from '../../platform/spawn';
@@ -27,24 +28,12 @@ export async function runUi(opts: RunUiOptions = {}): Promise<void> {
       console.log(sidecar.url);
       return;
     }
-    console.log(`打开控制台：${sidecar.url}`);
+    console.log(t('ui.opening', { url: sidecar.url }));
     openBrowser(sidecar.url);
     return;
   }
 
-  console.error(
-    [
-      '未检测到运行中的控制面。',
-      '',
-      '控制台需要 supervisor 模式（--web-ui）：',
-      '  lark-channel-bridge run --web-ui        # 前台运行 supervisor + 控制台',
-      '  lark-channel-bridge start --web-ui      # 作为后台服务运行 supervisor + 控制台',
-      '',
-      '（不带 --web-ui 的 run/start 是单 profile 无界面运行，适合无浏览器环境。）',
-      '',
-      '启动后再次运行 `lark-channel-bridge ui` 打开控制台。',
-    ].join('\n'),
-  );
+  console.error(t('ui.noConsole'));
   process.exitCode = 1;
 }
 
@@ -60,10 +49,10 @@ function openBrowser(url: string): void {
   try {
     const child = spawnProcess(cmd as string, args as string[], { stdio: 'ignore' });
     child.on('error', () => {
-      console.log(`若浏览器未自动打开，请手动访问上面的地址。`);
+      console.log(t('ui.browserNotOpened'));
     });
     child.unref?.();
   } catch {
-    console.log('无法自动打开浏览器，请手动访问上面的地址。');
+    console.log(t('ui.browserOpenFailed'));
   }
 }

@@ -6,6 +6,7 @@ import { isComplete, type AppConfig } from '../config/schema';
 import type { AgentKind, ProfileConfig } from '../config/profile-schema';
 import type { AgentAdapter } from '../agent/types';
 import { log } from '../core/logger';
+import { t } from '../i18n';
 import { refreshOwnerControls } from '../policy/owner';
 import { SessionStore } from '../session/store';
 import { SessionCatalog } from '../session/catalog';
@@ -307,12 +308,12 @@ export class Supervisor {
       allowBootstrap: false,
     });
     const { cfg, appPaths, profileConfig, configPath } = runtime;
-    if (!isComplete(cfg)) throw new Error(`profile 配置不完整：${profile}`);
+    if (!isComplete(cfg)) throw new Error(t('supervisor.profileIncomplete', { profile }));
 
     // Dedupe by app id — two channels for one app fight over event routing.
     for (const m of this.managed.values()) {
       if (m.appId === cfg.accounts.app.id) {
-        throw new Error(`该飞书应用已被 profile「${m.profile}」连接，不能重复上线`);
+        throw new Error(t('supervisor.appAlreadyConnected', { profile: m.profile }));
       }
     }
 
@@ -373,7 +374,7 @@ export class Supervisor {
 
   async restartProfile(profile: string): Promise<void> {
     const managed = this.managed.get(profile);
-    if (!managed) throw new Error(`profile 未在运行：${profile}`);
+    if (!managed) throw new Error(t('supervisor.profileNotRunning', { profile }));
     await managed.controls.restart();
   }
 

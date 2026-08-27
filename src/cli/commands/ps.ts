@@ -1,3 +1,4 @@
+import { t } from '../../i18n';
 import { SUPERVISOR_SERVICE_ID } from '../../daemon/paths';
 import { getServiceAdapter } from '../../daemon/service-adapter';
 import { readAndPrune, resolveTarget, isAlive } from '../../runtime/registry';
@@ -13,10 +14,10 @@ import type { ProcessEntry } from '../../runtime/registry';
 export function runPs(): void {
   const live = readAndPrune();
   if (live.length === 0) {
-    console.log('当前没有 bot 在运行。');
+    console.log(t('pscli.none'));
     return;
   }
-  console.log(`# 当前共 ${live.length} 个 bot 在运行\n`);
+  console.log(t('pscli.header', { n: live.length }));
   const rows = live.map((e, idx) => {
     const ago = formatAgo(Date.now() - new Date(e.startedAt).getTime());
     const app = e.botName ? `${e.botName} (${e.appId})` : e.appId;
@@ -29,46 +30,50 @@ export function runPs(): void {
       version: e.version,
     };
   });
-  const headers = { idx: '#', id: 'ID', pid: 'PID', app: 'Bot', started: '启动', version: '版本' };
+  const headers = {
+    idx: '#',
+    id: 'ID',
+    pid: 'PID',
+    app: 'Bot',
+    started: t('pscli.col.started'),
+    version: t('pscli.col.version'),
+  };
   printTable([headers, ...rows]);
 }
 
 export async function runKillCli(target: string | undefined): Promise<void> {
   if (!target) {
-    console.error('用法: lark-channel-bridge kill <bot id 或序号>');
+    console.error(t('pscli.killUsage'));
     process.exit(1);
   }
   const entry = resolveTarget(target);
   if (!entry) {
-    console.error(`✗ 没找到匹配的 bot:${target}`);
-    console.error('  用 `lark-channel-bridge ps` 看可选目标。');
+    console.error(t('pscli.notFound', { target }));
+    console.error(t('pscli.notFoundHint'));
     process.exit(1);
   }
   const owner = findOwningService(entry);
   if (owner) {
-    console.error(
-      `✗ bot ${entry.id} (pid ${entry.pid}) 由 ${owner.platformName} 托管,` +
-        'SIGTERM 之后会被服务管理器立刻重启。',
-    );
-    console.error(`  要停掉它:  ${owner.stopHint}`);
-    console.error(`  只是想重启: ${owner.restartHint}`);
+    console.error(t('pscli.ownedByService', { id: entry.id, pid: entry.pid, platform: owner.platformName }));
+    console.error(t('pscli.stopHint', { hint: owner.stopHint }));
+    console.error(t('pscli.restartHint', { hint: owner.restartHint }));
     process.exit(1);
   }
 
-  console.log(`正在关闭 bot ${entry.id}…`);
+  console.log(t('pscli.closing', { id: entry.id }));
   let result: StopProcessEntryResult;
   try {
     result = await stopProcessEntry(entry);
   } catch (err) {
-    console.error(`✗ 关闭失败:${(err as Error).message}`);
+    console.error(t('pscli.closeFailed', { err: (err as Error).message }));
     process.exit(1);
   }
 
   if (result === 'killed') {
-    console.log(`✓ 已强制关闭 bot ${entry.id}。`);
+    console.log(t('pscli.forceClosed', { id: entry.id }));
     return;
   }
-  console.log(`✓ 已关闭 bot ${entry.id}。`);
+  console.log(t('pscli.closed', { id: entry.id }));
 }
 
 /**
@@ -129,10 +134,10 @@ export async function stopProcessEntry(
 }
 
 function formatAgo(ms: number): string {
-  if (ms < 60_000) return `${Math.floor(ms / 1000)}s 前`;
-  if (ms < 3_600_000) return `${Math.floor(ms / 60_000)}m 前`;
-  if (ms < 86_400_000) return `${Math.floor(ms / 3_600_000)}h 前`;
-  return `${Math.floor(ms / 86_400_000)}d 前`;
+  if (ms < 60_000) return t('time.ago.seconds', { n: Math.floor(ms / 1000) });
+  if (ms < 3_600_000) return t('time.ago.minutes', { n: Math.floor(ms / 60_000) });
+  if (ms < 86_400_000) return t('time.ago.hours', { n: Math.floor(ms / 3_600_000) });
+  return t('time.ago.days', { n: Math.floor(ms / 86_400_000) });
 }
 
 /** Minimal fixed-width table. Header row is index 0. */

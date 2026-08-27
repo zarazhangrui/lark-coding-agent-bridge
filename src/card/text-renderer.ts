@@ -1,3 +1,4 @@
+import { t } from '../i18n';
 import { maskEmails } from './mask-email';
 import type { Block, RunState, ToolEntry } from './run-state';
 import { toolHeaderText } from './tool-render';
@@ -21,12 +22,12 @@ export function renderText(state: RunState): string {
   }
 
   if (state.terminal === 'interrupted') {
-    parts.push('_⏹ 已被中断_');
+    parts.push(t('run.interrupted'));
   } else if (state.terminal === 'idle_timeout') {
     const mins = state.idleTimeoutMinutes ?? 0;
-    parts.push(`_⏱ ${mins} 分钟无响应,已自动终止_`);
+    parts.push(t('run.idleTimeout', { mins }));
   } else if (state.terminal === 'error' && state.errorMsg) {
-    parts.push(`⚠️ agent 失败:${state.errorMsg}`);
+    parts.push(t('run.errorText', { msg: state.errorMsg }));
   } else if (state.terminal === 'running' && state.footer) {
     parts.push(footerLine(state.footer));
   }
@@ -55,7 +56,7 @@ function toolLine(tool: ToolEntry): string {
 }
 
 function footerLine(status: 'thinking' | 'tool_running' | 'streaming'): string {
-  if (status === 'thinking') return '_🧠 正在思考…_';
-  if (status === 'tool_running') return '_🧰 正在调用工具…_';
-  return '_✍️ 正在输出…_';
+  if (status === 'thinking') return t('run.footerText.thinking');
+  if (status === 'tool_running') return t('run.footerText.tool');
+  return t('run.footerText.streaming');
 }
