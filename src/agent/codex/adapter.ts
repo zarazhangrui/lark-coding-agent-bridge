@@ -1,5 +1,6 @@
 import { createInterface } from 'node:readline';
 import type { Readable, Writable } from 'node:stream';
+import { homedir } from 'node:os';
 import { join } from 'node:path';
 import type { SandboxMode } from '../../config/profile-schema';
 import { log } from '../../core/logger';
@@ -61,6 +62,15 @@ export class CodexAdapter implements AgentAdapter {
 
   setBotIdentity(identity: AgentBotIdentity): void {
     this.botIdentity = identity;
+  }
+
+  getGeneratedImagesDir(): string {
+    const home =
+      this.codexHome ??
+      (!this.inheritCodexHome
+        ? join(this.profileStateDir, 'codex-home')
+        : process.env.CODEX_HOME || join(homedir(), '.codex'));
+    return join(home, 'generated_images');
   }
 
   async isAvailable(): Promise<boolean> {
