@@ -9,7 +9,7 @@ import {
   withConfigFileLock,
   writeActiveProfile,
 } from '../config/profile-store';
-import type { AgentKind } from '../config/profile-schema';
+import { isAgentKind, type AgentKind } from '../config/profile-schema';
 import { secretKeyForApp, type AppConfig, type TenantBrand } from '../config/schema';
 import { buildEncryptedAccountConfig } from '../config/store';
 import { createBootstrapProfileConfig } from '../cli/profile-bootstrap';
@@ -77,7 +77,7 @@ export interface CreateProfileInput {
  */
 export async function onboardCreate(body: unknown, rootDir?: string) {
   const fv = asRecord(body);
-  const agentKind: AgentKind = fv.agentKind === 'codex' ? 'codex' : 'claude';
+  const agentKind: AgentKind = isAgentKind(fv.agentKind) ? fv.agentKind : 'claude';
   const input: CreateProfileInput = {
     profile: String(fv.profile ?? '').trim() || agentKind,
     agentKind,

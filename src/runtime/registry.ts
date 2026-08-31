@@ -15,7 +15,7 @@ import { basename, dirname, join } from 'node:path';
 import * as lockfile from 'proper-lockfile';
 import { resolveAppPaths } from '../config/app-paths';
 import { paths } from '../config/paths';
-import type { AgentKind } from '../config/profile-schema';
+import { isAgentKind, type AgentKind } from '../config/profile-schema';
 import type { TenantBrand } from '../config/schema';
 import { writeFileAtomic } from '../platform/atomic-write';
 import { checkRuntimeLock } from './locks';
@@ -64,7 +64,7 @@ function isValidEntry(e: unknown): e is ProcessEntry {
     typeof x.appId === 'string' &&
     (x.tenant === 'feishu' || x.tenant === 'lark') &&
     typeof x.profileName === 'string' &&
-    (x.agentKind === 'claude' || x.agentKind === 'codex') &&
+    isAgentKind(x.agentKind) &&
     typeof x.configPath === 'string' &&
     typeof x.startedAt === 'string' &&
     typeof x.version === 'string'

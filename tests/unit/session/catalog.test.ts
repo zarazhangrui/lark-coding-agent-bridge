@@ -44,6 +44,14 @@ describe('agent-aware session catalog', () => {
       threadId: 'thread-1',
       now: 2000,
     });
+    catalog.upsertActive({
+      scopeId: 'chat-1',
+      agentId: 'grok',
+      cwdRealpath: '/repo',
+      policyFingerprint: 'fp-1',
+      sessionId: 'grok-1',
+      now: 3000,
+    });
 
     expect(
       catalog.activeFor({
@@ -61,6 +69,14 @@ describe('agent-aware session catalog', () => {
         policyFingerprint: 'fp-1',
       }),
     ).toMatchObject({ threadId: 'thread-1', agentId: 'codex' });
+    expect(
+      catalog.activeFor({
+        scopeId: 'chat-1',
+        agentId: 'grok',
+        cwdRealpath: '/repo',
+        policyFingerprint: 'fp-1',
+      }),
+    ).toMatchObject({ sessionId: 'grok-1', agentId: 'grok' });
     await catalog.flush();
   });
 
@@ -87,6 +103,16 @@ describe('agent-aware session catalog', () => {
         now: 1000,
       }),
     ).toThrow(/Codex.*threadId/i);
+    expect(() =>
+      catalog.upsertActive({
+        scopeId: 'chat-1',
+        agentId: 'grok',
+        cwdRealpath: '/repo',
+        policyFingerprint: 'fp-1',
+        threadId: 'thread-wrong',
+        now: 1000,
+      }),
+    ).toThrow(/Grok.*sessionId/i);
 
     await catalog.replaceForTest([
       {

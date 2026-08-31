@@ -238,9 +238,11 @@ describe('profile runtime resolver', () => {
     const oldPath = process.env.PATH;
     const oldClaude = process.env.LARK_CHANNEL_CLAUDE_BIN;
     const oldCodex = process.env.LARK_CHANNEL_CODEX_BIN;
+    const oldGrok = process.env.LARK_CHANNEL_GROK_BIN;
     process.env.PATH = bin;
     delete process.env.LARK_CHANNEL_CLAUDE_BIN;
     delete process.env.LARK_CHANNEL_CODEX_BIN;
+    delete process.env.LARK_CHANNEL_GROK_BIN;
 
     try {
       let error: Error | undefined;
@@ -262,7 +264,7 @@ describe('profile runtime resolver', () => {
       expect(message).toContain(claude);
       expect(message).toContain('codex');
       expect(message).toContain(codex);
-      expect(message).toContain('--agent <claude|codex>');
+      expect(message).toContain('--agent <claude|codex|grok>');
     } finally {
       process.env.PATH = oldPath;
       if (oldClaude === undefined) {
@@ -275,6 +277,11 @@ describe('profile runtime resolver', () => {
       } else {
         process.env.LARK_CHANNEL_CODEX_BIN = oldCodex;
       }
+      if (oldGrok === undefined) {
+        delete process.env.LARK_CHANNEL_GROK_BIN;
+      } else {
+        process.env.LARK_CHANNEL_GROK_BIN = oldGrok;
+      }
     }
   });
 
@@ -286,9 +293,11 @@ describe('profile runtime resolver', () => {
     const oldPath = process.env.PATH;
     const oldClaude = process.env.LARK_CHANNEL_CLAUDE_BIN;
     const oldCodex = process.env.LARK_CHANNEL_CODEX_BIN;
+    const oldGrok = process.env.LARK_CHANNEL_GROK_BIN;
     process.env.PATH = bin;
     delete process.env.LARK_CHANNEL_CLAUDE_BIN;
     delete process.env.LARK_CHANNEL_CODEX_BIN;
+    delete process.env.LARK_CHANNEL_GROK_BIN;
 
     try {
       const runtime = await withTty(true, true, () =>
@@ -316,6 +325,11 @@ describe('profile runtime resolver', () => {
         delete process.env.LARK_CHANNEL_CODEX_BIN;
       } else {
         process.env.LARK_CHANNEL_CODEX_BIN = oldCodex;
+      }
+      if (oldGrok === undefined) {
+        delete process.env.LARK_CHANNEL_GROK_BIN;
+      } else {
+        process.env.LARK_CHANNEL_GROK_BIN = oldGrok;
       }
     }
   });

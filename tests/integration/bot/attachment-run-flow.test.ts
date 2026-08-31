@@ -1,7 +1,7 @@
 import { realpath } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { codexCapability } from '../../../src/agent/capability.js';
+import { codexCapability, grokCapability } from '../../../src/agent/capability.js';
 import { ActiveRuns } from '../../../src/bot/active-runs.js';
 import { ProcessPool } from '../../../src/bot/process-pool.js';
 import { startRunFlow } from '../../../src/bot/run-flow.js';
@@ -61,9 +61,45 @@ describe('attachment run flow', () => {
       images: ['/media/image.png'],
     });
   });
+
+  it('passes accepted image attachment paths to Grok adapter runs', async () => {
+    const h = await createHarness('grok');
+
+    const result = await startRunFlow({
+      scopeId: 'chat-1',
+      scope: { source: 'im', chatId: 'chat-1', actorId: 'ou_user' },
+      prompt: 'inspect attachments',
+      attachments: [
+        {
+          kind: 'image',
+          path: '/media/image.png',
+          requiredness: 'optional',
+          decision: 'accepted',
+        },
+        {
+          kind: 'file',
+          path: '/media/file.txt',
+          requiredness: 'optional',
+          decision: 'accepted',
+        },
+      ],
+      access: { ok: true, reason: 'allowed-user' },
+      capability: grokCapability(h.profileConfig),
+      profileConfig: h.profileConfig,
+      sessions: h.sessions,
+      workspaces: h.workspaces,
+      executor: h.executor,
+      now: 1000,
+    });
+
+    expect(result.ok).toBe(true);
+    expect(h.agent.runOptions[0]).toMatchObject({
+      images: ['/media/image.png'],
+    });
+  });
 });
 
-async function createHarness(): Promise<{
+async function createHarness(agentKind: 'codex' | 'grok' = 'codex'): Promise<{
   tmp: TmpProfile;
   agent: FakeAgentAdapter;
   executor: RunExecutor;
@@ -73,8 +109,8 @@ async function createHarness(): Promise<{
 }> {
   const tmp = await createTmpProfile('attachment-run-flow-');
   const agent = new FakeAgentAdapter({
-    id: 'codex',
-    displayName: 'Codex',
+    id: agentKind,
+    displayName: agentKind === 'grok' ? 'Grok CLI' : 'Codex',
     events: [{ type: 'done', terminationReason: 'normal' }],
   });
   const executor = new RunExecutor({
@@ -85,7 +121,7 @@ async function createHarness(): Promise<{
     now: () => 1000,
   });
   const profileConfig = createDefaultProfileConfig({
-    agentKind: 'codex',
+    agentKind,
     accounts: {
       app: {
         id: 'cli_test',
@@ -93,9 +129,9 @@ async function createHarness(): Promise<{
         tenant: 'feishu',
       },
     },
-    codex: {
-      binaryPath: '/usr/local/bin/codex',
-    },
+    ...(agentKind === 'codex'
+      ? { codex: { binaryPath: '/usr/local/bin/codex' } }
+      : { grok: { binaryPath: '/usr/local/bin/grok' } }),
   });
   const workspaces = new WorkspaceStore(join(tmp.profile, 'workspaces.json'));
   workspaces.setCwd('chat-1', tmp.workspace);

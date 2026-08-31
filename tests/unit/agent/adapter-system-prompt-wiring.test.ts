@@ -18,6 +18,7 @@ import {
 } from '../../../src/agent/bridge-system-prompt';
 import { ClaudeAdapter } from '../../../src/agent/claude/adapter';
 import { CodexAdapter } from '../../../src/agent/codex/adapter';
+import { GrokAdapter } from '../../../src/agent/grok/adapter';
 
 interface FakeChild extends EventEmitter {
   pid: number;
@@ -113,6 +114,50 @@ describe('CodexAdapter system prompt wiring', () => {
     const stdin = await readAll(child.stdin);
     expect(stdin).toBe(prefixBridgeSystemPrompt('hi', undefined));
   });
+});
+
+describe('GrokAdapter system prompt wiring', () => {
+  it('appends the identity-aware bridge system prompt via --rules', () => {
+    const child = fakeChild();
+    spawnMock.spawnProcess.mockReturnValue(child);
+    const adapter = new GrokAdapter({ binary: '/usr/local/bin/grok' });
+    adapter.setBotIdentity({ openId: 'ou_bot_self', name: 'Bridge' });
+
+    adapter.run({ runId: 'r1', prompt: 'hi', cwd: '/tmp' });
+
+    expect(promptFileContent()).toBe('hi');
+    expect(rulesArg()).toBe(buildBridgeSystemPrompt({ openId: 'ou_bot_self', name: 'Bridge' }));
+  });
+
+  it('falls back to the base system prompt when no identity was set', () => {
+    const child = fakeChild();
+    spawnMock.spawnProcess.mockReturnValue(child);
+    const adapter = new GrokAdapter({ binary: '/usr/local/bin/grok' });
+
+    adapter.run({ runId: 'r1', prompt: 'hi', cwd: '/tmp' });
+
+    expect(promptFileContent()).toBe('hi');
+    expect(rulesArg()).toBe(buildBridgeSystemPrompt(undefined));
+  });
+
+  function grokArgs(): string[] {
+    return spawnMock.spawnProcess.mock.calls[0]?.[1] as string[];
+  }
+
+  function promptFileContent(): string {
+    const args = grokArgs();
+    const flagIndex = args.indexOf('--prompt-file');
+    expect(flagIndex).toBeGreaterThan(-1);
+    expect(args).toContain('streaming-messages-json');
+    return readFileSync(args[flagIndex + 1] as string, 'utf8');
+  }
+
+  function rulesArg(): string {
+    const args = grokArgs();
+    const flagIndex = args.indexOf('--rules');
+    expect(flagIndex).toBeGreaterThan(-1);
+    return args[flagIndex + 1] as string;
+  }
 });
 
 async function readAll(stream: PassThrough): Promise<string> {

@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { BRIDGE_SYSTEM_PROMPT } from '../../../src/agent/bridge-system-prompt';
-import { claudeCapability, codexCapability } from '../../../src/agent/capability';
+import {
+  capabilityFor,
+  claudeCapability,
+  codexCapability,
+  grokCapability,
+  usesNativeSessionId,
+} from '../../../src/agent/capability';
 import { createDefaultProfileConfig } from '../../../src/config/profile-schema';
 
 describe('agent capability contract', () => {
@@ -71,5 +77,42 @@ describe('agent capability contract', () => {
     });
 
     expect(codexCapability(profile).permissions.maxAccess).toBe('read-only');
+  });
+
+  it('defines Grok capability with native sessions and appended system prompt', () => {
+    const capability = grokCapability();
+
+    expect(capability).toMatchObject({
+      agentId: 'grok',
+      sessionKind: 'grok-session',
+      promptInjection: 'append-system-prompt',
+      supportsNativeHistory: true,
+      systemPrompt: BRIDGE_SYSTEM_PROMPT,
+      callback: {
+        marker: '__bridge_cb',
+        legacyMarkers: [],
+      },
+    });
+    expect(usesNativeSessionId('grok')).toBe(true);
+    expect(usesNativeSessionId('claude')).toBe(true);
+    expect(usesNativeSessionId('codex')).toBe(false);
+  });
+
+  it('routes capabilityFor to the matching agent kind', () => {
+    const grok = createDefaultProfileConfig({
+      agentKind: 'grok',
+      accounts: {
+        app: {
+          id: 'cli_test',
+          secret: '${APP_SECRET}',
+          tenant: 'feishu',
+        },
+      },
+      grok: { binaryPath: '/usr/local/bin/grok' },
+    });
+    expect(capabilityFor(grok).agentId).toBe('grok');
+    expect(capabilityFor({ agentKind: 'claude', permissions: grok.permissions }).agentId).toBe(
+      'claude',
+    );
   });
 });

@@ -135,9 +135,11 @@ describe('first-run profile bootstrap', () => {
     const oldPath = process.env.PATH;
     const oldClaude = process.env.LARK_CHANNEL_CLAUDE_BIN;
     const oldCodex = process.env.LARK_CHANNEL_CODEX_BIN;
+    const oldGrok = process.env.LARK_CHANNEL_GROK_BIN;
     process.env.PATH = root;
     process.env.LARK_CHANNEL_CLAUDE_BIN = 'missing-claude';
     process.env.LARK_CHANNEL_CODEX_BIN = process.platform === 'win32' ? codex : 'codex';
+    process.env.LARK_CHANNEL_GROK_BIN = 'missing-grok';
     try {
       await expect(detectInstalledAgents()).resolves.toEqual([
         { kind: 'codex', binaryPath: codex },
@@ -153,6 +155,11 @@ describe('first-run profile bootstrap', () => {
         delete process.env.LARK_CHANNEL_CODEX_BIN;
       } else {
         process.env.LARK_CHANNEL_CODEX_BIN = oldCodex;
+      }
+      if (oldGrok === undefined) {
+        delete process.env.LARK_CHANNEL_GROK_BIN;
+      } else {
+        process.env.LARK_CHANNEL_GROK_BIN = oldGrok;
       }
     }
   });

@@ -100,9 +100,31 @@ describe('start runtime agent factory', () => {
     expect(sup).toContain('releaseRuntimeLocks(this.locks)');
   });
 
+  it('creates GrokAdapter from a grok profile binary path', () => {
+    const profile = createDefaultProfileConfig({
+      agentKind: 'grok',
+      accounts: appAccount(),
+      grok: { binaryPath: '/usr/local/bin/grok' },
+    });
+    const agent = createRuntimeAgent(profile, { profileDir: tmpdir() });
+
+    expect(agent.id).toBe('grok');
+    expect(agent.displayName).toBe('Grok CLI');
+  });
+
+  it('seeds a default Grok binary when bootstrapping a new Grok profile', () => {
+    const profile = createRuntimeProfileConfig({
+      agentKind: 'grok',
+      accounts: appAccount(),
+    });
+
+    expect(profile.grok?.binaryPath).toBe('grok');
+  });
+
   it('rejects reconnect when a profile changes agent kind in place', () => {
     expect(() => assertReconnectAgentKindUnchanged('claude', 'codex')).toThrow(/agent kind/i);
     expect(() => assertReconnectAgentKindUnchanged('codex', 'codex')).not.toThrow();
+    expect(() => assertReconnectAgentKindUnchanged('grok', 'claude')).toThrow(/agent kind/i);
   });
 });
 

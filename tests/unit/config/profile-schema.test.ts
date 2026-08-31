@@ -96,6 +96,28 @@ describe('profile schema', () => {
     ).toThrow(/codex/i);
   });
 
+  it('requires grok configuration when agentKind is grok', () => {
+    expect(() =>
+      normalizeProfileConfig({
+        schemaVersion: 2,
+        agentKind: 'grok',
+        accounts: { app },
+      }),
+    ).toThrow(/grok/i);
+
+    const cfg = createDefaultProfileConfig({
+      agentKind: 'grok',
+      accounts: { app },
+      grok: { binaryPath: '/usr/local/bin/grok' },
+    });
+    expect(cfg.agentKind).toBe('grok');
+    expect(cfg.grok).toEqual({ binaryPath: '/usr/local/bin/grok' });
+    expect(cfg.permissions).toMatchObject({
+      defaultAccess: 'full',
+      maxAccess: 'full',
+    });
+  });
+
   it('rejects sandbox defaults that exceed max capability as a permission error', () => {
     expect(() =>
       normalizeProfileConfig({

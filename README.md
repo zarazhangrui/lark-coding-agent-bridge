@@ -1,6 +1,6 @@
 # lark-channel-bridge
 
-A lightweight bot that bridges Feishu / Lark messenger with your local Claude Code or Codex CLI. Run one command, scan a QR code to bind a PersonalAgent app, and talk to your local coding agent from chat.
+A lightweight bot that bridges Feishu / Lark messenger with your local Claude Code, Codex CLI, or Grok CLI. Run one command, scan a QR code to bind a PersonalAgent app, and talk to your local coding agent from chat.
 
 [中文 README](./README.zh.md)
 
@@ -8,7 +8,7 @@ For a product walkthrough, see the [Feishu document](https://larkcommunity.feish
 
 ## What it does
 
-- Forwards Feishu / Lark messages to local Claude Code or Codex CLI. Send a DM directly, or `@bot` in a group.
+- Forwards Feishu / Lark messages to local Claude Code, Codex CLI, or Grok CLI. Send a DM directly, or `@bot` in a group.
 - **Streaming card**: text replies and tool calls update on one Lark card in real time.
 - **COT process messages**: optionally send a process message with agent progress text and tool calls, then send the final answer separately.
 - **Session continuity**: each chat, topic, or document comment thread keeps its own session.
@@ -23,6 +23,7 @@ For a product walkthrough, see the [Feishu document](https://larkcommunity.feish
 - At least one local agent installed and logged in:
   - Claude Code: `claude`, see https://docs.anthropic.com/en/docs/claude-code/quickstart
   - Codex CLI: `codex`, see https://developers.openai.com/codex/cli
+  - Grok CLI: `grok`, see https://x.ai/cli
 - A Feishu / Lark **PersonalAgent** app. The first-run QR wizard can create and bind one for you.
 
 ## Install
@@ -88,13 +89,14 @@ Platform mapping:
 
 Daemon logs are under `~/.lark-channel/profiles/<profile>/logs/daemon/`.
 
-### Multiple profiles: Claude and Codex
+### Multiple profiles: Claude, Codex, and Grok
 
-By default, the bridge starts with the currently selected profile. Use `profile use <name>` to change it. Each profile keeps its own app credentials, sessions, working directories, and logs. Create multiple profiles only when you need to connect multiple PersonalAgent apps, or run Claude and Codex as separate bots:
+By default, the bridge starts with the currently selected profile. Use `profile use <name>` to change it. Each profile keeps its own app credentials, sessions, working directories, and logs. Create multiple profiles only when you need to connect multiple PersonalAgent apps, or run Claude, Codex, and Grok as separate bots:
 
 ```bash
 lark-channel-bridge start --profile claude --agent claude
 lark-channel-bridge start --profile codex --agent codex
+lark-channel-bridge start --profile grok --agent grok
 ```
 
 For example, to restart only the Codex bot:
@@ -109,18 +111,19 @@ lark-channel-bridge status --profile codex
 ### Host CLI
 
 ```text
-lark-channel-bridge run [--profile <name>] [--agent claude|codex] [--workspace <path>] [-c <config>]
-lark-channel-bridge migrate [--profile <name>] [--agent claude|codex]
+lark-channel-bridge run [--profile <name>] [--agent claude|codex|grok] [--workspace <path>] [-c <config>]
+lark-channel-bridge migrate [--profile <name>] [--agent claude|codex|grok]
 lark-channel-bridge ps
 lark-channel-bridge kill <id|#>
 lark-channel-bridge --help
 ```
 
-`profile use <name>` changes the profile used by later default starts. Use these profile management commands when running separate Claude / Codex bots, connecting multiple PersonalAgent apps, or doing scripted deployment:
+`profile use <name>` changes the profile used by later default starts. Use these profile management commands when running separate Claude / Codex / Grok bots, connecting multiple PersonalAgent apps, or doing scripted deployment:
 
 ```bash
 lark-channel-bridge profile create claude --agent claude
 lark-channel-bridge profile create codex --agent codex
+lark-channel-bridge profile create grok --agent grok
 lark-channel-bridge profile list
 lark-channel-bridge profile use <name>
 lark-channel-bridge profile remove <name>

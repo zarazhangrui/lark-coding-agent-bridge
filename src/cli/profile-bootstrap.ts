@@ -14,6 +14,7 @@ export interface BootstrapProfileInput {
   workspace?: string;
   defaultWorkspace?: string;
   codexBinaryPath?: string;
+  grokBinaryPath?: string;
   profileDir?: string;
 }
 
@@ -29,12 +30,17 @@ export async function createBootstrapProfileConfig(
     input.agentKind === 'codex'
       ? await createBootstrapCodexConfig(input.codexBinaryPath)
       : undefined;
+  const grok =
+    input.agentKind === 'grok'
+      ? await createBootstrapGrokConfig(input.grokBinaryPath)
+      : undefined;
   const profile = createDefaultProfileConfig({
     agentKind: input.agentKind,
     accounts: input.accounts,
     preferences: input.preferences,
     secrets: input.secrets,
     ...(codex ? { codex } : {}),
+    ...(grok ? { grok } : {}),
   });
   if (workspace) {
     profile.workspaces = {
@@ -67,7 +73,7 @@ export async function createBootstrapCodexConfig(binaryPath: string | undefined)
   } catch (err) {
     const errno = (err as NodeJS.ErrnoException).code;
     throw new AgentPreflightError({
-      code: codexBootstrapBinaryErrorCode(errno),
+      code: bootstrapBinaryErrorCode(errno),
       agentId: 'codex',
       agentName: 'Codex CLI',
       command,
@@ -78,7 +84,26 @@ export async function createBootstrapCodexConfig(binaryPath: string | undefined)
   return { binaryPath: resolvedBinary };
 }
 
-function codexBootstrapBinaryErrorCode(errno: string | undefined) {
+export async function createBootstrapGrokConfig(binaryPath: string | undefined) {
+  const command = binaryPath ?? process.env.LARK_CHANNEL_GROK_BIN ?? 'grok';
+  let resolvedBinary: string;
+  try {
+    resolvedBinary = await resolveExecutablePath(command);
+  } catch (err) {
+    const errno = (err as NodeJS.ErrnoException).code;
+    throw new AgentPreflightError({
+      code: bootstrapBinaryErrorCode(errno),
+      agentId: 'grok',
+      agentName: 'Grok CLI',
+      command,
+      binaryPath: command,
+      errno,
+    });
+  }
+  return { binaryPath: resolvedBinary };
+}
+
+function bootstrapBinaryErrorCode(errno: string | undefined) {
   if (errno === 'EACCES' || errno === 'EPERM') return 'agent-binary-not-executable';
   if (errno === 'ELOOP' || errno === 'ENOTDIR' || errno === 'EINVAL') {
     return 'agent-binary-resolve-failed';

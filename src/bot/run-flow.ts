@@ -1,4 +1,4 @@
-import type { AgentCapability } from '../agent/capability';
+import { usesNativeSessionId, type AgentCapability } from '../agent/capability';
 import { resolveModelArg } from '../agent/models';
 import type { AgentEvent } from '../agent/types';
 import type { ProfileConfig } from '../config/profile-schema';
@@ -120,7 +120,7 @@ export async function startRunFlow(input: StartRunFlowInput): Promise<StartRunFl
       cwdRealpath: workspace.cwdRealpath,
       policyFingerprint: policy.policyFingerprint,
     });
-    if (catalogEntry?.agentId === 'claude') {
+    if (catalogEntry && usesNativeSessionId(catalogEntry.agentId)) {
       sessionId = catalogEntry.sessionId;
       resumeFrom = sessionId;
     } else if (catalogEntry?.agentId === 'codex') {
@@ -128,7 +128,7 @@ export async function startRunFlow(input: StartRunFlowInput): Promise<StartRunFl
       resumeFrom = threadId;
     }
   }
-  if (!resumeFrom && input.capability.agentId === 'claude') {
+  if (!resumeFrom && usesNativeSessionId(input.capability.agentId)) {
     resumeFrom = input.sessions.resumeFor(input.scopeId, workspace.cwdRealpath);
     sessionId = resumeFrom;
     const stale = input.sessions.getRaw(input.scopeId);
@@ -148,13 +148,7 @@ export async function startRunFlow(input: StartRunFlowInput): Promise<StartRunFl
         input.profileConfig.agentKind,
         input.profileConfig.preferences.model,
       ),
-      images:
-        input.capability.agentId === 'codex'
-          ? policy.attachments
-              .filter((attachment) => attachment.kind === 'image' && attachment.decision === 'accepted')
-              .map((attachment) => attachment.path)
-              .filter((path): path is string => Boolean(path))
-          : undefined,
+      images: nativeImagePaths(input.capability.agentId, policy.attachments),
       stopGraceMs: input.stopGraceMs,
       observability: input.observability,
     });
@@ -188,12 +182,12 @@ export async function startRunFlow(input: StartRunFlowInput): Promise<StartRunFl
 
 export function recordRunSessionEvent(input: RecordRunSessionEventInput): void {
   if (input.event.type !== 'system') return;
-  if (input.capability.agentId === 'claude' && input.event.sessionId) {
+  if (usesNativeSessionId(input.capability.agentId) && input.event.sessionId) {
     const cwdRealpath = input.event.cwd ?? input.policy.cwdRealpath;
     input.sessions.set(input.scopeId, input.event.sessionId, cwdRealpath);
     input.sessionCatalog?.upsertActive({
       scopeId: input.scopeId,
-      agentId: 'claude',
+      agentId: input.capability.agentId,
       cwdRealpath,
       policyFingerprint: input.policy.policyFingerprint,
       sessionId: input.event.sessionId,
@@ -209,4 +203,16 @@ export function recordRunSessionEvent(input: RecordRunSessionEventInput): void {
       threadId: input.event.threadId,
     });
   }
+}
+
+function nativeImagePaths(
+  agentId: AgentCapability['agentId'],
+  attachments: readonly AgentAttachment[],
+): string[] | undefined {
+  if (agentId !== 'codex' && agentId !== 'grok') return undefined;
+  const paths = attachments
+    .filter((attachment) => attachment.kind === 'image' && attachment.decision === 'accepted')
+    .map((attachment) => attachment.path)
+    .filter((path): path is string => Boolean(path));
+  return paths.length > 0 ? paths : undefined;
 }
