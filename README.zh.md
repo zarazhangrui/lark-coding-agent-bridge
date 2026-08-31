@@ -77,8 +77,17 @@ lark-channel-bridge stop
 lark-channel-bridge start [--profile <name>]
 lark-channel-bridge stop [--profile <name>]
 lark-channel-bridge restart [--profile <name>]
+lark-channel-bridge lark-cli [--profile <name>] -- <lark-cli 参数...>
 lark-channel-bridge status [--profile <name>]
 lark-channel-bridge unregister [--profile <name>]
+```
+
+如果本地脚本、Codex 或 Claude 会话需要以同一个 bot 身份调用飞书，请使用
+profile 级透传命令。bridge 会自动选择该 profile 的私有凭据与身份策略，无需手工
+绑定多 profile 根配置：
+
+```bash
+lark-channel-bridge lark-cli --profile codex -- im +chat-search --query "团队群" --as bot
 ```
 
 平台映射：

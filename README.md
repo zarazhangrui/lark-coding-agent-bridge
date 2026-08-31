@@ -77,8 +77,18 @@ Service commands install a per-profile service:
 lark-channel-bridge start [--profile <name>]
 lark-channel-bridge stop [--profile <name>]
 lark-channel-bridge restart [--profile <name>]
+lark-channel-bridge lark-cli [--profile <name>] -- <lark-cli args...>
 lark-channel-bridge status [--profile <name>]
 lark-channel-bridge unregister [--profile <name>]
+```
+
+Use the profile-scoped passthrough when a local script, Codex session, or Claude
+session needs to call Feishu/Lark as the same bot. The bridge selects the
+profile's private credentials and identity policy, so you do not need to bind
+the multi-profile root config manually:
+
+```bash
+lark-channel-bridge lark-cli --profile codex -- im +chat-search --query "team room" --as bot
 ```
 
 Platform mapping:
