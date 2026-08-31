@@ -1171,10 +1171,12 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
           fallback: async (state) => {
             if (controls.profileConfig.agentKind === 'codex') return;
             if (renderText(filterForPrefs(state)).trim() === '') return;
-            await channel.send(
+            await sendWithWithdrawnReplyFallback(
+              channel,
               chatId,
               { card: renderCard(filterForPrefs(state), cardRenderOptions) },
               sendOpts,
+              scope,
             );
           },
         });
@@ -1237,7 +1239,13 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
             if (controls.profileConfig.agentKind === 'codex') return;
             const body = renderText(filterForPrefs(state));
             if (body.trim()) {
-              await channel.send(chatId, { markdown: body }, sendOpts);
+              await sendWithWithdrawnReplyFallback(
+                channel,
+                chatId,
+                { markdown: body },
+                sendOpts,
+                scope,
+              );
             }
           },
         });
@@ -1460,33 +1468,76 @@ async function sendFinalReply(input: {
     return;
   }
 
-  if (input.replyMode === 'card') {
-    const result = await input.channel.send(
-      input.chatId,
-      { card: renderCard(input.state, input.cardRenderOptions) },
-      input.sendOpts,
-    );
-    requireMessageReceipt(result, 'card');
-    log.info('outbound', 'sent', outboundLogFields(input, 'card', body, result));
-  } else if (input.replyMode === 'markdown') {
-    if (body.trim()) {
-      const result = await input.channel.send(
-        input.chatId,
-        { markdown: body },
-        input.sendOpts,
-      );
-      requireMessageReceipt(result, 'markdown');
-      log.info('outbound', 'sent', outboundLogFields(input, 'markdown', body, result));
-    }
-  } else if (body.trim()) {
-    const result = await input.channel.send(
-      input.chatId,
-      { markdown: body },
-      input.sendOpts,
-    );
-    requireMessageReceipt(result, 'text');
-    log.info('outbound', 'sent', outboundLogFields(input, 'text', body, result));
+  const type = input.replyMode === 'card' ? 'card' : input.replyMode;
+  const content =
+    type === 'card'
+      ? { card: renderCard(input.state, input.cardRenderOptions) }
+      : { markdown: body };
+  const delivery = await sendWithWithdrawnReplyFallback(
+    input.channel,
+    input.chatId,
+    content,
+    input.sendOpts,
+    input.scope,
+  );
+  requireMessageReceipt(delivery.result, type);
+  log.info(
+    'outbound',
+    'sent',
+    outboundLogFields({ ...input, sendOpts: delivery.sendOpts }, type, body, delivery.result),
+  );
+}
+
+type ReplySendOptions = { replyTo: string; replyInThread?: boolean };
+
+async function sendWithWithdrawnReplyFallback(
+  channel: LarkChannel,
+  chatId: string,
+  content: Parameters<LarkChannel['send']>[1],
+  sendOpts: ReplySendOptions,
+  scope: string,
+): Promise<{
+  result: Awaited<ReturnType<LarkChannel['send']>>;
+  sendOpts?: ReplySendOptions;
+}> {
+  try {
+    return {
+      result: await channel.send(chatId, content, sendOpts),
+      sendOpts,
+    };
+  } catch (err) {
+    if (!isWithdrawnReplyTargetError(err)) throw err;
+    log.warn('outbound', 'reply-target-withdrawn-fallback', {
+      scope,
+      replyTo: sendOpts.replyTo,
+      replyInThread: sendOpts.replyInThread === true,
+    });
+    return { result: await channel.send(chatId, content) };
   }
+}
+
+function isWithdrawnReplyTargetError(err: unknown): boolean {
+  const candidates: unknown[] = [err];
+  const seen = new Set<unknown>();
+
+  while (candidates.length > 0) {
+    const candidate = candidates.pop();
+    if (candidate === undefined || candidate === null || seen.has(candidate)) continue;
+    seen.add(candidate);
+
+    if (typeof candidate === 'string') {
+      if (/\bmessage\b[^\n]*(?:withdrawn|recalled)\b/i.test(candidate)) return true;
+      continue;
+    }
+    if (candidate instanceof Error) {
+      candidates.push(candidate.message, candidate.cause);
+    }
+    if (typeof candidate !== 'object') continue;
+
+    const value = candidate as Record<string, unknown>;
+    candidates.push(value.message, value.msg, value.error, value.data, value.response);
+  }
+  return false;
 }
 
 function requireMessageReceipt(result: { messageId?: string }, type: string): void {

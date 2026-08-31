@@ -359,6 +359,70 @@ describe('markdown stream startup failures', () => {
     ).toBe(true);
   });
 
+  it('retries a withdrawn reply target as a fresh message after stream fallback', async () => {
+    let sendAttempts = 0;
+    const h = await createHarness({
+      agentKind: 'claude',
+      events: [
+        { type: 'text', delta: 'ANSWER_AFTER_WITHDRAWAL' },
+        { type: 'done', terminationReason: 'normal' },
+      ],
+      stream: async () => {
+        throw new Error('The message was withdrawn.');
+      },
+      send: async () => {
+        sendAttempts += 1;
+        if (sendAttempts === 1) {
+          throw Object.assign(new Error('Request failed with status code 400'), {
+            response: { data: { message: 'The message was withdrawn.' } },
+          });
+        }
+        return { messageId: 'om_fresh_fallback' };
+      },
+    });
+    const warn = vi.spyOn(log, 'warn').mockImplementation(() => {});
+    await startTestBridge(h);
+
+    await h.channel.handlers.message?.(message('om_withdrawn', 'run'));
+    await waitFor(() => h.channel.sent.length === 2);
+
+    expect(h.channel.sent[0]?.options).toMatchObject({ replyTo: 'om_withdrawn' });
+    expect(h.channel.sent[1]?.options).toBeUndefined();
+    expect(lastMarkdown(h.channel)).toContain('ANSWER_AFTER_WITHDRAWAL');
+    expect(
+      warn.mock.calls.some(
+        (call) =>
+          call[0] === 'outbound' &&
+          call[1] === 'reply-target-withdrawn-fallback' &&
+          (call[2] as { replyTo?: string } | undefined)?.replyTo === 'om_withdrawn',
+      ),
+    ).toBe(true);
+  });
+
+  it('does not retry unrelated final reply failures without the reply target', async () => {
+    const h = await createHarness({
+      events: [
+        { type: 'final_text', content: 'FINAL_PERMISSION_FAILURE' },
+        { type: 'done', terminationReason: 'normal' },
+      ],
+      send: async () => {
+        throw new Error('Forbidden');
+      },
+    });
+    const fail = vi.spyOn(log, 'fail').mockImplementation(() => {});
+    await startTestBridge(h);
+
+    await h.channel.handlers.message?.(message('om_forbidden', 'run'));
+    await waitFor(() =>
+      fail.mock.calls.some(
+        (call) => call[1] instanceof Error && call[1].message === 'Forbidden',
+      ),
+    );
+
+    expect(h.channel.sent).toHaveLength(1);
+    expect(h.channel.sent[0]?.options).toMatchObject({ replyTo: 'om_forbidden' });
+  });
+
   it('does not record delivery when the final send has no message receipt', async () => {
     const fail = vi.spyOn(log, 'fail').mockImplementation(() => {});
     const info = vi.spyOn(log, 'info').mockImplementation(() => {});
