@@ -1,0 +1,168 @@
+#!/usr/bin/env python3
+"""mwb-backfill-groups — 把 alive 但还没群的 window 补上群,顺手把名字过期的群改回当前模板。
+
+用法:
+  mwb-backfill-groups                  默认: 建缺的群 + 改名(让所有 mapped 群名 = 当前模板)
+  mwb-backfill-groups --dry-run        只看会做什么,不实际改
+  mwb-backfill-groups --no-rename      只补建,不改已有群的名
+  mwb-backfill-groups --rename-only    只改名,不补建
+  mwb-backfill-groups --include-dead   连历史死 window 都改名(默认跳过)
+
+设计:
+- 用 group_create_worker 的同一套模板逻辑,保证名字一致
+- 改名是 idempotent: 名字已经对的直接跳过
+- 死 window 默认跳过(他们不会发消息了,改名没意义,还占飞书 API 额度)
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+MWB = Path.home() / ".claude" / "multi-window-bridge"
+sys.path.insert(0, str(MWB / "lib"))
+
+from common import load_config  # noqa: E402
+import feishu  # noqa: E402
+import session_chats  # noqa: E402
+from group_create_worker import _cwd_base  # noqa: E402
+
+
+def _alive(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except (ProcessLookupError, PermissionError):
+        return False
+
+
+def _render_name(template: str, window_id: str, cwd: str) -> str:
+    return template.format(windowId=window_id, cwdBase=_cwd_base(cwd), cwd=cwd)
+
+
+def _read_registry() -> dict[str, dict]:
+    try:
+        return json.loads((MWB / "registry.json").read_text()).get("windows", {})
+    except Exception:
+        return {}
+
+
+def cmd(dry_run: bool, do_create: bool, do_rename: bool,
+        include_dead: bool) -> int:
+    cfg = load_config()
+    feishu_cfg = cfg.get("feishu", {})
+    pwg = feishu_cfg.get("perWindowGroups", {})
+    if not pwg.get("enabled"):
+        print("⚠️  perWindowGroups.enabled=false in config. Nothing to do.")
+        return 0
+    template = pwg.get("groupNameTemplate", "claude · {windowId} · {cwdBase}")
+
+    registry = _read_registry()
+    mapped = session_chats.list_all()
+
+    # --- pass 1: build to_create + to_rename ---
+    to_create: list[tuple[str, str]] = []   # (wid, cwd)
+    to_rename: list[tuple[str, str, str, str]] = []  # (wid, chat_id, old, new)
+
+    if do_create:
+        for wid, e in registry.items():
+            if wid in mapped:
+                continue
+            pid = e.get("claudePid", -1)
+            if not _alive(pid):
+                continue
+            cwd = e.get("cwd", "")
+            if not cwd:
+                continue
+            to_create.append((wid, cwd))
+
+    if do_rename:
+        for wid, info in mapped.items():
+            cwd = info.get("cwd", "")
+            chat_id = info.get("chatId")
+            if not chat_id or not cwd:
+                continue
+            # Skip dead windows unless --include-dead
+            if not include_dead:
+                reg_entry = registry.get(wid)
+                if reg_entry:
+                    pid = reg_entry.get("claudePid", -1)
+                    if not _alive(pid):
+                        continue
+                else:
+                    # window not in registry anymore = dead long ago
+                    continue
+            new_name = _render_name(template, wid, cwd)
+            old_name = info.get("groupName", "")
+            if new_name != old_name:
+                to_rename.append((wid, chat_id, old_name, new_name))
+
+    # --- report ---
+    print(f"=== plan ===")
+    print(f"待建群 ({len(to_create)}):")
+    for wid, cwd in to_create:
+        name = _render_name(template, wid, cwd)
+        print(f"  + {wid}  cwd={cwd}  →  {name!r}")
+    print(f"待改名 ({len(to_rename)}):")
+    for wid, chat_id, old, new in to_rename:
+        print(f"  ~ {wid}  {old!r}  →  {new!r}")
+
+    if dry_run:
+        print("\n(--dry-run, 没改任何东西)")
+        return 0
+
+    # --- pass 2: execute ---
+    if to_create:
+        print("\n=== 建群 ===")
+        worker = MWB / "lib" / "group_create_worker.py"
+        for wid, cwd in to_create:
+            subprocess.run(
+                ["/usr/bin/python3", str(worker), wid, cwd],
+                check=False,
+            )
+            print(f"  ✓ spawned for {wid}")
+        # Workers are async; wait a bit so logs land before next step.
+        time.sleep(3)
+
+    if to_rename:
+        print("\n=== 改名 ===")
+        for wid, chat_id, old, new in to_rename:
+            ok = feishu.update_group(chat_id, name=new)
+            if ok:
+                # Update local state
+                info = mapped[wid]
+                session_chats.set_chat_for_window(
+                    wid, chat_id, info.get("cwd", ""), new,
+                )
+                print(f"  ✓ {wid}  →  {new!r}")
+            else:
+                print(f"  ✗ {wid}  (API fail; check logs)")
+
+    print("\n=== done ===")
+    return 0
+
+
+def main() -> int:
+    p = argparse.ArgumentParser(description=__doc__.split("\n")[0] if __doc__ else "")
+    p.add_argument("--dry-run", action="store_true", help="不实际改,只列出计划")
+    p.add_argument("--no-rename", action="store_true", help="只补建,不改已有群名")
+    p.add_argument("--rename-only", action="store_true", help="只改名,不补建")
+    p.add_argument("--include-dead", action="store_true",
+                   help="改名时也覆盖死 window 的群(默认跳过)")
+    args = p.parse_args()
+    if args.no_rename and args.rename_only:
+        print("❌ --no-rename 和 --rename-only 互斥")
+        return 2
+    do_create = not args.rename_only
+    do_rename = not args.no_rename
+    return cmd(args.dry_run, do_create, do_rename, args.include_dead)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

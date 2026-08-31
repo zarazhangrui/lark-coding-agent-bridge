@@ -1,0 +1,20 @@
+{
+  "_comment": "Merge this `hooks` block into ~/.claude/settings.json. The mwb-install script does it automatically; this file is for reference / manual recovery.",
+  "hooks": {
+    "SessionStart": [
+      { "hooks": [ { "type": "command", "command": "/usr/bin/python3 __HOME__/.claude/multi-window-bridge/hooks/session_start.py", "timeout": 5 } ] }
+    ],
+    "Notification": [
+      { "hooks": [ { "type": "command", "command": "/usr/bin/python3 __HOME__/.claude/multi-window-bridge/hooks/notification.py", "timeout": 8 } ] }
+    ],
+    "PreToolUse": [
+      { "matcher": "Bash|Edit|Write|NotebookEdit", "hooks": [ { "type": "command", "command": "/usr/bin/python3 __HOME__/.claude/multi-window-bridge/hooks/pre_tool_use.py", "timeout": 8 } ] }
+    ],
+    "Stop": [
+      { "hooks": [ { "type": "command", "command": "/usr/bin/python3 __HOME__/.claude/multi-window-bridge/hooks/stop.py", "timeout": 8 } ] }
+    ],
+    "SessionEnd": [
+      { "hooks": [ { "type": "command", "command": "/usr/bin/python3 __HOME__/.claude/multi-window-bridge/hooks/session_end.py", "timeout": 5 } ] }
+    ]
+  }
+}
