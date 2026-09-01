@@ -9,7 +9,7 @@ import {
   windowsTaskName,
 } from '../../../src/daemon/paths';
 import { buildLauncherCmd } from '../../../src/daemon/schtasks';
-import { buildUnit } from '../../../src/daemon/systemd';
+import { buildUnit, systemdUserEnvironment } from '../../../src/daemon/systemd';
 
 describe('profile-scoped daemon paths and arguments', () => {
   it('sanitizes service ids and gives each profile distinct service names and logs', () => {
@@ -68,5 +68,27 @@ describe('profile-scoped daemon paths and arguments', () => {
     expect(buildUnit(inputs)).not.toContain('--profile');
     expect(buildLauncherCmd(inputs)).toContain('run --web-ui');
     expect(buildLauncherCmd(inputs)).not.toContain('--profile');
+  });
+
+  it('targets the current uid when a shell inherited another user systemd bus', () => {
+    const env = systemdUserEnvironment({
+      PATH: '/usr/bin',
+      XDG_RUNTIME_DIR: '/run/user/0',
+      DBUS_SESSION_BUS_ADDRESS: 'unix:path=/run/user/0/bus',
+    }, 1001);
+
+    expect(env.XDG_RUNTIME_DIR).toBe('/run/user/1001');
+    expect(env.DBUS_SESSION_BUS_ADDRESS).toBe('unix:path=/run/user/1001/bus');
+    expect(env.PATH).toBe('/usr/bin');
+  });
+
+  it('preserves deliberate custom systemd bus settings', () => {
+    const env = systemdUserEnvironment({
+      XDG_RUNTIME_DIR: '/tmp/custom-runtime',
+      DBUS_SESSION_BUS_ADDRESS: 'unix:abstract=/tmp/custom-bus',
+    }, 1001);
+
+    expect(env.XDG_RUNTIME_DIR).toBe('/tmp/custom-runtime');
+    expect(env.DBUS_SESSION_BUS_ADDRESS).toBe('unix:abstract=/tmp/custom-bus');
   });
 });

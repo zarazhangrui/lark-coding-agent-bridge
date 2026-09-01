@@ -97,8 +97,43 @@ interface SystemctlResult {
   stdout: string;
 }
 
+/**
+ * `systemctl --user` trusts XDG_RUNTIME_DIR / DBUS_SESSION_BUS_ADDRESS from
+ * the caller.  Shells launched through sudo, containers, remote agents, or a
+ * user switch can retain `/run/user/0` even though the process itself runs as
+ * an unprivileged user.  In that case systemctl tries the root bus and fails
+ * with EACCES instead of discovering the current user's manager.
+ *
+ * Only rewrite the conventional `/run/user/<uid>` form.  A deliberately
+ * custom runtime directory or bus address is preserved.
+ */
+export function systemdUserEnvironment(
+  source: NodeJS.ProcessEnv = process.env,
+  uid: number | undefined = process.getuid?.(),
+): NodeJS.ProcessEnv {
+  const env = { ...source };
+  if (uid === undefined) return env;
+
+  const runtimeDir = `/run/user/${uid}`;
+  if (!env.XDG_RUNTIME_DIR || /^\/run\/user\/\d+\/?$/.test(env.XDG_RUNTIME_DIR)) {
+    env.XDG_RUNTIME_DIR = runtimeDir;
+  }
+
+  if (
+    !env.DBUS_SESSION_BUS_ADDRESS ||
+    /^unix:path=\/run\/user\/\d+\/bus(?:,.*)?$/.test(env.DBUS_SESSION_BUS_ADDRESS)
+  ) {
+    env.DBUS_SESSION_BUS_ADDRESS = `unix:path=${runtimeDir}/bus`;
+  }
+
+  return env;
+}
+
 function runSystemctl(args: string[]): SystemctlResult {
-  const r = spawnSync('systemctl', ['--user', ...args], { encoding: 'utf8' });
+  const r = spawnSync('systemctl', ['--user', ...args], {
+    encoding: 'utf8',
+    env: systemdUserEnvironment(),
+  });
   return {
     ok: r.status === 0,
     stderr: r.stderr ?? '',
@@ -143,6 +178,7 @@ export function restart(profile: string): SystemctlResult {
 export function isActive(profile: string): boolean {
   const r = spawnSync('systemctl', ['--user', 'is-active', systemdUnitName(profile)], {
     stdio: ['ignore', 'ignore', 'ignore'],
+    env: systemdUserEnvironment(),
   });
   return r.status === 0;
 }

@@ -123,7 +123,11 @@ function formatServiceStderr(stderr: string): string {
  * to the raw stderr (with platform-specific noise stripped) so power
  * users can still see the underlying problem.
  */
-function printServiceFailure(verb: 'started' | 'restarted', stderr: string): void {
+function printServiceFailure(
+  verb: 'started' | 'restarted',
+  stderr: string,
+  profile: string,
+): void {
   const cleaned = formatServiceStderr(stderr);
   const action = verb === 'started' ? '启动' : '重启';
 
@@ -135,6 +139,25 @@ function printServiceFailure(verb: 'started' | 'restarted', stderr: string): voi
     console.error('  2. 或彻底清除注册再启动:');
     console.error('       unregister');
     console.error('       start');
+    console.error('');
+    console.error('原始错误:');
+    console.error(`  ${cleaned}`);
+    return;
+  }
+
+  if (/failed to connect to bus/i.test(cleaned)) {
+    console.error(`✗ bot ${action}失败: systemd 用户服务不可用。`);
+    console.error('');
+    console.error('请先让当前用户拥有持久的 systemd user manager:');
+    console.error('  sudo loginctl enable-linger "$USER"');
+    console.error('');
+    console.error('如果当前终端继承了其他用户的运行目录,请执行:');
+    console.error('  export XDG_RUNTIME_DIR="/run/user/$(id -u)"');
+    console.error('  export DBUS_SESSION_BUS_ADDRESS="unix:path=$XDG_RUNTIME_DIR/bus"');
+    console.error(`  lark-channel-bridge start --profile ${profile}`);
+    console.error('');
+    console.error('也可以先以前台模式运行:');
+    console.error(`  lark-channel-bridge run --profile ${profile}`);
     console.error('');
     console.error('原始错误:');
     console.error(`  ${cleaned}`);
@@ -291,7 +314,7 @@ async function reportConnectAfter(
 
   const r = await fn();
   if (!r.ok) {
-    printServiceFailure(verb, r.stderr);
+    printServiceFailure(verb, r.stderr, profile);
     process.exit(1);
   }
 
