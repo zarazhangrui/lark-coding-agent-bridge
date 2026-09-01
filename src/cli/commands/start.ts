@@ -20,6 +20,7 @@ import {
 import type { AppConfig } from '../../config/schema';
 import { isComplete } from '../../config/schema';
 import { configureLogger, gcOldLogs, log, reportError } from '../../core/logger';
+import { createProcessErrorHandlers } from '../../core/process-errors';
 import { loadTelemetryAdapter, telemetry } from '../../core/telemetry';
 import { gcMediaCache } from '../../media/cache';
 import { startUiServer } from '../../ui/server';
@@ -66,19 +67,16 @@ import { WorkspaceStore } from '../../workspace/store';
 // prefer v4 avoids that whole class of issue.
 dns.setDefaultResultOrder('ipv4first');
 
-// Process-level safety net: never let a stray SDK call / axios timeout
-// take the whole bot down. Most outbound calls (channel.send / rawClient.*)
-// are async; if any callsite misses a try/catch (or fires an update after
-// its enclosing scope returned), the rejection bubbles to here. Log and
-// keep the bot alive — losing a single reply is better than crashing.
-process.on('unhandledRejection', (reason) => {
-  log.fail('process', reason, { kind: 'unhandledRejection' });
-  reportError(reason, { kind: 'unhandledRejection' });
+// Keep a missed asynchronous call-site catch observable without taking down
+// the bot. A truly uncaught exception is fatal: continuing after one is unsafe,
+// and a failed terminal write must not recursively log forever.
+const processErrorHandlers = createProcessErrorHandlers({
+  logFailure: (err, kind) => log.fail('process', err, { kind }),
+  reportError: (err, kind) => reportError(err, { kind }),
+  exit: (code) => process.exit(code),
 });
-process.on('uncaughtException', (err) => {
-  log.fail('process', err, { kind: 'uncaughtException' });
-  reportError(err, { kind: 'uncaughtException' });
-});
+process.on('unhandledRejection', processErrorHandlers.unhandledRejection);
+process.on('uncaughtException', processErrorHandlers.uncaughtException);
 
 const MEDIA_GC_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 

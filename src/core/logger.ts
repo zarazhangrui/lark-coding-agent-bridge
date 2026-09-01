@@ -1,5 +1,5 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
-import { createWriteStream, mkdirSync, type WriteStream } from 'node:fs';
+import { createWriteStream, mkdirSync, statSync, type WriteStream } from 'node:fs';
 import { open, readdir, rm, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { telemetry } from './telemetry';
@@ -7,6 +7,8 @@ import { telemetry } from './telemetry';
 export interface LoggerOptions {
   logsDir?: string;
   retentionDays: number;
+  /** Hard ceiling for one profile's daily JSONL file. */
+  maxFileBytes: number;
   now: () => Date;
 }
 
@@ -14,9 +16,16 @@ const DEFAULT_RETENTION_DAYS = Math.max(
   1,
   Number(process.env.LARK_CHANNEL_LOG_DAYS ?? 30) || 30,
 );
+const DEFAULT_MAX_FILE_BYTES = (() => {
+  const configured = Number(process.env.LARK_CHANNEL_LOG_MAX_BYTES);
+  return Number.isFinite(configured) && configured > 0
+    ? Math.max(1024 * 1024, Math.floor(configured))
+    : 128 * 1024 * 1024;
+})();
 
 let loggerOptions: LoggerOptions = {
   retentionDays: DEFAULT_RETENTION_DAYS,
+  maxFileBytes: DEFAULT_MAX_FILE_BYTES,
   now: () => new Date(),
 };
 
@@ -66,6 +75,10 @@ const als = new AsyncLocalStorage<LogContext>();
 
 let stream: WriteStream | null = null;
 let currentDate = '';
+let currentBytes = 0;
+let streamBackpressured = false;
+let fileSinkDisabledDate = '';
+let consoleSinkDisabled = false;
 
 function todayKey(): string {
   return formatLocalDateKey(loggerOptions.now());
@@ -83,21 +96,59 @@ function getStream(): WriteStream | null {
   const dir = logsDir();
   if (!dir) return null;
   const today = todayKey();
-  if (stream && currentDate === today) return stream;
-  if (stream) {
-    try {
-      stream.end();
-    } catch {
-      /* noop */
+  if (currentDate !== today) {
+    if (stream) {
+      try {
+        stream.end();
+      } catch {
+        /* noop */
+      }
+      stream = null;
     }
+    streamBackpressured = false;
+    currentBytes = 0;
+    fileSinkDisabledDate = '';
+    currentDate = today;
   }
+  if (fileSinkDisabledDate === today) return null;
+  if (stream) return stream;
   try {
     mkdirSync(dir, { recursive: true });
-    stream = createWriteStream(join(dir, logFileName(today)), { flags: 'a' });
-    currentDate = today;
-    return stream;
+    const path = join(dir, logFileName(today));
+    try {
+      currentBytes = statSync(path).size;
+    } catch {
+      currentBytes = 0;
+    }
+    if (currentBytes >= loggerOptions.maxFileBytes) {
+      fileSinkDisabledDate = today;
+      return null;
+    }
+    const next = createWriteStream(path, { flags: 'a' });
+    stream = next;
+    next.on('error', () => {
+      // A WriteStream reports open/write failures asynchronously. Never leave
+      // an unhandled `error` event capable of reaching the process-level fatal
+      // handler, and do not spin reopening the same broken sink on every log.
+      if (stream === next) {
+        streamBackpressured = false;
+        fileSinkDisabledDate = today;
+      }
+    });
+    return next;
   } catch {
+    fileSinkDisabledDate = today;
     return null;
+  }
+}
+
+function disableFileSink(target: WriteStream, date: string): void {
+  streamBackpressured = false;
+  fileSinkDisabledDate = date;
+  try {
+    target.end();
+  } catch {
+    /* logging failures must never affect runtime behavior */
   }
 }
 
@@ -253,11 +304,26 @@ function emit(level: Level, phase: string, event: string, fields: LogFields = {}
   const externalEntry = sanitizeLogEntry(entry, EXTERNAL_SANITIZE);
   const telemetrySafe = telemetryPayloadFromEntry(externalEntry);
   const s = getStream();
-  if (s) {
-    try {
-      s.write(`${JSON.stringify(entry)}\n`);
-    } catch {
-      /* swallow disk errors — logging should never crash the bot */
+  if (s && !streamBackpressured) {
+    const payload = `${JSON.stringify(entry)}\n`;
+    const payloadBytes = Buffer.byteLength(payload);
+    const date = currentDate;
+    if (currentBytes + payloadBytes > loggerOptions.maxFileBytes) {
+      disableFileSink(s, date);
+    } else {
+      try {
+        currentBytes += payloadBytes;
+        if (!s.write(payload)) {
+          // WriteStream otherwise accepts an unbounded number of queued writes.
+          // Drop subsequent file entries until the kernel/file sink catches up.
+          streamBackpressured = true;
+          s.once('drain', () => {
+            if (stream === s) streamBackpressured = false;
+          });
+        }
+      } catch {
+        disableFileSink(s, date);
+      }
     }
   }
 
@@ -294,7 +360,15 @@ function emit(level: Level, phase: string, event: string, fields: LogFields = {}
   if (!showOnStdout) return;
 
   const fn = level === 'error' ? console.error : level === 'warn' ? console.warn : console.log;
-  fn(formatStdout(level, phase, event, telemetrySafe.ctx, telemetrySafe.fields));
+  if (consoleSinkDisabled) return;
+  try {
+    fn(formatStdout(level, phase, event, telemetrySafe.ctx, telemetrySafe.fields));
+  } catch {
+    // A detached terminal/PTY can make console.error throw EIO/EPIPE. Disable
+    // the human sink after its first failure so logging cannot recursively
+    // trigger the process-level uncaughtException handler.
+    consoleSinkDisabled = true;
+  }
 }
 
 function telemetryPayloadFromEntry(entry: Record<string, unknown>): {
@@ -490,9 +564,14 @@ export function configureLogger(opts: Partial<LoggerOptions>): void {
   }
   stream = null;
   currentDate = '';
+  currentBytes = 0;
+  streamBackpressured = false;
+  fileSinkDisabledDate = '';
+  consoleSinkDisabled = false;
   loggerOptions = {
     ...(opts.logsDir !== undefined ? { logsDir: opts.logsDir } : { logsDir: loggerOptions.logsDir }),
     retentionDays: Math.max(1, opts.retentionDays ?? loggerOptions.retentionDays),
+    maxFileBytes: Math.max(1, opts.maxFileBytes ?? loggerOptions.maxFileBytes),
     now: opts.now ?? loggerOptions.now,
   };
 }
@@ -502,6 +581,9 @@ export async function closeLogger(): Promise<void> {
   if (!s) return;
   stream = null;
   currentDate = '';
+  currentBytes = 0;
+  streamBackpressured = false;
+  fileSinkDisabledDate = '';
   await new Promise<void>((resolve) => {
     let settled = false;
     const done = (): void => {
@@ -524,9 +606,20 @@ export function getLoggerConfig(): LoggerOptions {
 
 export async function flushLogger(): Promise<void> {
   const s = stream;
-  if (!s) return;
+  if (!s || s.closed || s.destroyed) return;
   await new Promise<void>((resolve) => {
-    s.write('', () => resolve());
+    let settled = false;
+    const done = (): void => {
+      if (settled) return;
+      settled = true;
+      resolve();
+    };
+    s.once('error', done);
+    try {
+      s.write('', done);
+    } catch {
+      done();
+    }
   });
 }
 

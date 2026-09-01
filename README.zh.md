@@ -234,7 +234,7 @@ bridge 会检查所选目录存在、是目录，并且不是 `/`、Home 根、�
 | `~/.lark-channel/registry/processes.json` | 本机进程注册表 |
 | `~/.lark-channel/registry/locks/` | profile lock 和 app lock |
 
-设置 `LARK_CHANNEL_HOME=/path/to/state` 可以迁移整棵本地状态目录。`LARK_CHANNEL_LOG_DAYS` 可以调整日志保留天数。
+设置 `LARK_CHANNEL_HOME=/path/to/state` 可以迁移整棵本地状态目录。`LARK_CHANNEL_LOG_DAYS` 可以调整日志保留天数。结构化日志默认按日最多写入 128 MiB；可通过 `LARK_CHANNEL_LOG_MAX_BYTES` 调整字节上限（低于 1 MiB 的值会提升为 1 MiB）。
 
 ## 访问控制
 

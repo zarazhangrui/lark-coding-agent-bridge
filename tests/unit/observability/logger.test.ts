@@ -1,4 +1,4 @@
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -20,6 +20,7 @@ const cleanups: Array<() => Promise<void>> = [];
 describe('profile logger observability', () => {
   afterEach(async () => {
     await closeLogger();
+    configureLogger({ maxFileBytes: 128 * 1024 * 1024 });
     await Promise.all(cleanups.splice(0).map((cleanup) => cleanup()));
   });
 
@@ -46,6 +47,59 @@ describe('profile logger observability', () => {
       agent: 'claude',
     });
     expect(JSON.parse(text.trim()).ts).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}[+-]\d{2}:\d{2}$/);
+  });
+
+  it('disables terminal output after console.error throws without breaking file logging', async () => {
+    const tmp = await createTmpProfile('logger-console-eio-');
+    cleanups.push(tmp.cleanup);
+    const logsDir = join(tmp.profile, 'logs');
+    configureLogger({
+      logsDir,
+      now: () => new Date('2026-05-25T12:34:56.000Z'),
+    });
+    const eio = Object.assign(new Error('write EIO'), { code: 'EIO' });
+    const stderr = vi.spyOn(console, 'error').mockImplementation(() => {
+      throw eio;
+    });
+
+    expect(() => log.fail('process', eio, { kind: 'uncaughtException' })).not.toThrow();
+    expect(() => log.fail('process', eio, { kind: 'uncaughtException' })).not.toThrow();
+    await flushLogger();
+
+    expect(stderr).toHaveBeenCalledTimes(1);
+    const lines = (await readFile(join(logsDir, 'bridge-20260525.jsonl'), 'utf8'))
+      .trim()
+      .split('\n');
+    expect(lines).toHaveLength(2);
+    expect(lines.map((line) => JSON.parse(line))).toEqual([
+      expect.objectContaining({ err: 'write EIO', kind: 'uncaughtException' }),
+      expect.objectContaining({ err: 'write EIO', kind: 'uncaughtException' }),
+    ]);
+    stderr.mockRestore();
+  });
+
+  it('hard-caps a daily JSONL file', async () => {
+    const tmp = await createTmpProfile('logger-size-cap-');
+    cleanups.push(tmp.cleanup);
+    const logsDir = join(tmp.profile, 'logs');
+    const path = join(logsDir, 'bridge-20260525.jsonl');
+    configureLogger({
+      logsDir,
+      maxFileBytes: 600,
+      now: () => new Date('2026-05-25T12:34:56.000Z'),
+    });
+
+    for (let i = 0; i < 100; i++) {
+      log.info('test', 'bounded', { i, value: 'x'.repeat(80) });
+    }
+    await closeLogger();
+
+    const size = (await stat(path)).size;
+    expect(size).toBeGreaterThan(0);
+    expect(size).toBeLessThanOrEqual(600);
+    const lines = (await readFile(path, 'utf8')).trim().split('\n');
+    expect(lines.length).toBeLessThan(100);
+    expect(lines.every((line) => JSON.parse(line).event === 'bounded')).toBe(true);
   });
 
   it('prints topic scope, message id, run, COT, outbound, and fallback context on stdout', () => {

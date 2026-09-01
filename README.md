@@ -234,7 +234,7 @@ The legacy `sandbox` field is still readable for old configs. After the bridge s
 | `~/.lark-channel/registry/processes.json` | Local process registry |
 | `~/.lark-channel/registry/locks/` | Profile and app locks |
 
-Set `LARK_CHANNEL_HOME=/path/to/state` to move all local bridge state. `LARK_CHANNEL_LOG_DAYS` overrides log retention.
+Set `LARK_CHANNEL_HOME=/path/to/state` to move all local bridge state. `LARK_CHANNEL_LOG_DAYS` overrides log retention. Each daily structured log is hard-capped at 128 MiB by default; set `LARK_CHANNEL_LOG_MAX_BYTES` to override the byte limit (values below 1 MiB are raised to 1 MiB).
 
 ## Access control
 
