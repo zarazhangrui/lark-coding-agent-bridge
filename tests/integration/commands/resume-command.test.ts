@@ -1,3 +1,4 @@
+import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { CardActionEvent, NormalizedMessage } from '@larksuite/channel';
@@ -264,6 +265,86 @@ describe('agent-aware resume commands', () => {
 
     expect(lastMarkdown(h.channel)).toContain('请先使用 /cd');
   });
+
+  it('formats all discoverable Codex sessions with directory details', async () => {
+    const h = await createHarness('codex');
+    h.codexHistory.push(
+      codexThread('thread-alpha', '用于验证全量会话列表的标题会被截断而不是使用相对时间', 1_700_000_100_000, '/projects/alpha/service'),
+      codexThread('thread-beta', 'beta prompt', 1_700_000_000_000, '/projects/beta/service'),
+    );
+
+    await expect(h.run('/sessions all')).resolves.toBe(true);
+
+    const output = lastMarkdown(h.channel);
+    expect(output).toContain('**Codex 会话**');
+    expect(output).toContain('范围: 全部可发现');
+    expect(output).toContain('最近活跃: `2023-11-15 06:');
+    expect(output).toContain('状态: 未知（not loaded）');
+    expect(output).toContain('工作目录: `/projects/alpha/service`');
+    expect(output).toContain('发送 `/sessions all next` / `/sessions all prev` 翻页；发送 `/use` 进入切换选择。');
+  });
+
+  it('lists only the current working directory in /resume-cx', async () => {
+    const h = await createHarness('codex');
+    const targetCwd = join(h.tmp.profile, 'target-workspace');
+    await mkdir(targetCwd);
+    h.codexHistory.push(
+      codexThread('thread-current', 'current prompt', 1_700_000_100_000, h.tmp.workspace),
+      codexThread('thread-target', 'target prompt', 1_700_000_000_000, targetCwd),
+    );
+    h.catalog.upsertActive({ ...h.identity, threadId: 'thread-current', now: 1000 });
+
+    await expect(h.run('/resume-cx')).resolves.toBe(true);
+    expect(lastMarkdown(h.channel)).toContain('**切换 Codex 会话**');
+    expect(lastMarkdown(h.channel)).toContain('范围: 可切换会话');
+    expect(lastMarkdown(h.channel)).toContain('thread-current');
+    expect(lastMarkdown(h.channel)).not.toContain('thread-target');
+
+    await expect(h.run('1')).resolves.toBe(true);
+
+    expect(h.catalog.entries().some((entry) =>
+      entry.threadId === 'thread-current'
+      && entry.status === 'active'
+      && entry.cwdRealpath.endsWith('/workspace'),
+    )).toBe(true);
+    expect(h.workspaces.cwdFor('chat-1')).toMatch(/\/workspace$/);
+    expect(lastMarkdown(h.channel)).toContain('已完成');
+  });
+
+  it('accepts a session number directly through /use', async () => {
+    const h = await createHarness('codex');
+    h.codexHistory.push(codexThread('thread-target', 'target prompt', 1_700_000_000_000, h.tmp.workspace));
+
+    await expect(h.run('/use 1')).resolves.toBe(true);
+
+    expect(h.catalog.activeFor(h.identity)).toMatchObject({
+      threadId: 'thread-target',
+    });
+  });
+
+  it('browses Codex sessions by working directory before switching', async () => {
+    const h = await createHarness('codex');
+    const alphaCwd = join(h.tmp.profile, 'alpha-workspace');
+    const betaCwd = join(h.tmp.profile, 'beta-workspace');
+    await Promise.all([mkdir(alphaCwd), mkdir(betaCwd)]);
+    h.codexHistory.push(
+      codexThread('thread-alpha', 'alpha prompt', 1_700_000_100_000, alphaCwd),
+      codexThread('thread-beta', 'beta prompt', 1_700_000_000_000, betaCwd),
+    );
+
+    await expect(h.run('/sessions cwd')).resolves.toBe(true);
+    expect(lastMarkdown(h.channel)).toContain('**Codex 会话目录**');
+    expect(lastMarkdown(h.channel)).toContain('目录数: `2`');
+    expect(lastMarkdown(h.channel)).toContain('可切换: `1`');
+
+    await expect(h.run('1')).resolves.toBe(true);
+    expect(lastMarkdown(h.channel)).toContain('**目录下 Codex 会话**');
+    expect(lastMarkdown(h.channel)).toContain('范围: 工作目录 `.../profile/alpha-workspace`');
+
+    await expect(h.run('1')).resolves.toBe(true);
+    expect(h.workspaces.cwdFor('chat-1')).toMatch(/\/alpha-workspace$/);
+    expect(lastMarkdown(h.channel)).toContain('已完成');
+  });
 });
 
 async function createHarness(
@@ -488,12 +569,13 @@ function codexThread(
   threadId: string,
   preview: string,
   updatedAtMs: number,
+  cwd = '/tmp/workspace',
 ): CodexThreadHistoryEntry {
   return {
     threadId,
     sessionId: threadId,
     preview,
-    cwd: '/tmp/workspace',
+    cwd,
     createdAtMs: updatedAtMs - 1000,
     updatedAtMs,
     source: 'exec',
