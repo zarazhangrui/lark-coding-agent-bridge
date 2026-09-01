@@ -90,7 +90,7 @@ export interface AppAccess {
 }
 
 export interface AppPreferences {
-  /** Reply rendering mode for IM (group/p2p) messages. Default 'card'. */
+  /** Reply rendering mode for IM (group/p2p) messages. Default 'markdown'. */
   messageReply?: MessageReplyMode;
   /**
    * Internal marker: pre-0.1.27 the value `'text'` meant "lightweight

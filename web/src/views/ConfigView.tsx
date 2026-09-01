@@ -146,9 +146,9 @@ export function ConfigView({ profile }: { profile: string }) {
             <SelectRow value={cfg.model} onChange={(v) => set("model", v)}
               options={cfg.models.map((m) => [m.value, m.label])} />
           </Field>
-          <Field label="消息回复方式">
+          <Field label="消息回复方式" hint="交互卡片支持工具面板和停止按钮；消息卡片使用轻量流式 markdown。">
             <SelectRow value={cfg.messageReply} onChange={(v) => set("messageReply", v as ConfigData["messageReply"])}
-              options={[["markdown", "消息卡片（默认）"], ["text", "纯文本"]]} />
+              options={[["markdown", "消息卡片（默认）"], ["card", "交互卡片"], ["text", "纯文本"]]} />
           </Field>
           <ToggleRow label="工具调用显示" hint="显示 bot 执行的命令与文件读写过程" checked={cfg.showToolCalls}
             onChange={(v) => set("showToolCalls", v)} />

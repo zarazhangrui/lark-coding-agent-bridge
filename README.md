@@ -165,7 +165,7 @@ DMs do not require an @ mention. Groups and topic groups require `@bot` by defau
 
 `/config` controls three presentation settings:
 
-- **Message reply mode**: `message card` streams the final reply; `plain text` sends once after the run finishes.
+- **Message reply mode**: `interactive card` streams a full card with tool panels and stop controls; `message card` streams lightweight markdown; `plain text` sends once after the run finishes.
 - **Tool-call display**: controls whether tool blocks appear in the final card / markdown reply.
 - **COT process message**: `off` sends only the final reply; `brief` first sends a COT message with agent progress text and tool summaries; `detailed` also includes tool args and truncated output.
 

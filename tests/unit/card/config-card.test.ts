@@ -31,3 +31,14 @@ describe('configFormCard console URL', () => {
     expect(JSON.stringify(card)).not.toContain('Web 控制台');
   });
 });
+
+describe('configFormCard message reply mode', () => {
+  it('offers interactive cards and preserves the current card selection', () => {
+    const card = JSON.stringify(configFormCard({ ...base, messageReply: 'card' }));
+
+    expect(card).toContain('"name":"message_reply"');
+    expect(card).toContain('"initial_option":"card"');
+    expect(card).toContain('"content":"交互卡片"');
+    expect(card).toContain('"value":"card"');
+  });
+});
