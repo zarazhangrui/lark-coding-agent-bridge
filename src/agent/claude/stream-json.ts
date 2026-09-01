@@ -15,6 +15,8 @@ interface ContentBlock {
 interface ClaudeRawEvent {
   type?: string;
   subtype?: string;
+  /** Parent tool ID for nested messages; null on top-level messages. */
+  parent_tool_use_id?: string | null;
   session_id?: string;
   cwd?: string;
   model?: string;
@@ -30,6 +32,9 @@ interface ClaudeRawEvent {
 export function* translateEvent(raw: unknown): Generator<AgentEvent> {
   if (!raw || typeof raw !== 'object') return;
   const evt = raw as ClaudeRawEvent;
+
+  // Nested assistant/user messages are internal and must not reach Lark.
+  if (isNestedMessage(evt)) return;
 
   if (evt.type === 'system' && evt.subtype === 'init') {
     yield {
@@ -82,4 +87,11 @@ export function* translateEvent(raw: unknown): Generator<AgentEvent> {
     }
     yield { type: 'done', sessionId: evt.session_id, terminationReason: 'normal' };
   }
+}
+
+function isNestedMessage(evt: ClaudeRawEvent): boolean {
+  return (
+    (evt.type === 'assistant' || evt.type === 'user') &&
+    typeof evt.parent_tool_use_id === 'string'
+  );
 }
