@@ -37,6 +37,23 @@ export function renderText(state: RunState): string {
   return maskEmails(parts.join('\n\n'));
 }
 
+/**
+ * Render only the tool-call progress of a run (tool lines + running footer),
+ * excluding text blocks. Used for the claude markdown progress stream: the
+ * stream shows what the agent is doing, while the final answer is delivered
+ * as a dedicated reply so it never depends on stream update success.
+ */
+export function renderToolProgress(state: RunState): string {
+  const parts: string[] = [];
+  for (const block of state.blocks) {
+    if (block.kind === 'tool') parts.push(toolLine(block.tool));
+  }
+  if (state.terminal === 'running' && state.footer) {
+    parts.push(footerLine(state.footer));
+  }
+  return maskEmails(parts.join('\n\n'));
+}
+
 function renderBlock(block: Block): string {
   if (block.kind === 'text') {
     return block.content.trim();

@@ -124,8 +124,10 @@ describe('topic message quote handling', () => {
     expect(prompt).toContain('"threadId":"omt_converted_topic"');
     expect(prompt).not.toContain('<quoted_messages>');
     expect(h.channel.fetchRawMessage).not.toHaveBeenCalled();
-    await waitFor(() => h.channel.streams.length === 1);
-    expect(h.channel.streams[0]?.options).toMatchObject({
+    // Claude's markdown stream renders tool progress only; a text-only reply
+    // goes out directly, so the thread options land on the sent message.
+    await waitFor(() => h.channel.sent.length === 1);
+    expect(h.channel.sent[0]?.options).toMatchObject({
       replyTo: 'om_converted_topic',
       replyInThread: true,
     });
@@ -162,8 +164,8 @@ describe('topic message quote handling', () => {
     const prompt = h.agent.runOptions[0]?.prompt ?? '';
     expect(prompt).toContain('"threadId":"omt_backfilled"');
 
-    await waitFor(() => h.channel.streams.length === 1);
-    expect(h.channel.streams[0]?.options).toMatchObject({
+    await waitFor(() => h.channel.sent.length === 1);
+    expect(h.channel.sent[0]?.options).toMatchObject({
       replyTo: 'om_topic_start',
       replyInThread: true,
     });
@@ -193,8 +195,8 @@ describe('topic message quote handling', () => {
     await waitFor(() => h.agent.runOptions.length === 1);
 
     expect(h.channel.fetchRawMessage).toHaveBeenCalledWith('om_no_thread');
-    await waitFor(() => h.channel.streams.length === 1);
-    expect(h.channel.streams[0]?.options).not.toMatchObject({ replyInThread: true });
+    await waitFor(() => h.channel.sent.length === 1);
+    expect(h.channel.sent[0]?.options).not.toMatchObject({ replyInThread: true });
   });
 
   it('pulls in the topic upstream messages when first engaged in a topic', async () => {
@@ -328,8 +330,9 @@ describe('topic message quote handling', () => {
     await h.channel.handlers.message?.(
       message({ messageId: 'om_real', rootId: 'om_real', parentId: 'om_real', content: '@Bridge 问题' }),
     );
-    await waitFor(() => h.channel.streams.length === 1);
-    // give any (erroneous) recall a chance to fire before asserting it didn't
+    // A text-only claude reply opens no progress stream; the answer is sent
+    // directly. Give any (erroneous) recall a chance to fire before asserting.
+    await waitFor(() => h.channel.sent.length === 1);
     await new Promise((resolve) => setTimeout(resolve, 60));
 
     expect(h.channel.recallMessage).not.toHaveBeenCalled();
