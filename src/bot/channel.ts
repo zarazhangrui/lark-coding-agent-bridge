@@ -271,6 +271,7 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
 
   const channel = createLarkChannel(opts);
   const media = new MediaCache(channel, deps.appPaths?.mediaDir);
+  const workingReactions = new Map<string, Promise<string | undefined>>();
 
   // Pending → run handoff: while a run is active on a chat, block its pending
   // queue so messages keep accumulating without flushing. When the run ends,
@@ -323,6 +324,7 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
       } catch (err) {
         log.fail('flush', err);
       } finally {
+        scheduleBatchWorkingReactionCleanup(channel, batch, workingReactions);
         pending.unblock(scope);
         log.info('flush', 'end');
       }
@@ -349,6 +351,7 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
           logThreadModeOverride,
           executor,
           pool,
+          workingReactions,
         }),
       ).catch((err) => log.fail('intake', err));
     },
@@ -625,6 +628,7 @@ interface IntakeDeps {
   logThreadModeOverride: LogThreadModeOverride;
   executor: RunExecutor;
   pool: ProcessPool;
+  workingReactions: Map<string, Promise<string | undefined>>;
 }
 
 type LogThreadModeOverride = (input: {
@@ -648,6 +652,7 @@ async function intakeMessage(deps: IntakeDeps): Promise<void> {
     logThreadModeOverride,
     executor,
     pool,
+    workingReactions,
   } = deps;
   const preview = msg.content.length > 80 ? `${msg.content.slice(0, 80)}…` : msg.content;
   // Resolve scope (and underlying chat mode) once at intake — every
@@ -702,6 +707,11 @@ async function intakeMessage(deps: IntakeDeps): Promise<void> {
     resources: msg.resources.length,
   });
 
+  const mentionedBot = messageMentionsBot(emsg, channel.botIdentity);
+  if (mentionedBot && !emsg.mentionedBot) {
+    log.info('intake', 'mention-recovered', { scope, msgId: emsg.messageId });
+  }
+
   const accessDecision =
     msg.chatType === 'p2p'
       ? canUseDm(controls.profileConfig, controls, msg.senderId)
@@ -712,7 +722,7 @@ async function intakeMessage(deps: IntakeDeps): Promise<void> {
       sender: msg.senderId.slice(-6),
       reason: accessDecision.reason,
     });
-    if (msg.chatType !== 'p2p' && accessDecision.reason === 'denied-chat' && msg.mentionedBot) {
+    if (msg.chatType !== 'p2p' && accessDecision.reason === 'denied-chat' && mentionedBot) {
       void sendNonAllowedGroupHint(channel, msg.chatId, msg.messageId).catch((err) =>
         log.warn('intake', 'non-allowed-hint-failed', { err: String(err) }),
       );
@@ -732,7 +742,7 @@ async function intakeMessage(deps: IntakeDeps): Promise<void> {
   if (
     msg.chatType !== 'p2p' &&
     requireMentionForChat(controls.profileConfig, controls.cfg, msg.chatId) &&
-    !msg.mentionedBot
+    !mentionedBot
   ) {
     log.info('intake', 'skip-no-mention', { scope, chatType: msg.chatType });
     return;
@@ -779,12 +789,28 @@ async function intakeMessage(deps: IntakeDeps): Promise<void> {
   });
   if (handled) {
     const dropped = pending.cancel(scope);
+    scheduleBatchWorkingReactionCleanup(channel, dropped, workingReactions);
     log.info('intake', 'command', { scope, droppedPending: dropped.length });
     return;
   }
 
+  if (!workingReactions.has(emsg.messageId)) {
+    workingReactions.set(emsg.messageId, addWorkingReaction(channel, emsg.messageId));
+  }
   const size = pending.push(scope, emsg);
   log.info('intake', 'queued', { scope, queueSize: size, debounceMs: DEBOUNCE_MS });
+}
+
+function messageMentionsBot(
+  msg: NormalizedMessage,
+  botIdentity: LarkChannel['botIdentity'],
+): boolean {
+  if (msg.mentionedBot) return true;
+  return (msg.mentions ?? []).some(
+    (mention) =>
+      Boolean(botIdentity?.openId && mention.openId === botIdentity.openId) ||
+      Boolean(botIdentity?.userId && mention.userId === botIdentity.userId),
+  );
 }
 
 interface RunBatchDeps {
@@ -1066,13 +1092,6 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
       }
     : {};
 
-  // For non-card modes Claude's output doesn't surface visually until either
-  // a first streamed token (markdown mode) or the whole run ends (text mode).
-  // Add a "Typing" reaction to the triggering message as an instant ack, but
-  // never let that outbound API call block agent event draining.
-  const reactionPromise =
-    cotEnabled || replyMode === 'card' ? undefined : addWorkingReaction(channel, lastMsg.messageId);
-
   try {
     if (cotEnabled) {
       const cotPublisher = new CotPublisher({
@@ -1286,7 +1305,6 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
     log.fail('stream', err);
   } finally {
     activePolicyFingerprints.delete(scope);
-    scheduleWorkingReactionCleanup(channel, lastMsg.messageId, reactionPromise);
   }
 }
 
@@ -1794,6 +1812,18 @@ function scheduleWorkingReactionCleanup(
     if (!settled.ok || !settled.reactionId) return;
     await removeReaction(channel, messageId, settled.reactionId);
   })();
+}
+
+function scheduleBatchWorkingReactionCleanup(
+  channel: LarkChannel,
+  batch: NormalizedMessage[],
+  workingReactions: Map<string, Promise<string | undefined>>,
+): void {
+  for (const msg of batch) {
+    const reactionPromise = workingReactions.get(msg.messageId);
+    workingReactions.delete(msg.messageId);
+    scheduleWorkingReactionCleanup(channel, msg.messageId, reactionPromise);
+  }
 }
 
 function delay(ms: number): Promise<void> {

@@ -16,7 +16,12 @@ import {
   type WorkingDirectoryResolveResult,
 } from '../policy/workspace';
 import type { RunExecution, RunExecutor } from '../runtime/run-executor';
-import { RunRejected, type RunRejectedCode } from '../runtime/errors';
+import {
+  RunRejected,
+  SpawnFailed,
+  type RunRejectedCode,
+  type SpawnFailedCode,
+} from '../runtime/errors';
 import type { SessionCatalog } from '../session/catalog';
 import type { SessionStore } from '../session/store';
 import type { WorkspaceStore } from '../workspace/store';
@@ -46,7 +51,11 @@ export interface StartRunFlowInput {
 export type RunFlowRejectCode =
   | WorkingDirectoryRejectReason
   | RunPolicyReject['rejectReason']['code']
-  | RunRejectedCode;
+  | RunRejectedCode
+  | SpawnFailedCode;
+
+export const RUN_START_FAILED_MESSAGE =
+  '任务启动失败，请稍后重试。如果问题持续，请联系管理员检查 Agent 配置。';
 
 export type StartRunFlowResult =
   | {
@@ -159,6 +168,16 @@ export async function startRunFlow(input: StartRunFlowInput): Promise<StartRunFl
       observability: input.observability,
     });
   } catch (err) {
+    if (err instanceof SpawnFailed) {
+      return {
+        ok: false,
+        rejectReason: {
+          code: err.code,
+          userVisible: RUN_START_FAILED_MESSAGE,
+        },
+        workspace,
+      };
+    }
     if (err instanceof RunRejected) {
       return {
         ok: false,
