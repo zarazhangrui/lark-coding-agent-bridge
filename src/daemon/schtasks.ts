@@ -8,6 +8,7 @@ import {
   daemonStdoutPath,
   windowsTaskName,
   windowsLauncherCmdPath,
+  windowsLauncherVbsPath,
 } from './paths';
 import { paths } from '../config/paths';
 
@@ -71,6 +72,29 @@ async function writeLauncherCmd(profile: string, runArgs: string[] = ['run']): P
   await writeFile(cmdPath, content, 'utf8');
 }
 
+/**
+ * Generate a VBS wrapper that runs the launcher .cmd with a hidden
+ * console window (intWindowStyle = 0). bWaitOnReturn = True so the
+ * wscript process stays alive until the daemon exits, letting Task
+ * Scheduler track the task as Running and kill the full process tree
+ * on /End.
+ */
+export function buildLauncherVbs(cmdPath: string): string {
+  // VBS string escaping: double every embedded double-quote.
+  const escaped = cmdPath.replace(/"/g, '""');
+  return [
+    `CreateObject("WScript.Shell").Run "cmd /c ""${escaped}""", 0, True`,
+    '',
+  ].join('\r\n');
+}
+
+async function writeLauncherVbs(profile: string): Promise<void> {
+  const content = buildLauncherVbs(windowsLauncherCmdPath(profile));
+  const vbsPath = windowsLauncherVbsPath(profile);
+  await mkdir(dirname(vbsPath), { recursive: true });
+  await writeFile(vbsPath, content, 'utf8');
+}
+
 interface SchtasksResult {
   ok: boolean;
   stderr: string;
@@ -78,7 +102,17 @@ interface SchtasksResult {
 }
 
 function runSchtasks(args: string[]): SchtasksResult {
-  const r = spawnSync('schtasks', args, { encoding: 'utf8' });
+  // Force UTF-8 codepage so schtasks emits English field names regardless
+  // of the system's OEM codepage. On CJK Windows (e.g. cp936/GBK) the
+  // default output is localized, and Node decoding it as UTF-8 produces
+  // garbage that breaks regexes like /Status:\s+Running/.
+  // Using shell:'cmd.exe' lets Node handle the /d /s /c quoting so the
+  // && chain and >nul redirection work correctly even when args contain
+  // embedded double-quotes (e.g. the /TR path in installTask).
+  const r = spawnSync(`chcp 65001 >nul && schtasks ${args.join(' ')}`, {
+    encoding: 'utf8',
+    shell: 'cmd.exe',
+  });
   return {
     ok: r.status === 0,
     stderr: r.stderr ?? '',
@@ -99,6 +133,7 @@ export async function installTask(
   runArgs: string[] = ['run'],
 ): Promise<SchtasksResult> {
   await writeLauncherCmd(profile, runArgs);
+  await writeLauncherVbs(profile);
   return runSchtasks([
     '/Create',
     '/F',
@@ -109,7 +144,7 @@ export async function installTask(
     '/TN',
     windowsTaskName(profile),
     '/TR',
-    `"${windowsLauncherCmdPath(profile)}"`,
+    `"${windowsLauncherVbsPath(profile)}"`,
   ]);
 }
 
@@ -189,9 +224,12 @@ export async function waitUntilStopped(profile: string, timeoutMs = 5000): Promi
 
 export async function deleteTask(profile: string): Promise<SchtasksResult> {
   const r = runSchtasks(['/Delete', '/F', '/TN', windowsTaskName(profile)]);
-  // Remove the launcher script too; best-effort.
+  // Remove the launcher scripts too; best-effort.
   if (existsSync(windowsLauncherCmdPath(profile))) {
     await rm(windowsLauncherCmdPath(profile), { force: true });
+  }
+  if (existsSync(windowsLauncherVbsPath(profile))) {
+    await rm(windowsLauncherVbsPath(profile), { force: true });
   }
   return r;
 }
