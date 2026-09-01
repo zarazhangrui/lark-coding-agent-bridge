@@ -84,4 +84,56 @@ describe('Claude local session history', () => {
 
     expect(sessions[0]?.preview).toBe('真实用户问题 第二行');
   });
+
+  it('prefers the conversation title over the first user message', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'claude-history-home-'));
+    cleanup.push(home);
+    vi.doMock('node:os', async () => {
+      const actual = await vi.importActual<typeof import('node:os')>('node:os');
+      return { ...actual, homedir: () => home };
+    });
+    const { listRecentSessions } = await import('../../../src/session/history.js');
+
+    const cwd = '/repo';
+    const projectDir = join(home, '.claude', 'projects', '-repo');
+    await mkdir(projectDir, { recursive: true });
+    await writeFile(
+      join(projectDir, 'session-a.jsonl'),
+      `${[
+        JSON.stringify({ type: 'user', message: { content: 'OK read and understand my wiki' } }),
+        JSON.stringify({ type: 'ai-title', aiTitle: 'Automated Content Pipeline' }),
+        JSON.stringify({ type: 'custom-title', customTitle: 'My Pipeline' }),
+      ].join('\n')}\n`,
+      'utf8',
+    );
+
+    const sessions = await listRecentSessions(cwd, 5);
+    // custom-title beats ai-title beats the first user message.
+    expect(sessions[0]?.preview).toBe('My Pipeline');
+  });
+
+  it('falls back to ai-title when there is no custom-title', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'claude-history-home-'));
+    cleanup.push(home);
+    vi.doMock('node:os', async () => {
+      const actual = await vi.importActual<typeof import('node:os')>('node:os');
+      return { ...actual, homedir: () => home };
+    });
+    const { listRecentSessions } = await import('../../../src/session/history.js');
+
+    const cwd = '/repo';
+    const projectDir = join(home, '.claude', 'projects', '-repo');
+    await mkdir(projectDir, { recursive: true });
+    await writeFile(
+      join(projectDir, 'session-a.jsonl'),
+      `${[
+        JSON.stringify({ type: 'user', message: { content: 'first message' } }),
+        JSON.stringify({ type: 'ai-title', aiTitle: 'Retrieve attendance data using lark CLI' }),
+      ].join('\n')}\n`,
+      'utf8',
+    );
+
+    const sessions = await listRecentSessions(cwd, 5);
+    expect(sessions[0]?.preview).toBe('Retrieve attendance data using lark CLI');
+  });
 });
