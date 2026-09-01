@@ -386,6 +386,32 @@ describe('topic message quote handling', () => {
     );
   });
 
+  it('treats an empty @ with a reply quote as a request about the quoted message', async () => {
+    const h = await createHarness({
+      chatMode: 'group',
+      quotedMessages: {
+        om_quote_target: '应用业务告警：需要补偿处理',
+      },
+    });
+
+    await startTestBridge(h);
+
+    await h.channel.handlers.message?.(
+      message({
+        messageId: 'om_group_empty_at',
+        rootId: 'om_quote_target',
+        parentId: 'om_quote_target',
+        content: '',
+      }),
+    );
+    await waitFor(() => h.agent.runOptions.length === 1);
+
+    const prompt = h.agent.runOptions[0]?.prompt ?? '';
+    expect(prompt).toContain('应用业务告警：需要补偿处理');
+    expect(prompt).toContain('请根据其引用的消息识别并处理请求');
+    expect(prompt).not.toContain('通常是只 @ 了你的唤醒（ping）');
+  });
+
   it('keeps non-root reply quotes in topic chats', async () => {
     const h = await createHarness({
       quotedMessages: {
