@@ -349,6 +349,7 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
           logThreadModeOverride,
           executor,
           pool,
+          callbackAuth,
         }),
       ).catch((err) => log.fail('intake', err));
     },
@@ -625,6 +626,7 @@ interface IntakeDeps {
   logThreadModeOverride: LogThreadModeOverride;
   executor: RunExecutor;
   pool: ProcessPool;
+  callbackAuth?: CallbackAuth;
 }
 
 type LogThreadModeOverride = (input: {
@@ -648,6 +650,7 @@ async function intakeMessage(deps: IntakeDeps): Promise<void> {
     logThreadModeOverride,
     executor,
     pool,
+    callbackAuth,
   } = deps;
   const preview = msg.content.length > 80 ? `${msg.content.slice(0, 80)}…` : msg.content;
   // Resolve scope (and underlying chat mode) once at intake — every
@@ -776,6 +779,7 @@ async function intakeMessage(deps: IntakeDeps): Promise<void> {
     runExecutor: executor,
     processPool: pool,
     controls,
+    callbackAuth,
   });
   if (handled) {
     const dropped = pending.cancel(scope);

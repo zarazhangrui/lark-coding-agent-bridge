@@ -45,6 +45,34 @@ export interface CallbackPayload {
   kv: number;
 }
 
+export interface PersistentControlSignInput {
+  profile: string;
+  scope: string;
+  chatId: string;
+  action: string;
+  ttlMs: number;
+}
+
+export interface PersistentControlVerifyExpected {
+  profile: string;
+  scope: string;
+  chatId: string;
+  action: string;
+}
+
+export interface PersistentControlPayload {
+  p: string;
+  s: string;
+  c: string;
+  a: string;
+  exp: number;
+  kv: number;
+}
+
+export type PersistentControlVerifyResult =
+  | { ok: true; payload: PersistentControlPayload }
+  | Exclude<CallbackVerifyResult, { ok: true }>;
+
 export type CallbackVerifyResult =
   | { ok: true; payload: CallbackPayload }
   | {
@@ -60,6 +88,7 @@ export type CallbackVerifyResult =
     };
 
 const PREFIX = 'bridge_cb.v1';
+const CONTROL_PREFIX = 'bridge_control.v1';
 
 export class CallbackAuth {
   private readonly keys: CallbackKey[];
@@ -122,6 +151,57 @@ export class CallbackAuth {
     return { ok: true, payload };
   }
 
+  /**
+   * Sign a reusable, run-independent control. Unlike an agent callback this
+   * intentionally has no run id, operator id, or one-shot nonce: authorization
+   * is re-evaluated when the card is clicked, while the signature binds the
+   * action to one profile and one chat/topic scope.
+   */
+  signPersistentControl(input: PersistentControlSignInput): string {
+    const key = this.signingKey();
+    const payload: PersistentControlPayload = {
+      p: input.profile,
+      s: input.scope,
+      c: input.chatId,
+      a: input.action,
+      exp: this.now() + input.ttlMs,
+      kv: key.version,
+    };
+    const encoded = encodeJson(payload);
+    return `${CONTROL_PREFIX}.${encoded}.${sign(encoded, key.secret)}`;
+  }
+
+  verifyPersistentControl(
+    token: string,
+    expected: PersistentControlVerifyExpected,
+  ): PersistentControlVerifyResult {
+    const parts = token.split('.');
+    if (parts.length !== 4 || `${parts[0]}.${parts[1]}` !== CONTROL_PREFIX) {
+      return { ok: false, reason: 'malformed' };
+    }
+    const encodedPayload = parts[2];
+    const signature = parts[3];
+    if (!encodedPayload || !signature) return { ok: false, reason: 'malformed' };
+
+    const payload = decodePersistentControlPayload(encodedPayload);
+    if (!payload) return { ok: false, reason: 'malformed' };
+    const key = this.keys.find((candidate) => candidate.version === payload.kv);
+    if (!key) return { ok: false, reason: 'unknown-key' };
+    if (!signatureMatches(signature, sign(encodedPayload, key.secret))) {
+      return { ok: false, reason: 'bad-signature' };
+    }
+    if (payload.exp <= this.now()) return { ok: false, reason: 'expired' };
+    if (
+      payload.p !== expected.profile ||
+      payload.s !== expected.scope ||
+      payload.c !== expected.chatId ||
+      payload.a !== expected.action
+    ) {
+      return { ok: false, reason: 'context-mismatch' };
+    }
+    return { ok: true, payload };
+  }
+
   private signingKey(): CallbackKey {
     const active = this.keys.filter((key) => !key.retired);
     const key = active.at(-1);
@@ -144,7 +224,7 @@ function matchesExpected(
   );
 }
 
-function encodeJson(payload: CallbackPayload): string {
+function encodeJson(payload: CallbackPayload | PersistentControlPayload): string {
   return Buffer.from(JSON.stringify(payload), 'utf8').toString('base64url');
 }
 
@@ -175,6 +255,25 @@ function decodePayload(encoded: string): CallbackPayload | undefined {
       n: raw.n,
       kv: raw.kv,
     };
+  } catch {
+    return undefined;
+  }
+}
+
+function decodePersistentControlPayload(encoded: string): PersistentControlPayload | undefined {
+  try {
+    const raw = JSON.parse(Buffer.from(encoded, 'base64url').toString('utf8')) as Partial<PersistentControlPayload>;
+    if (
+      typeof raw.p !== 'string' ||
+      typeof raw.s !== 'string' ||
+      typeof raw.c !== 'string' ||
+      typeof raw.a !== 'string' ||
+      typeof raw.exp !== 'number' ||
+      typeof raw.kv !== 'number'
+    ) {
+      return undefined;
+    }
+    return { p: raw.p, s: raw.s, c: raw.c, a: raw.a, exp: raw.exp, kv: raw.kv };
   } catch {
     return undefined;
   }

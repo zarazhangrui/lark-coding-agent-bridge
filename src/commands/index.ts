@@ -24,7 +24,8 @@ import {
 import { GROUP_MSG_SCOPE, hasGroupMsgScope } from '../bot/app-scope';
 import { requestScopeGrantLink } from '../bot/wizard';
 import { forgetManagedCard, sendManagedCard, updateManagedCard } from '../card/managed';
-import { helpCard, resumeCard, statusCard, workspacesCard } from '../card/templates';
+import { controlsCard, helpCard, resumeCard, statusCard, workspacesCard } from '../card/templates';
+import type { CallbackAuth } from '../card/callback-auth';
 import type { AppConfig, AppPreferences, MessageReplyMode, TenantBrand } from '../config/schema';
 import {
   getAgentStopGraceMs,
@@ -147,6 +148,8 @@ export interface CommandContext {
    * text command. Determines whether to update the existing card vs send a
    * new one. */
   fromCardAction?: boolean;
+  /** Callback signer used for bridge-owned persistent control cards. */
+  callbackAuth?: CallbackAuth;
 }
 
 type Handler = (args: string, ctx: CommandContext) => Promise<void>;
@@ -176,6 +179,7 @@ const handlers: Record<string, Handler> = {
   '/help': handleHelp,
   '/account': handleAccount,
   '/config': handleConfig,
+  '/controls': handleControls,
   '/stop': handleStop,
   '/timeout': handleTimeout,
   '/ps': handlePs,
@@ -869,6 +873,44 @@ async function handleStop(args: string, ctx: CommandContext): Promise<void> {
   }
   // No reply for the current IM scope: if there was a run, its in-flight
   // render loop will mark the card as interrupted and re-render.
+}
+
+const PERSISTENT_CONTROL_TTL_MS = 90 * 24 * 60 * 60 * 1000;
+
+async function handleControls(args: string, ctx: CommandContext): Promise<void> {
+  const action = args.trim().toLowerCase();
+  if (!action) {
+    if (!ctx.callbackAuth) {
+      await reply(ctx, '❌ 当前运行环境无法签发安全控制卡。');
+      return;
+    }
+    const expiresAt = Date.now() + PERSISTENT_CONTROL_TTL_MS;
+    const token = ctx.callbackAuth.signPersistentControl({
+      profile: ctx.controls.profile,
+      scope: ctx.scope,
+      chatId: ctx.msg.chatId,
+      action: 'controls.stop',
+      ttlMs: PERSISTENT_CONTROL_TTL_MS,
+    });
+    await ctx.channel.send(
+      ctx.msg.chatId,
+      { card: controlsCard({ token, expiresAt, scope: ctx.scope }) },
+      commandReplyOptions(ctx),
+    );
+    return;
+  }
+
+  if (action !== 'stop' || !ctx.fromCardAction) {
+    await reply(ctx, '用法:`/controls`');
+    return;
+  }
+
+  const interrupted = ctx.activeRuns.interrupt(ctx.scope);
+  log.info('command', 'controls-stop', { scope: ctx.scope, interrupted });
+  await reply(
+    ctx,
+    interrupted ? '⏹ 已请求停止当前任务。' : '当前没有正在运行的任务。',
+  );
 }
 
 async function handleTimeout(args: string, ctx: CommandContext): Promise<void> {

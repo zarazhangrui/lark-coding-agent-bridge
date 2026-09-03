@@ -113,6 +113,53 @@ describe('signed card callback dispatch', () => {
     expect(activeRun.stopped).toBe(false);
     expect(h.pending.cancel('oc_group')).toHaveLength(0);
   });
+
+  it('reuses a persistent emergency-stop control across active and idle runs', async () => {
+    const h = await createHarness();
+    const token = h.persistentToken();
+    const activeRun = h.agent.run({ runId: 'run-one', prompt: 'running' }) as FakeAgentRun;
+    h.activeRuns.register('oc_group', activeRun);
+
+    await h.dispatch({
+      cmd: 'controls.stop',
+      __bridge_control: true,
+      bridge_control_token: token,
+    });
+    expect(activeRun.stopped).toBe(true);
+    expect(JSON.stringify(h.channel.sent.at(-1)?.content)).toContain('已请求停止当前任务');
+
+    await h.dispatch({
+      cmd: 'controls.stop',
+      __bridge_control: true,
+      bridge_control_token: token,
+    });
+    expect(JSON.stringify(h.channel.sent.at(-1)?.content)).toContain('当前没有正在运行的任务');
+  });
+
+  it('rejects forged and cross-scope persistent emergency-stop controls', async () => {
+    const h = await createHarness();
+    const activeRun = h.agent.run({ runId: 'run-one', prompt: 'running' }) as FakeAgentRun;
+    h.activeRuns.register('oc_group', activeRun);
+
+    // The command name itself must require authentication. An attacker must
+    // not be able to bypass verification by simply omitting the marker.
+    await h.dispatch({ cmd: 'controls.stop' });
+    expect(activeRun.stopped).toBe(false);
+
+    await h.dispatch({
+      cmd: 'controls.stop',
+      __bridge_control: true,
+      bridge_control_token: `${h.persistentToken()}tampered`,
+    });
+    expect(activeRun.stopped).toBe(false);
+
+    await h.dispatch({
+      cmd: 'controls.stop',
+      __bridge_control: true,
+      bridge_control_token: h.persistentToken({ scope: 'oc_other' }),
+    });
+    expect(activeRun.stopped).toBe(false);
+  });
 });
 
 type Harness = {
@@ -130,6 +177,7 @@ type Harness = {
     action: string,
     overrides?: { operatorOpenId?: string; nonce?: string; scope?: string },
   ): string;
+  persistentToken(overrides?: { scope?: string; chatId?: string; profile?: string }): string;
 };
 
 async function createHarness(
@@ -201,6 +249,14 @@ async function createHarness(
         ttlMs: 60_000,
       });
     },
+    persistentToken: (overrides = {}) =>
+      auth.signPersistentControl({
+        profile: overrides.profile ?? 'claude',
+        scope: overrides.scope ?? 'oc_group',
+        chatId: overrides.chatId ?? 'oc_group',
+        action: 'controls.stop',
+        ttlMs: 60_000,
+      }),
     dispatch: (value, formValue) =>
       handleCardAction({
         channel: channel as unknown as Parameters<typeof handleCardAction>[0]['channel'],

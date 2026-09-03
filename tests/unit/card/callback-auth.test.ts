@@ -127,6 +127,74 @@ describe('CallbackAuth', () => {
       reason: 'nonce-revoked',
     });
   });
+
+  it('signs reusable persistent controls without consuming a nonce', async () => {
+    const h = await harness();
+    const token = h.auth.signPersistentControl({
+      profile: 'codex',
+      scope: 'oc_1:th_1',
+      chatId: 'oc_1',
+      action: 'controls.stop',
+      ttlMs: 60_000,
+    });
+    const expected = {
+      profile: 'codex',
+      scope: 'oc_1:th_1',
+      chatId: 'oc_1',
+      action: 'controls.stop',
+    };
+
+    expect(token).toMatch(/^bridge_control\.v1\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/);
+    expect(h.auth.verifyPersistentControl(token, expected)).toMatchObject({ ok: true });
+    expect(h.auth.verifyPersistentControl(token, expected)).toMatchObject({ ok: true });
+  });
+
+  it.each([
+    ['profile', { profile: 'other' }],
+    ['scope', { scope: 'oc_other' }],
+    ['chat', { chatId: 'oc_other' }],
+    ['action', { action: 'controls.other' }],
+  ])('rejects persistent controls with mismatched %s', async (_label, override) => {
+    const h = await harness();
+    const token = h.auth.signPersistentControl({
+      profile: 'codex',
+      scope: 'oc_1',
+      chatId: 'oc_1',
+      action: 'controls.stop',
+      ttlMs: 60_000,
+    });
+
+    expect(
+      h.auth.verifyPersistentControl(token, {
+        profile: 'codex',
+        scope: 'oc_1',
+        chatId: 'oc_1',
+        action: 'controls.stop',
+        ...override,
+      }),
+    ).toMatchObject({ ok: false, reason: 'context-mismatch' });
+  });
+
+  it('rejects expired persistent controls', async () => {
+    const h = await harness({ now: 1000 });
+    const token = h.auth.signPersistentControl({
+      profile: 'codex',
+      scope: 'oc_1',
+      chatId: 'oc_1',
+      action: 'controls.stop',
+      ttlMs: 10,
+    });
+    h.setNow(1011);
+
+    expect(
+      h.auth.verifyPersistentControl(token, {
+        profile: 'codex',
+        scope: 'oc_1',
+        chatId: 'oc_1',
+        action: 'controls.stop',
+      }),
+    ).toMatchObject({ ok: false, reason: 'expired' });
+  });
 });
 
 function baseSignInput() {
