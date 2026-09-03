@@ -43,9 +43,21 @@ const CODEX_MODELS: ModelOption[] = [
   { value: 'o3', label: 'o3' },
 ];
 
+/**
+ * MiMo Code models. Forwarded to `mimo run --model` as `provider/model`;
+ * the picker shows the same IDs mimo accepts. `mimo-auto` is the built-in
+ * auto-routing model; concrete models depend on the configured providers.
+ */
+const MIMO_MODELS: ModelOption[] = [
+  { value: DEFAULT_MODEL, label: '跟随默认（不指定）' },
+  { value: 'mimo-auto', label: 'MiMo Auto（自动路由）' },
+];
+
 /** The model picker options for a profile's agent kind. */
 export function supportedModels(agentKind: AgentKind): ModelOption[] {
-  return agentKind === 'codex' ? CODEX_MODELS : CLAUDE_MODELS;
+  if (agentKind === 'codex') return CODEX_MODELS;
+  if (agentKind === 'mimo') return MIMO_MODELS;
+  return CLAUDE_MODELS;
 }
 
 /** True when the selection means "use the agent default" (no `--model`). */

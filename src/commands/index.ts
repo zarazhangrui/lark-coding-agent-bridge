@@ -3,7 +3,8 @@ import { readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, isAbsolute } from 'node:path';
 import type { LarkChannel, NormalizedMessage } from '@larksuite/channel';
-import { claudeCapability, codexCapability } from '../agent/capability';
+import { claudeCapability, codexCapability, mimoCapability } from '../agent/capability';
+import type { AgentCapabilityId } from '../agent/capability';
 import { DEFAULT_MODEL, normalizeModelSelection, supportedModels } from '../agent/models';
 import type { AgentAdapter } from '../agent/types';
 import type { ActiveRuns } from '../bot/active-runs';
@@ -153,7 +154,7 @@ type Handler = (args: string, ctx: CommandContext) => Promise<void>;
 
 interface ResumeCandidate {
   scopeId: string;
-  agentId: 'claude' | 'codex';
+  agentId: AgentCapabilityId;
   cwdRealpath: string;
   policyFingerprint: string;
   sessionId?: string;
@@ -592,6 +593,27 @@ async function handleResume(args: string, ctx: CommandContext): Promise<void> {
     return;
   }
 
+  if (ctx.controls.profileConfig.agentKind === 'mimo') {
+    // mimo has no native history file listing; resume goes through the
+    // session catalog entry (sessionId), like claude but without the list.
+    const identity = ctx.sessionCatalogIdentity;
+    const entry =
+      ctx.sessionCatalog && identity
+        ? ctx.sessionCatalog.activeFor(identity)
+        : undefined;
+    if (entry?.sessionId && identity) {
+      const nonce = issueResumeCandidate(identity, { sessionId: entry.sessionId });
+      await reply(
+        ctx,
+        `当前 MiMo 会话可恢复。\n使用 \`/resume use ${nonce}\` 恢复（10 分钟内有效）。`,
+      );
+      return;
+    }
+    const card = resumeCard(cwd, []);
+    await ctx.channel.send(ctx.msg.chatId, { card }, commandReplyOptions(ctx));
+    return;
+  }
+
   const sessions = await listClaudeResumeHistory(ctx, cwd, limit);
   const currentSession = ctx.sessions.getRaw(ctx.scope);
   const identity = ctx.sessionCatalogIdentity;
@@ -615,7 +637,8 @@ async function applyResume(sessionId: string, ctx: CommandContext): Promise<void
     const resolved = consumeResumeCandidate(sessionId, ctx.sessionCatalogIdentity);
     if (resolved) {
       ctx.activeRuns.interrupt(ctx.scope);
-      if (ctx.sessionCatalogIdentity.agentId === 'codex') {
+      const kind = ctx.sessionCatalogIdentity.agentId;
+      if (kind === 'codex') {
         ctx.sessionCatalog.upsertActive({
           scopeId: ctx.sessionCatalogIdentity.scopeId,
           agentId: 'codex',
@@ -626,12 +649,14 @@ async function applyResume(sessionId: string, ctx: CommandContext): Promise<void
       } else {
         ctx.sessionCatalog.upsertActive({
           scopeId: ctx.sessionCatalogIdentity.scopeId,
-          agentId: 'claude',
+          agentId: kind,
           cwdRealpath: ctx.sessionCatalogIdentity.cwdRealpath,
           policyFingerprint: ctx.sessionCatalogIdentity.policyFingerprint,
           sessionId: resolved.sessionId!,
         });
-        ctx.sessions.set(ctx.scope, resolved.sessionId!, ctx.sessionCatalogIdentity.cwdRealpath);
+        if (kind === 'claude') {
+          ctx.sessions.set(ctx.scope, resolved.sessionId!, ctx.sessionCatalogIdentity.cwdRealpath);
+        }
       }
       await reply(ctx, RESUME_APPLIED_REPLY);
       return;
@@ -655,6 +680,10 @@ async function applyResume(sessionId: string, ctx: CommandContext): Promise<void
 
   if (ctx.controls.profileConfig.agentKind === 'codex') {
     await reply(ctx, '当前上下文没有可恢复的 Codex thread，请先在当前工作区完成一次运行。');
+    return;
+  }
+  if (ctx.controls.profileConfig.agentKind === 'mimo') {
+    await reply(ctx, '当前上下文没有可恢复的 MiMo 会话，请先在当前工作区完成一次运行。');
     return;
   }
 

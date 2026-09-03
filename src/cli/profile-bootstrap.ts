@@ -14,6 +14,7 @@ export interface BootstrapProfileInput {
   workspace?: string;
   defaultWorkspace?: string;
   codexBinaryPath?: string;
+  mimoBinaryPath?: string;
   profileDir?: string;
 }
 
@@ -29,12 +30,17 @@ export async function createBootstrapProfileConfig(
     input.agentKind === 'codex'
       ? await createBootstrapCodexConfig(input.codexBinaryPath)
       : undefined;
+  const mimo =
+    input.agentKind === 'mimo'
+      ? await createBootstrapMimoConfig(input.mimoBinaryPath)
+      : undefined;
   const profile = createDefaultProfileConfig({
     agentKind: input.agentKind,
     accounts: input.accounts,
     preferences: input.preferences,
     secrets: input.secrets,
     ...(codex ? { codex } : {}),
+    ...(mimo ? { mimo } : {}),
   });
   if (workspace) {
     profile.workspaces = {
@@ -79,6 +85,33 @@ export async function createBootstrapCodexConfig(binaryPath: string | undefined)
 }
 
 function codexBootstrapBinaryErrorCode(errno: string | undefined) {
+  if (errno === 'EACCES' || errno === 'EPERM') return 'agent-binary-not-executable';
+  if (errno === 'ELOOP' || errno === 'ENOTDIR' || errno === 'EINVAL') {
+    return 'agent-binary-resolve-failed';
+  }
+  return 'agent-binary-not-found';
+}
+
+export async function createBootstrapMimoConfig(binaryPath: string | undefined) {
+  const command = binaryPath ?? process.env.LARK_CHANNEL_MIMO_BIN ?? 'mimo';
+  let resolvedBinary: string;
+  try {
+    resolvedBinary = await resolveExecutablePath(command);
+  } catch (err) {
+    const errno = (err as NodeJS.ErrnoException).code;
+    throw new AgentPreflightError({
+      code: mimoBootstrapBinaryErrorCode(errno),
+      agentId: 'mimo',
+      agentName: 'MiMo Code',
+      command,
+      binaryPath: command,
+      errno,
+    });
+  }
+  return { binaryPath: resolvedBinary };
+}
+
+function mimoBootstrapBinaryErrorCode(errno: string | undefined) {
   if (errno === 'EACCES' || errno === 'EPERM') return 'agent-binary-not-executable';
   if (errno === 'ELOOP' || errno === 'ENOTDIR' || errno === 'EINVAL') {
     return 'agent-binary-resolve-failed';

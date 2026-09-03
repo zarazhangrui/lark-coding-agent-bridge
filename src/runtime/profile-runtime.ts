@@ -5,6 +5,7 @@ import { runRegistrationWizard } from '../bot/wizard';
 import { detectInstalledAgents, type DetectedAgent } from '../cli/agent-detection';
 import {
   createBootstrapCodexConfig,
+  createBootstrapMimoConfig,
   createBootstrapProfileConfig,
   resolveBootstrapWorkspace,
 } from '../cli/profile-bootstrap';
@@ -90,6 +91,9 @@ export function createRuntimeProfileConfig(
     ...(input.agentKind === 'codex'
       ? { codex: input.codex ?? { binaryPath: process.env.LARK_CHANNEL_CODEX_BIN ?? 'codex' } }
       : {}),
+    ...(input.agentKind === 'mimo'
+      ? { mimo: input.mimo ?? { binaryPath: process.env.LARK_CHANNEL_MIMO_BIN ?? 'mimo' } }
+      : {}),
   });
 }
 
@@ -137,6 +141,9 @@ export async function resolveProfileRuntime(
     ...(migrationAgent ? { agentKind: migrationAgent } : {}),
     ...(needsMigration && migrationAgent === 'codex'
       ? { codex: await createBootstrapCodexConfig(undefined) }
+      : {}),
+    ...(needsMigration && migrationAgent === 'mimo'
+      ? { mimo: await createBootstrapMimoConfig(undefined) }
       : {}),
   }, opts.handleActiveBridgeMigrationConflict);
 
@@ -395,7 +402,7 @@ function resolveBootstrapAgent(
   requestedAgent: AgentKind | undefined,
   profile: string | undefined,
 ): AgentKind | undefined {
-  return requestedAgent ?? (profile === 'codex' ? 'codex' : undefined);
+  return requestedAgent ?? (profile === 'codex' ? 'codex' : profile === 'mimo' ? 'mimo' : undefined);
 }
 
 async function hasLegacyConfig(configPath: string): Promise<boolean> {
@@ -568,7 +575,7 @@ function formatAmbiguousAgentSelectionError(
 ): string {
   const lines = detected.map((agent) => `  - ${agent.kind}: ${agent.binaryPath}`);
   return [
-    '检测到多个本地 agent，请使用 --agent <claude|codex> 指定要初始化哪一个。',
+    '检测到多个本地 agent，请使用 --agent <claude|codex|mimo> 指定要初始化哪一个。',
     '已检测到：',
     ...lines,
   ].join('\n');
@@ -613,7 +620,9 @@ class UserCancelledError extends Error {
 }
 
 function displayAgentKind(kind: AgentKind): string {
-  return kind === 'claude' ? 'Claude Code' : 'Codex CLI';
+  if (kind === 'claude') return 'Claude Code';
+  if (kind === 'mimo') return 'MiMo Code';
+  return 'Codex CLI';
 }
 
 async function maybeMigrateRootPlaintextSecret(
