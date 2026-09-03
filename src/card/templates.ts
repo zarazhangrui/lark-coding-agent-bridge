@@ -192,6 +192,7 @@ export function helpCard(agentName = 'Agent'): object {
         '- `/account` — 查看当前应用；`/account change` 换 appId/secret 并重连',
         '- `/config` — 调整偏好、访问控制和 lark-cli 身份策略',
         '- `/status` — 当前状态',
+        '- `/controls` — 生成可收藏/置顶的紧急停止控制卡',
         '- `/stop` — 结束当前正在跑的任务（也可点卡片底部 ⏹ 终止 按钮）',
         '- `/stop comment:<scopeHash>` — 管理员停止云文档评论任务',
         '- `/timeout [N|off|default]` — 当前 session 的探活分钟数,`/config` 改全局默认',
@@ -213,6 +214,53 @@ export function helpCard(agentName = 'Agent'): object {
       { text: '🆕 新会话', value: { cmd: 'new' } },
     ]),
   ]);
+}
+
+export interface ControlsCardInfo {
+  token: string;
+  expiresAt: number;
+  scope: string;
+}
+
+export function controlsCard(info: ControlsCardInfo): object {
+  const expires = new Date(info.expiresAt).toISOString().slice(0, 10);
+  return {
+    schema: '2.0',
+    config: { summary: { content: '紧急停止控制' } },
+    body: {
+      elements: [
+        {
+          tag: 'markdown',
+          content: [
+            '🛑 **紧急停止控制**',
+            '',
+            '点击下方按钮可停止此会话中当前正在运行的任务。',
+            '',
+            `**scope**: \`${escapeCode(info.scope)}\``,
+            `**有效期至**: ${expires}`,
+            '',
+            '_此卡可收藏或置顶，并可跨多次任务重复使用。_',
+          ].join('\n'),
+        },
+        { tag: 'hr' },
+        {
+          tag: 'button',
+          text: { tag: 'plain_text', content: '⏹ Emergency Stop' },
+          type: 'danger',
+          behaviors: [
+            {
+              type: 'callback',
+              value: {
+                cmd: 'controls.stop',
+                __bridge_control: true,
+                bridge_control_token: info.token,
+              },
+            },
+          ],
+        },
+      ],
+    },
+  };
 }
 
 function escapeMd(s: string): string {

@@ -146,6 +146,7 @@ If a profile was created with the wrong agent kind, stop or unregister any match
 | `/resume` | Resume compatible history for the same agent, working directory, and permission mode |
 | `/status` | Show profile, agent, working directory, session, lark-cli identity, and run state |
 | `/config` | Adjust presentation preferences, access settings, and lark-cli identity policy |
+| `/controls` | Send a reusable emergency-stop card for the current chat/topic scope |
 | `/invite user @name` | Allow a user to use the bot in DMs |
 | `/invite admin @name` | Add an access-control admin |
 | `/invite group` | Allow the current group to use the bot |
@@ -160,6 +161,10 @@ If a profile was created with the wrong agent kind, stop or unregister any match
 | `/help` | Help card |
 
 DMs do not require an @ mention. Groups and topic groups require `@bot` by default; `@all` is ignored. Cloud-doc comments in supported document types run when the bot is mentioned.
+
+### Persistent emergency stop
+
+Send `/controls` in a DM, group, or topic to create a compact CardKit 2.0 control card. Favorite or pin that message for a stable one-click emergency stop. The card is bound to the profile and exact chat/topic scope where it was created, re-checks the clicker's current access, and can be reused across runs until its displayed expiry date. Clicking while idle is harmless and reports that no task is active. Run `/controls` again to rotate an expiring card.
 
 ## Reply Display and COT
 

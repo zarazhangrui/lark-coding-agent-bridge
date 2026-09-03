@@ -4,6 +4,8 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import type { NormalizedMessage } from '@larksuite/channel';
 import { ActiveRuns } from '../../../src/bot/active-runs.js';
+import { CallbackAuth } from '../../../src/card/callback-auth.js';
+import { CallbackNonceStore } from '../../../src/card/callback-store.js';
 import { tryHandleCommand, type CommandContext, type Controls } from '../../../src/commands/index.js';
 import { createDefaultProfileConfig, type ProfileConfig } from '../../../src/config/profile-schema.js';
 import { SessionStore } from '../../../src/session/store.js';
@@ -265,6 +267,20 @@ describe('Claude slash command visible behavior', () => {
     expect(activeRun.stopped).toBe(true);
   });
 
+  it('creates a reusable, scope-bound emergency-stop control card', async () => {
+    const h = await createHarness();
+
+    await expect(h.run('/controls')).resolves.toBe(true);
+
+    const rendered = JSON.stringify(lastContent(h.channel));
+    expect(rendered).toContain('"schema":"2.0"');
+    expect(rendered).toContain('"type":"callback"');
+    expect(rendered).toContain('Emergency Stop');
+    expect(rendered).toContain('chat-1');
+    expect(rendered).toContain('__bridge_control');
+    expect(rendered).toContain('bridge_control_token');
+  });
+
   it('lets admins stop and configure comment scopes explicitly', async () => {
     const h = await createHarness();
     const commentScope = 'comment:abc123';
@@ -319,6 +335,11 @@ async function createHarness(): Promise<Harness> {
   const workspaces = new WorkspaceStore(`${tmp.profile}/workspaces.json`);
   const activeRuns = new ActiveRuns();
   const agent = createFakeAgent();
+  const callbackStore = new CallbackNonceStore(`${tmp.profile}/callback-nonces.json`);
+  const callbackAuth = new CallbackAuth({
+    keys: [{ version: 1, secret: 'secret' }],
+    nonceStore: callbackStore,
+  });
   const profileConfig = appConfig(tmp.workspace);
   const controls = {
     profile: 'claude',
@@ -344,10 +365,11 @@ async function createHarness(): Promise<Harness> {
       agent,
       activeRuns,
       controls,
+      callbackAuth,
     });
 
   const cleanup = async (): Promise<void> => {
-    await Promise.all([sessions.flush(), workspaces.flush()]);
+    await Promise.all([sessions.flush(), workspaces.flush(), callbackStore.flush()]);
     await tmp.cleanup();
   };
   cleanups.push(cleanup);

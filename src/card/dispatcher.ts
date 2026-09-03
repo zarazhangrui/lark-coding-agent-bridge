@@ -23,6 +23,7 @@ import { lookupMessageThreadId } from '../bot/thread-id';
  */
 const BRIDGE_CALLBACK_MARKER = '__bridge_cb';
 const LEGACY_CLAUDE_CALLBACK_MARKER = '__claude_cb';
+const PERSISTENT_CONTROL_MARKER = '__bridge_control';
 
 export interface CardDispatchDeps {
   channel: LarkChannel;
@@ -84,7 +85,17 @@ export async function handleCardAction(deps: CardDispatchDeps): Promise<void> {
 
   const cmd = typeof payload.cmd === 'string' ? payload.cmd : '';
   if (cmd) {
-    if (isSignedBridgeCallback(payload) && !verifyBridgeToken(deps, payload, scope, cmd)) {
+    if (
+      PERSISTENT_CONTROL_MARKER in payload &&
+      !verifyPersistentControlToken(deps, payload, scope, cmd)
+    ) {
+      return;
+    }
+    if (
+      !(PERSISTENT_CONTROL_MARKER in payload) &&
+      isSignedBridgeCallback(payload) &&
+      !verifyBridgeToken(deps, payload, scope, cmd)
+    ) {
       return;
     }
     log.info('cardAction', 'cmd', { cmd, scope });
@@ -113,6 +124,7 @@ export async function handleCardAction(deps: CardDispatchDeps): Promise<void> {
       controls: deps.controls,
       formValue,
       fromCardAction: true,
+      callbackAuth: deps.callbackAuth,
     };
 
     const [name, ...rest] = cmd.split('.');
@@ -139,6 +151,30 @@ export async function handleCardAction(deps: CardDispatchDeps): Promise<void> {
   }
 
   return;
+}
+
+function verifyPersistentControlToken(
+  deps: CardDispatchDeps,
+  payload: Record<string, unknown>,
+  scope: string,
+  action: string,
+): boolean {
+  const token = typeof payload.bridge_control_token === 'string' ? payload.bridge_control_token : '';
+  if (!deps.callbackAuth || !token) {
+    log.warn('callback', 'denied', { scope, action, reason: 'missing-control-token' });
+    return false;
+  }
+  const result = deps.callbackAuth.verifyPersistentControl(token, {
+    profile: deps.controls.profile,
+    scope,
+    chatId: deps.evt.chatId,
+    action,
+  });
+  if (!result.ok) {
+    log.warn('callback', 'denied', { scope, action, reason: result.reason });
+    return false;
+  }
+  return true;
 }
 
 async function resolveScope(

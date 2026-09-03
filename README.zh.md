@@ -146,6 +146,7 @@ lark-channel-bridge profile export <name> --include-secrets --yes
 | `/resume` | 恢复同 agent、工作目录、权限模式兼容的历史会话 |
 | `/status` | 查看 profile、agent、工作目录、会话、lark-cli 身份和运行状态 |
 | `/config` | 调整展示偏好、访问控制和 lark-cli 身份策略 |
+| `/controls` | 为当前私聊/群聊/话题生成可复用的紧急停止卡片 |
 | `/invite user @某人` | 允许用户私聊使用 bot |
 | `/invite admin @某人` | 添加访问控制管理员 |
 | `/invite group` | 允许当前群使用 bot |
@@ -160,6 +161,10 @@ lark-channel-bridge profile export <name> --include-secrets --yes
 | `/help` | 帮助卡片 |
 
 私聊不需要 @。群和话题群默认必须 `@bot`；`@all` 会被忽略。支持的云文档评论里 @bot 就会触发回复。
+
+### 永久紧急停止卡片
+
+在私聊、群聊或话题中发送 `/controls`，会生成一张紧凑的 CardKit 2.0 控制卡。可以收藏或置顶这条消息，随时一键紧急停止。控制卡绑定创建它的 profile 和精确 chat/topic scope，点击时重新检查操作者当前权限，并可跨多次任务重复使用直至卡片显示的到期日。空闲时点击不会产生副作用，只会提示当前没有运行中的任务。卡片临近到期时重新发送 `/controls` 即可轮换。
 
 ## 回复展示与 COT
 
