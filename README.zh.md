@@ -218,6 +218,22 @@ bridge 会检查所选目录存在、是目录，并且不是 `/`、Home 根、�
 
 旧版 `sandbox` 字段仍可读取。bridge 保存 profile 后，会把该设置迁移为 canonical `permissions`。
 
+## Codex rules 与 AGENTS.md
+
+Codex profile 的 `codex.ignoreRules` 默认为 `true`，bridge 会用 `--ignore-rules` 启动 Codex。这个参数只跳过用户和项目的 execpolicy `.rules` 文件，不会禁用 `AGENTS.md`。
+
+只有在当前 profile 需要加载 execpolicy `.rules` 时，才把该字段设为 `false`：
+
+```json
+{
+  "codex": {
+    "ignoreRules": false
+  }
+}
+```
+
+Codex 会根据实际使用的 `CODEX_HOME` 和所选工作目录层级独立加载 `AGENTS.md`。例如，继承 `~/.codex` 的 profile 可以用 `~/.codex/AGENTS.md` 提供用户级要求，用 `<workspace>/AGENTS.md` 提供项目级要求；这与 `ignoreRules` 无关。手动修改 bridge 配置后，请重启对应 profile。
+
 ## 数据目录
 
 | 路径 | 内容 |

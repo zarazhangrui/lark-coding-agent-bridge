@@ -218,6 +218,22 @@ Mode mapping:
 
 The legacy `sandbox` field is still readable for old configs. After the bridge saves the profile, it migrates that setting to canonical `permissions`.
 
+## Codex rules and AGENTS.md
+
+Codex profiles default `codex.ignoreRules` to `true`, which starts Codex with `--ignore-rules`. That flag skips user and project execpolicy `.rules` files; it does not disable `AGENTS.md`.
+
+Set the field to `false` only when the profile should load execpolicy `.rules`:
+
+```json
+{
+  "codex": {
+    "ignoreRules": false
+  }
+}
+```
+
+Codex loads `AGENTS.md` independently from its effective `CODEX_HOME` and the selected working-directory hierarchy. For example, a profile that inherits `~/.codex` can use `~/.codex/AGENTS.md` for user instructions and `<workspace>/AGENTS.md` for project instructions regardless of `ignoreRules`. Restart the profile after manually editing its bridge configuration.
+
 ## Data directories
 
 | Path | Content |
