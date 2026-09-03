@@ -15,6 +15,8 @@ export interface BridgePromptContext {
   senderType?: 'user' | 'bot';
   /** The bridge bot's own open_id — "this id is you" for self-identification. */
   botOpenId?: string;
+  /** Whether any triggering message in this batch directly @-mentioned this bot. */
+  mentionedSelf?: boolean;
   /** Accounts @-mentioned in the triggering message(s), deduped across the batch. */
   mentions?: BridgePromptMention[];
   threadId?: string;
