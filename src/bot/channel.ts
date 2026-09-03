@@ -4,6 +4,7 @@ import type {
   NormalizedMessage,
 } from '@larksuite/channel';
 import { createLarkChannel } from '@larksuite/channel';
+import { getSmartMention } from '../config/schema';
 import { dirname, join } from 'node:path';
 import { claudeCapability, codexCapability } from '../agent/capability';
 import { modelLabel, normalizeModelSelection, resolveModelArg } from '../agent/models';
@@ -732,7 +733,8 @@ async function intakeMessage(deps: IntakeDeps): Promise<void> {
   if (
     msg.chatType !== 'p2p' &&
     requireMentionForChat(controls.profileConfig, controls.cfg, msg.chatId) &&
-    !msg.mentionedBot
+    !msg.mentionedBot &&
+    (getSmartMention(controls.cfg) ? (msg.mentions.length > 0) : true)
   ) {
     log.info('intake', 'skip-no-mention', { scope, chatType: msg.chatType });
     return;

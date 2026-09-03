@@ -254,6 +254,18 @@ export function getRequireMentionInGroup(cfg: AppConfig): boolean {
 }
 
 /**
+ * Resolve the smart-mention preference (default false).
+ * When enabled, the bot skips group messages that @-mention other users
+ * but still responds to messages without any @-mentions.
+ */
+export function getSmartMention(cfg: AppConfig): boolean {
+  const profileAccess = (cfg as AppConfig & {
+    access?: { smartMention?: boolean };
+  }).access;
+  return profileAccess?.smartMention === true;
+}
+
+/**
  * Resolve the global default idle-timeout in ms. Returns `undefined` when
  * disabled (the default). Clamps to [1, 120] minutes when set so a typo
  * can't lock the bot into a 1-second kill loop or wait forever to a number

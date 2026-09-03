@@ -23,6 +23,13 @@ export interface ProfileAccess {
   admins: string[];
   requireMentionInGroup: boolean;
   /**
+   * When true, the bot only responds when @-mentioned, BUT still responds to
+   * messages without any @-mentions (e.g. undirected chatter).
+   * When false / undefined (default), the behavior is controlled by {@link requireMentionInGroup}.
+   * Setting true effectively means: "skip if someone else is @'d but not me".
+   */
+  smartMention?: boolean;
+  /**
    * Per-chat override of {@link requireMentionInGroup}, keyed by chat_id.
    * `true` = require an @-mention in that chat, `false` = respond to every
    * message. A chat absent from the map follows the global setting. Takes
@@ -348,6 +355,7 @@ function normalizeAccess(
     allowedChats: stringArray(access?.allowedChats),
     admins: stringArray(access?.admins),
     requireMentionInGroup: access?.requireMentionInGroup ?? legacyRequireMentionInGroup ?? true,
+    smartMention: access?.smartMention === true,
     // Omit when empty so configs without per-chat overrides stay clean.
     ...(Object.keys(chatRequireMention).length > 0 ? { chatRequireMention } : {}),
   };
