@@ -85,14 +85,16 @@ export async function handleCardAction(deps: CardDispatchDeps): Promise<void> {
 
   const cmd = typeof payload.cmd === 'string' ? payload.cmd : '';
   if (cmd) {
+    const isPersistentControl =
+      cmd === 'controls.stop' || PERSISTENT_CONTROL_MARKER in payload;
     if (
-      PERSISTENT_CONTROL_MARKER in payload &&
+      isPersistentControl &&
       !verifyPersistentControlToken(deps, payload, scope, cmd)
     ) {
       return;
     }
     if (
-      !(PERSISTENT_CONTROL_MARKER in payload) &&
+      !isPersistentControl &&
       isSignedBridgeCallback(payload) &&
       !verifyBridgeToken(deps, payload, scope, cmd)
     ) {

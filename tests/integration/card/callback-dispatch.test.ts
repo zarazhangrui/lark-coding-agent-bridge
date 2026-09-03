@@ -141,6 +141,11 @@ describe('signed card callback dispatch', () => {
     const activeRun = h.agent.run({ runId: 'run-one', prompt: 'running' }) as FakeAgentRun;
     h.activeRuns.register('oc_group', activeRun);
 
+    // The command name itself must require authentication. An attacker must
+    // not be able to bypass verification by simply omitting the marker.
+    await h.dispatch({ cmd: 'controls.stop' });
+    expect(activeRun.stopped).toBe(false);
+
     await h.dispatch({
       cmd: 'controls.stop',
       __bridge_control: true,
