@@ -23,10 +23,10 @@ export interface ProfileAccess {
   admins: string[];
   requireMentionInGroup: boolean;
   /**
-   * When true, the bot only responds when @-mentioned, BUT still responds to
-   * messages without any @-mentions (e.g. undirected chatter).
-   * When false / undefined (default), the behavior is controlled by {@link requireMentionInGroup}.
-   * Setting true effectively means: "skip if someone else is @'d but not me".
+   * Optional independent group admission mode (default false / undefined).
+   * When true, undirected chatter and messages that @-mention this bot pass,
+   * while messages that explicitly @-mention someone else are skipped.
+   * Takes precedence over {@link requireMentionInGroup} when enabled.
    */
   smartMention?: boolean;
   /**

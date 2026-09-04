@@ -267,6 +267,7 @@ To let other people or groups in, add them to one of three lists:
 
 - Changes take effect on the **next message** — no restart needed.
 - **In groups you must `@` the bot first** (DMs don't need it). That's a separate toggle (`/config` → "require @ in groups"), independent of the lists above.
+- **Smart mention mode** (config `access.smartMention: true`): an optional third mode for multi-bot groups. Undirected chatter and messages that `@` the bot still get answers, but a message that explicitly `@`s someone else (another bot or user) is skipped. When enabled it takes precedence over `requireMentionInGroup`; set both off to answer every group message.
 - Strangers get pure silence — no reply at all. The one exception: if someone `@`-mentions the bot in a group that hasn't been opened up, the bot posts a friendly one-liner telling them an admin can run `/invite group` to enable it.
 - Cloud-doc comments are document-scoped: anyone who can comment in a supported document and mention the bot can trigger a reply.
 
