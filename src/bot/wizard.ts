@@ -60,6 +60,15 @@ export async function runRegistrationWizard(): Promise<AppConfig> {
   const result = await registerApp({
     source: 'lark-channel-bridge',
     onQRCodeReady: (info) => {
+      if (!process.stdout.isTTY) {
+        console.error(
+          JSON.stringify({
+            type: 'qr_ready',
+            url: info.url,
+            expire_in: info.expireIn,
+          }),
+        );
+      }
       console.log('请用飞书 App 扫描以下二维码完成应用创建：\n');
       qrcode.generate(info.url, { small: true });
       const mins = Math.max(1, Math.round(info.expireIn / 60));

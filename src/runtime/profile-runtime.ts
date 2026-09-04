@@ -429,11 +429,8 @@ async function migrateV1ToV2WithActiveBridgeHandling(
 async function resolveBootstrapAppConfig(opts: ResolveProfileRuntimeOptions): Promise<AppConfig> {
   if (!opts.appId) {
     if (!isInteractiveTerminal()) {
-      throw new Error(
-        '当前没有配置，非交互模式无法完成扫码创建应用。' +
-          '请先在终端运行 `lark-channel-bridge run` 完成首次初始化，' +
-          '或传入 --app-id 和 --app-secret。',
-      );
+      // Agent environments can surface the wizard URL from stderr and keep polling.
+      return runRegistrationWizard();
     }
     return runRegistrationWizard();
   }
