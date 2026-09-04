@@ -3,7 +3,10 @@ import { realpath } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { AgentEvent } from '../../../src/agent/types.js';
-import type { FakeAgentEvents } from '../../helpers/fake-agent.js';
+import type {
+  FakeAgentEvents,
+  FakeWaitForExitResult,
+} from '../../helpers/fake-agent.js';
 import { createDefaultProfileConfig } from '../../../src/config/profile-schema.js';
 import { log } from '../../../src/core/logger.js';
 import { SessionStore } from '../../../src/session/store.js';
@@ -36,7 +39,10 @@ interface MessageHandlerMap {
 interface FakeLarkChannel {
   botIdentity: { openId: string; name: string };
   handlers: MessageHandlerMap;
+  /** Every send invocation, including rejected and receipt-less attempts. */
   sent: Array<{ chatId: string; content: unknown; options?: unknown }>;
+  /** Only sends that resolved with a non-empty message receipt. */
+  delivered: Array<{ chatId: string; content: unknown; options?: unknown }>;
   rawClient: {
     request: ReturnType<typeof vi.fn>;
     application: {
@@ -82,6 +88,27 @@ afterEach(async () => {
 });
 
 describe('markdown stream startup failures', () => {
+  it('configures a loss-tolerant SDK ping watchdog', async () => {
+    const h = await createHarness();
+    await startTestBridge(h);
+
+    expect(sdkMock.createLarkChannel).toHaveBeenCalledWith(
+      expect.objectContaining({
+        wsConfig: { pingTimeout: 20 },
+      }),
+    );
+  });
+
+  it('wires the configured post-terminal exit grace into channel runs', async () => {
+    const h = await createHarness({ postDoneExitGraceMs: 120_000 });
+    await startTestBridge(h);
+
+    await h.channel.handlers.message?.(message('om_cleanup_grace', 'run'));
+    await waitFor(() => h.agent.runs[0]?.waitForExitCalls === 1);
+
+    expect(h.agent.runs[0]?.waitForExitTimeouts).toEqual([120_000]);
+  });
+
   it('does not leave the IM queue blocked when the agent exits before stream producer starts', async () => {
     const h = await createHarness();
     await startTestBridge(h);
@@ -99,6 +126,49 @@ describe('markdown stream startup failures', () => {
     );
     expect(lastMarkdown(h.channel)).toContain('agent 失败');
     expect(lastMarkdown(h.channel)).toContain('codex exited with code 1');
+  });
+
+  it('keeps a queued same-scope turn blocked until post-terminal cleanup settles', async () => {
+    const firstExit = deferred<boolean>();
+    const h = await createHarness({
+      events: [
+        [
+          { type: 'final_text', content: 'FIRST_FINAL_BEFORE_CLEANUP' },
+          { type: 'done', terminationReason: 'normal' },
+        ],
+        [
+          { type: 'final_text', content: 'SECOND_FINAL_AFTER_CLEANUP' },
+          { type: 'done', terminationReason: 'normal' },
+        ],
+      ],
+      waitForExit: [firstExit.promise, true],
+    });
+    await startTestBridge(h);
+
+    try {
+      await h.channel.handlers.message?.(message('om_cleanup_first', 'first'));
+      await waitFor(() =>
+        h.channel.sent.some((sent) =>
+          JSON.stringify(sent.content).includes('FIRST_FINAL_BEFORE_CLEANUP'),
+        ),
+      );
+      await waitFor(() => h.agent.runs[0]?.waitForExitCalls === 1);
+
+      await h.channel.handlers.message?.(message('om_cleanup_second', 'second'));
+      await new Promise((resolve) => setTimeout(resolve, 800));
+
+      expect(h.agent.runs).toHaveLength(1);
+    } finally {
+      firstExit.resolve(true);
+    }
+
+    await waitFor(() => h.agent.runs.length === 2);
+    await waitFor(() =>
+      h.channel.sent.some((sent) =>
+        JSON.stringify(sent.content).includes('SECOND_FINAL_AFTER_CLEANUP'),
+      ),
+    );
+    expect(h.agent.runOptions).toHaveLength(2);
   });
 
   it('does not wait for the working reaction before draining a failed agent run', async () => {
@@ -262,6 +332,498 @@ describe('markdown stream startup failures', () => {
     expect(h.channel.sent).toHaveLength(0);
   });
 
+  it.each([
+    {
+      name: 'failure',
+      event: {
+        type: 'error',
+        message: 'codex stream ended before a terminal event',
+        terminationReason: 'failed',
+      } satisfies AgentEvent,
+      notice: 'agent 失败',
+    },
+    {
+      name: 'interruption',
+      event: { type: 'done', terminationReason: 'interrupted' } satisfies AgentEvent,
+      notice: '已被中断',
+    },
+    {
+      name: 'timeout',
+      event: { type: 'done', terminationReason: 'timeout' } satisfies AgentEvent,
+      notice: '已自动终止',
+    },
+  ])('sends one dedicated terminal fallback after a streamed $name', async ({ event, notice }) => {
+    const visibleProgress: string[] = [];
+    const h = await createHarness({
+      events: [{ type: 'text', delta: 'progress update' }, event],
+      stream: async (_chatId, input) => {
+        const producer = (input as {
+          markdown?: (ctrl: { setContent(markdown: string): Promise<void> }) => Promise<void>;
+        }).markdown;
+        await producer?.({
+          setContent: vi.fn(async (markdown: string) => {
+            visibleProgress.push(markdown);
+          }),
+        });
+      },
+    });
+    await startTestBridge(h);
+
+    await h.channel.handlers.message?.(message(`om_${event.terminationReason}`, 'run'));
+    await waitFor(() => h.channel.sent.length === 1);
+
+    expect(h.channel.sent).toHaveLength(1);
+    expect(lastMarkdown(h.channel)).toContain(notice);
+    expect(visibleProgress.some((markdown) => markdown.includes(notice))).toBe(false);
+    expect(visibleProgress.some((markdown) => markdown.includes('progress update'))).toBe(true);
+  });
+
+  it.each([
+    {
+      name: 'failure',
+      event: {
+        type: 'error',
+        message: 'claude stream ended before a terminal event',
+        terminationReason: 'failed',
+      } satisfies AgentEvent,
+      notice: 'agent 失败',
+    },
+    {
+      name: 'interruption',
+      event: { type: 'done', terminationReason: 'interrupted' } satisfies AgentEvent,
+      notice: '已被中断',
+    },
+    {
+      name: 'timeout',
+      event: { type: 'done', terminationReason: 'timeout' } satisfies AgentEvent,
+      notice: '已自动终止',
+    },
+  ])(
+    'sends one durable Claude terminal fallback without repeating progress after a streamed $name',
+    async ({ event, notice }) => {
+      const visibleProgress: string[] = [];
+      const h = await createHarness({
+        agentKind: 'claude',
+        events: [{ type: 'text', delta: 'CLAUDE_PROGRESS' }, event],
+        stream: async (_chatId, input) => {
+          const producer = (input as {
+            markdown?: (ctrl: { setContent(markdown: string): Promise<void> }) => Promise<void>;
+          }).markdown;
+          await producer?.({
+            setContent: vi.fn(async (markdown: string) => {
+              visibleProgress.push(markdown);
+            }),
+          });
+        },
+      });
+      await startTestBridge(h);
+
+      await h.channel.handlers.message?.(message(`om_claude_${event.terminationReason}`, 'run'));
+      await waitFor(() => h.channel.delivered.length === 1);
+
+      expect(h.channel.delivered).toHaveLength(1);
+      expect(lastDeliveredMarkdown(h.channel)).toContain(notice);
+      expect(lastDeliveredMarkdown(h.channel)).not.toContain('CLAUDE_PROGRESS');
+      expect(visibleProgress.some((markdown) => markdown.includes(notice))).toBe(false);
+      expect(visibleProgress.some((markdown) => markdown.includes('CLAUDE_PROGRESS'))).toBe(true);
+    },
+  );
+
+  it.each(['codex', 'claude'] as const)(
+    'reserves a streamed %s card failure for one dedicated terminal card',
+    async (agentKind) => {
+    const progressCards: unknown[] = [];
+    const h = await createHarness({
+      agentKind,
+      messageReply: 'card',
+      events: [
+        { type: 'text', delta: 'progress update' },
+        {
+          type: 'error',
+          message: 'CARD_TERMINAL_FAILURE',
+          terminationReason: 'failed',
+        },
+      ],
+      stream: async (_chatId, input) => {
+        const producer = (input as {
+          card?: { producer?: (ctrl: { update(next: unknown): Promise<void> }) => Promise<void> };
+        }).card?.producer;
+        await producer?.({
+          update: vi.fn(async (next: unknown) => {
+            progressCards.push(next);
+          }),
+        });
+      },
+    });
+    await startTestBridge(h);
+
+    await h.channel.handlers.message?.(message('om_card_failure', 'run'));
+    await waitFor(() => h.channel.sent.length === 1);
+
+    expect(h.channel.sent).toHaveLength(1);
+    expect(JSON.stringify(h.channel.sent[0]?.content)).toContain('CARD_TERMINAL_FAILURE');
+    expect(JSON.stringify(progressCards)).not.toContain('CARD_TERMINAL_FAILURE');
+    expect(JSON.stringify(progressCards)).toContain('progress update');
+    },
+  );
+
+  it('delivers a Claude abnormal terminal after stream completion rejects', async () => {
+    const visibleProgress: string[] = [];
+    const h = await createHarness({
+      agentKind: 'claude',
+      events: [
+        { type: 'text', delta: 'CLAUDE_PROGRESS' },
+        {
+          type: 'error',
+          message: 'CLAUDE_TERMINAL_FAILURE',
+          terminationReason: 'failed',
+        },
+      ],
+      stream: async (_chatId, input) => {
+        const producer = (input as {
+          markdown?: (ctrl: { setContent(markdown: string): Promise<void> }) => Promise<void>;
+        }).markdown;
+        await producer?.({
+          setContent: vi.fn(async (markdown: string) => {
+            visibleProgress.push(markdown);
+          }),
+        });
+        throw new Error('stream completion failed');
+      },
+    });
+    vi.spyOn(log, 'fail').mockImplementation(() => {});
+    await startTestBridge(h);
+
+    await h.channel.handlers.message?.(message('om_claude_stream_completion_failure', 'run'));
+    await waitFor(() => h.channel.delivered.length === 1);
+
+    expect(h.channel.delivered).toHaveLength(1);
+    expect(lastDeliveredMarkdown(h.channel)).toContain('CLAUDE_TERMINAL_FAILURE');
+    expect(lastDeliveredMarkdown(h.channel)).not.toContain('CLAUDE_PROGRESS');
+    expect(visibleProgress.some((markdown) => markdown.includes('CLAUDE_PROGRESS'))).toBe(true);
+  });
+
+  it('falls back once when the active /stop command acknowledgement rejects', async () => {
+    const progressWriteStarted = deferred<void>();
+    const releaseProgressWrite = deferred<void>();
+    const visibleProgress: string[] = [];
+    let sendAttempt = 0;
+    const h = await createHarness({
+      agentKind: 'claude',
+      events: [{ type: 'text', delta: 'progress update' }],
+      holdOpen: true,
+      send: async () => {
+        sendAttempt++;
+        if (sendAttempt === 1) throw new Error('command acknowledgement rejected');
+        return { messageId: `delivered_${sendAttempt}` };
+      },
+      stream: async (_chatId, input) => {
+        const producer = (input as {
+          markdown?: (ctrl: { setContent(markdown: string): Promise<void> }) => Promise<void>;
+        }).markdown;
+        await producer?.({
+          setContent: vi.fn(async (markdown: string) => {
+            visibleProgress.push(markdown);
+            if (markdown.includes('progress update')) {
+              progressWriteStarted.resolve();
+              await releaseProgressWrite.promise;
+            }
+          }),
+        });
+      },
+    });
+    vi.spyOn(log, 'fail').mockImplementation(() => {});
+    await startTestBridge(h);
+
+    await h.channel.handlers.message?.(message('om_stop_reject_claude', 'run'));
+    await progressWriteStarted.promise;
+    await h.channel.handlers.message?.(message('om_stop_reject_cmd_claude', '/stop'));
+    expect(h.agent.runs[0]?.stopped).toBe(true);
+
+    releaseProgressWrite.resolve();
+    await waitFor(() => h.channel.delivered.length === 1);
+
+    expect(h.channel.sent).toHaveLength(2);
+    expect(h.channel.delivered).toHaveLength(1);
+    expect(lastDeliveredMarkdown(h.channel)).toContain('已被中断');
+    expect(deliveredAcknowledgements(h.channel)).toHaveLength(1);
+    expect(visibleProgress.some((markdown) => markdown.includes('已被中断'))).toBe(false);
+  });
+
+  it('counts a delivered audit-safe /stop fallback as the sole acknowledgement', async () => {
+    const progressWriteStarted = deferred<void>();
+    const releaseProgressWrite = deferred<void>();
+    const visibleProgress: string[] = [];
+    let sendAttempt = 0;
+    const h = await createHarness({
+      agentKind: 'claude',
+      events: [{ type: 'text', delta: 'progress update' }],
+      holdOpen: true,
+      send: async () => {
+        sendAttempt++;
+        if (sendAttempt === 1) {
+          throw Object.assign(new Error('message does not pass the audit'), { code: 230028 });
+        }
+        return { messageId: 'audit_safe_ack' };
+      },
+      stream: async (_chatId, input) => {
+        const producer = (input as {
+          markdown?: (ctrl: { setContent(markdown: string): Promise<void> }) => Promise<void>;
+        }).markdown;
+        await producer?.({
+          setContent: vi.fn(async (markdown: string) => {
+            visibleProgress.push(markdown);
+            if (markdown.includes('progress update')) {
+              progressWriteStarted.resolve();
+              await releaseProgressWrite.promise;
+            }
+          }),
+        });
+      },
+    });
+    vi.spyOn(log, 'fail').mockImplementation(() => {});
+    await startTestBridge(h);
+
+    await h.channel.handlers.message?.(message('om_stop_audit_claude', 'run'));
+    await progressWriteStarted.promise;
+    await h.channel.handlers.message?.(message('om_stop_audit_cmd_claude', '/stop'));
+    releaseProgressWrite.resolve();
+    await waitFor(
+      () => h.channel.rawClient.im.v1.messageReaction.delete.mock.calls.length > 0,
+    );
+    await new Promise((resolve) => setTimeout(resolve, 80));
+
+    expect(h.agent.runs[0]?.stopped).toBe(true);
+    expect(h.channel.sent).toHaveLength(2);
+    expect(h.channel.delivered).toHaveLength(1);
+    expect(lastDeliveredMarkdown(h.channel)).toBe('命令已处理。');
+    expect(deliveredAcknowledgements(h.channel)).toHaveLength(1);
+    expect(visibleProgress.some((markdown) => markdown.includes('已被中断'))).toBe(false);
+  });
+
+  it.each(['codex', 'claude'] as const)(
+    'acknowledges an in-flight %s /stop exactly once',
+    async (agentKind) => {
+      const progressWriteStarted = deferred<void>();
+      const releaseProgressWrite = deferred<void>();
+      const commandSendStarted = deferred<void>();
+      const resolveCommandSend = deferred<{ messageId: string }>();
+      const visibleProgress: string[] = [];
+      const h = await createHarness({
+        agentKind,
+        events: [{ type: 'text', delta: 'progress update' }],
+        holdOpen: true,
+        send: async (_chatId, content) => {
+          const markdown = (content as { markdown?: string }).markdown;
+          if (markdown === '⏹ 已请求停止当前任务。') {
+            commandSendStarted.resolve();
+            return resolveCommandSend.promise;
+          }
+          return { messageId: 'unexpected_fallback' };
+        },
+        stream: async (_chatId, input) => {
+          const producer = (input as {
+            markdown?: (ctrl: { setContent(markdown: string): Promise<void> }) => Promise<void>;
+          }).markdown;
+          await producer?.({
+            setContent: vi.fn(async (markdown: string) => {
+              visibleProgress.push(markdown);
+              if (markdown.includes('progress update')) {
+                progressWriteStarted.resolve();
+                await releaseProgressWrite.promise;
+              }
+            }),
+          });
+        },
+      });
+      await startTestBridge(h);
+
+      await h.channel.handlers.message?.(message(`om_stop_${agentKind}`, 'run'));
+      await progressWriteStarted.promise;
+      const stopHandling = h.channel.handlers.message?.(
+        message(`om_stop_cmd_${agentKind}`, '/stop'),
+      );
+      await commandSendStarted.promise;
+      expect(h.agent.runs[0]?.stopped).toBe(true);
+
+      releaseProgressWrite.resolve();
+      await new Promise((resolve) => setTimeout(resolve, 80));
+      expect(h.channel.sent).toHaveLength(1);
+      expect(h.channel.delivered).toHaveLength(0);
+
+      resolveCommandSend.resolve({ messageId: `stop_ack_${agentKind}` });
+      await stopHandling;
+      await waitFor(
+        () => h.channel.rawClient.im.v1.messageReaction.delete.mock.calls.length > 0,
+      );
+      await new Promise((resolve) => setTimeout(resolve, 80));
+
+      expect(h.channel.sent).toHaveLength(1);
+      expect(h.channel.delivered).toHaveLength(1);
+      expect(lastDeliveredMarkdown(h.channel)).toBe('⏹ 已请求停止当前任务。');
+      expect(deliveredAcknowledgements(h.channel)).toHaveLength(1);
+      expect(visibleProgress.some((markdown) => markdown.includes('已被中断'))).toBe(false);
+    },
+  );
+
+  it('keeps the first overlapping /stop acknowledgement as the sole terminal owner', async () => {
+    const stopCompletion = deferred<void>();
+    const firstAcknowledgement = deferred<{ messageId: string }>();
+    const firstAcknowledgementStarted = deferred<void>();
+    const visibleProgress: string[] = [];
+    let stopAcknowledgementAttempts = 0;
+    const h = await createHarness({
+      agentKind: 'claude',
+      events: [{ type: 'text', delta: 'progress before overlapping stops' }],
+      holdOpen: true,
+      stopEvent: { type: 'done', terminationReason: 'interrupted' },
+      stopCompletion: stopCompletion.promise,
+      send: async (_chatId, content) => {
+        const markdown = (content as { markdown?: string }).markdown ?? '';
+        if (markdown === '⏹ 已请求停止当前任务。') {
+          stopAcknowledgementAttempts++;
+          if (stopAcknowledgementAttempts === 1) {
+            firstAcknowledgementStarted.resolve();
+            return firstAcknowledgement.promise;
+          }
+          return { messageId: '' };
+        }
+        if (markdown === '当前没有正在运行的任务。' || markdown === '命令已处理。') {
+          return { messageId: '' };
+        }
+        if (markdown.includes('已被中断')) {
+          return { messageId: 'unexpected_terminal_fallback' };
+        }
+        return { messageId: 'other_reply' };
+      },
+      stream: async (_chatId, input) => {
+        const producer = (input as {
+          markdown?: (ctrl: { setContent(markdown: string): Promise<void> }) => Promise<void>;
+        }).markdown;
+        await producer?.({
+          setContent: vi.fn(async (markdown: string) => {
+            visibleProgress.push(markdown);
+          }),
+        });
+      },
+    });
+    await startTestBridge(h);
+
+    let firstStopHandling: Promise<void> | void = undefined;
+    try {
+      await h.channel.handlers.message?.(message('om_overlap_run', 'run'));
+      await waitFor(() =>
+        visibleProgress.some((markdown) => markdown.includes('progress before overlapping stops')),
+      );
+
+      firstStopHandling = h.channel.handlers.message?.(
+        message('om_overlap_stop_first', '/stop'),
+      );
+      await firstAcknowledgementStarted.promise;
+      await h.channel.handlers.message?.(message('om_overlap_stop_second', '/stop'));
+
+      stopCompletion.resolve();
+      await new Promise((resolve) => setTimeout(resolve, 80));
+      firstAcknowledgement.resolve({ messageId: 'first_stop_ack' });
+      await firstStopHandling;
+      await waitFor(
+        () => h.channel.rawClient.im.v1.messageReaction.delete.mock.calls.length > 0,
+      );
+      await new Promise((resolve) => setTimeout(resolve, 80));
+    } finally {
+      stopCompletion.resolve();
+      firstAcknowledgement.resolve({ messageId: 'first_stop_ack' });
+      if (firstStopHandling) await firstStopHandling;
+    }
+
+    expect(stopAcknowledgementAttempts).toBe(1);
+    expect(deliveredAcknowledgements(h.channel)).toEqual(['⏹ 已请求停止当前任务。']);
+    expect(
+      h.channel.sent.some((entry) =>
+        ((entry.content as { markdown?: string }).markdown ?? '').includes('已被中断'),
+      ),
+    ).toBe(false);
+  });
+
+  it('lets current-scope /stop own the only visible CoT interruption status', async () => {
+    const cot = installFakeCotFetch();
+    const h = await createHarness({
+      cotMessages: 'brief',
+      events: [{ type: 'text', delta: 'CoT progress before stop' }],
+      holdOpen: true,
+      stopEvent: { type: 'done', terminationReason: 'interrupted' },
+    });
+    await startTestBridge(h);
+
+    await h.channel.handlers.message?.(message('om_cot_stop_run', 'run'));
+    await waitFor(() =>
+      cot.events.some((event) => event.event_type === 'TEXT_MESSAGE_CONTENT'),
+    );
+    await h.channel.handlers.message?.(message('om_cot_stop_command', '/stop'));
+    await waitFor(() => cot.completed.length === 1);
+
+    expect(h.channel.sent).toHaveLength(1);
+    expect(lastMarkdown(h.channel)).toBe('⏹ 已请求停止当前任务。');
+    expect(
+      cot.events.some((event) => {
+        if (event.event_type !== 'RUN_FINISHED') return false;
+        return JSON.parse(event.content).status === 'interrupted';
+      }),
+    ).toBe(false);
+    expect(cot.events.some((event) => event.event_type === 'RUN_ERROR')).toBe(false);
+  });
+
+  it('keeps abnormal Codex CoT progress out of the dedicated terminal fallback', async () => {
+    const cot = installFakeCotFetch();
+    const h = await createHarness({
+      cotMessages: 'brief',
+      events: [
+        { type: 'text', delta: 'COT_PROGRESS_ALREADY_VISIBLE' },
+        {
+          type: 'error',
+          message: 'COT_TERMINAL_FAILURE',
+          terminationReason: 'failed',
+        },
+      ],
+    });
+    await startTestBridge(h);
+
+    await h.channel.handlers.message?.(message('om_cot_failure', 'run'));
+    await waitFor(() => h.channel.sent.length === 1);
+
+    expect(
+      cot.events.some(
+        (event) =>
+          event.event_type === 'TEXT_MESSAGE_CONTENT' &&
+          JSON.parse(event.content).delta === 'COT_PROGRESS_ALREADY_VISIBLE',
+      ),
+    ).toBe(true);
+    expect(lastMarkdown(h.channel)).toContain('COT_TERMINAL_FAILURE');
+    expect(lastMarkdown(h.channel)).not.toContain('COT_PROGRESS_ALREADY_VISIBLE');
+    expect(h.channel.sent).toHaveLength(1);
+  });
+
+  it('still sends one normal final answer after CoT progress', async () => {
+    const cot = installFakeCotFetch();
+    const h = await createHarness({
+      cotMessages: 'brief',
+      events: [
+        { type: 'text', delta: 'COT_NORMAL_PROGRESS' },
+        { type: 'final_text', content: 'COT_NORMAL_FINAL_ANSWER' },
+        { type: 'done', terminationReason: 'normal' },
+      ],
+    });
+    await startTestBridge(h);
+
+    await h.channel.handlers.message?.(message('om_cot_normal', 'run'));
+    await waitFor(() => h.channel.sent.length === 1);
+
+    expect(cot.events.some((event) => event.event_type === 'TEXT_MESSAGE_CONTENT')).toBe(true);
+    expect(lastMarkdown(h.channel)).toContain('COT_NORMAL_FINAL_ANSWER');
+    expect(lastMarkdown(h.channel)).not.toContain('COT_NORMAL_PROGRESS');
+    expect(h.channel.sent).toHaveLength(1);
+  });
+
   it('waits for a slow-opening progress stream instead of replying alongside it', async () => {
     // Opening a streaming card costs two API round trips. When the run finishes
     // first, replying right away duplicates the answer verbatim — once as text,
@@ -359,6 +921,69 @@ describe('markdown stream startup failures', () => {
     ).toBe(true);
   });
 
+  it('keeps draining Codex after an early markdown controller write fails', async () => {
+    const setContent = vi.fn(async () => {
+      throw new Error('markdown controller write failed');
+    });
+    const h = await createHarness({
+      events: [
+        { type: 'text', delta: 'progress before write failure' },
+        { type: 'text', delta: 'more progress after write failure' },
+        {
+          type: 'error',
+          message: 'TERMINAL_AFTER_MARKDOWN_WRITE_FAILURE',
+          terminationReason: 'failed',
+        },
+      ],
+      stream: async (_chatId, input) => {
+        const producer = (input as {
+          markdown?: (ctrl: { setContent(markdown: string): Promise<void> }) => Promise<void>;
+        }).markdown;
+        await producer?.({ setContent });
+      },
+    });
+    await startTestBridge(h);
+
+    await h.channel.handlers.message?.(message('om_early_markdown_write_failure', 'run'));
+    await waitFor(() => h.channel.sent.length === 1);
+
+    expect(setContent).toHaveBeenCalledTimes(1);
+    expect(h.channel.sent).toHaveLength(1);
+    expect(lastMarkdown(h.channel)).toContain('TERMINAL_AFTER_MARKDOWN_WRITE_FAILURE');
+    expect(lastMarkdown(h.channel)).not.toContain('progress before write failure');
+  });
+
+  it('falls back once after an early Claude card controller write fails', async () => {
+    const update = vi.fn(async () => {
+      throw new Error('card controller write failed');
+    });
+    const h = await createHarness({
+      agentKind: 'claude',
+      messageReply: 'card',
+      events: [
+        { type: 'text', delta: 'CLAUDE_' },
+        { type: 'text', delta: 'FINAL_AFTER_EARLY_CARD_WRITE_FAILURE' },
+        { type: 'done', terminationReason: 'normal' },
+      ],
+      stream: async (_chatId, input) => {
+        const producer = (input as {
+          card?: { producer?: (ctrl: { update(next: unknown): Promise<void> }) => Promise<void> };
+        }).card?.producer;
+        await producer?.({ update });
+      },
+    });
+    await startTestBridge(h);
+
+    await h.channel.handlers.message?.(message('om_early_card_write_failure', 'run'));
+    await waitFor(() => h.channel.sent.length === 1);
+
+    expect(update).toHaveBeenCalledTimes(1);
+    expect(h.channel.sent).toHaveLength(1);
+    expect(JSON.stringify(h.channel.sent[0]?.content)).toContain(
+      'CLAUDE_FINAL_AFTER_EARLY_CARD_WRITE_FAILURE',
+    );
+  });
+
   it('does not record delivery when the final send has no message receipt', async () => {
     const fail = vi.spyOn(log, 'fail').mockImplementation(() => {});
     const info = vi.spyOn(log, 'info').mockImplementation(() => {});
@@ -438,6 +1063,12 @@ async function createHarness(options: {
   messageReply?: 'card' | 'markdown' | 'text';
   /** Codex holds its answer back for a dedicated final reply; Claude streams it. */
   agentKind?: 'claude' | 'codex';
+  postDoneExitGraceMs?: number;
+  cotMessages?: 'brief' | 'detailed';
+  waitForExit?: FakeWaitForExitResult | readonly FakeWaitForExitResult[];
+  holdOpen?: boolean;
+  stopEvent?: AgentEvent;
+  stopCompletion?: Promise<void>;
 } = {}): Promise<{
   tmp: TmpProfile;
   channel: FakeLarkChannel;
@@ -464,7 +1095,19 @@ async function createHarness(options: {
     codex: {
       binaryPath: '/usr/local/bin/codex',
     },
-    ...(options.messageReply ? { preferences: { messageReply: options.messageReply } } : {}),
+    ...(options.messageReply ||
+    options.postDoneExitGraceMs !== undefined ||
+    options.cotMessages
+      ? {
+          preferences: {
+            ...(options.messageReply ? { messageReply: options.messageReply } : {}),
+            ...(options.postDoneExitGraceMs !== undefined
+              ? { postDoneExitGraceMs: options.postDoneExitGraceMs }
+              : {}),
+            ...(options.cotMessages ? { cotMessages: options.cotMessages } : {}),
+          },
+        }
+      : {}),
   });
   const profileConfig = {
     ...baseProfileConfig,
@@ -488,6 +1131,10 @@ async function createHarness(options: {
       ],
       [{ type: 'done', terminationReason: 'normal' }],
     ],
+    waitForExit: options.waitForExit,
+    holdOpen: options.holdOpen,
+    stopEvent: options.stopEvent,
+    stopCompletion: options.stopCompletion,
   });
   const channel = createFakeLarkChannel(options);
   sdkMock.channel = channel;
@@ -531,9 +1178,11 @@ function createFakeLarkChannel(harnessOptions: {
 } = {}): FakeLarkChannel {
   const handlers: MessageHandlerMap = {};
   const sent: FakeLarkChannel['sent'] = [];
+  const delivered: FakeLarkChannel['delivered'] = [];
   const channel: FakeLarkChannel = {
     handlers,
     sent,
+    delivered,
     botIdentity: { openId: 'ou_bot', name: 'Bridge' },
     rawClient: {
       request: vi.fn(async () => ({ data: { items: [] } })),
@@ -570,9 +1219,13 @@ function createFakeLarkChannel(harnessOptions: {
       return { state: 'connected', reconnectAttempts: 0 };
     },
     async send(chatId, content, options) {
-      sent.push({ chatId, content, options });
-      if (harnessOptions.send) return harnessOptions.send(chatId, content, options);
-      return { messageId: `sent_${sent.length}` };
+      const attempt = { chatId, content, options };
+      sent.push(attempt);
+      const result = harnessOptions.send
+        ? await harnessOptions.send(chatId, content, options)
+        : { messageId: `sent_${sent.length}` };
+      if (result.messageId.trim()) delivered.push(attempt);
+      return result;
     },
     stream: harnessOptions.stream ?? (async () => {
       await new Promise<void>(() => {});
@@ -591,6 +1244,50 @@ function createFakeLarkChannel(harnessOptions: {
     },
   };
   return channel;
+}
+
+function installFakeCotFetch(): {
+  events: Array<{ event_type: string; content: string; timestamp: number }>;
+  completed: string[];
+} {
+  const events: Array<{ event_type: string; content: string; timestamp: number }> = [];
+  const completed: string[] = [];
+  vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+    const url = String(input);
+    if (url.includes('/auth/v3/tenant_access_token/internal')) {
+      return jsonResponse({
+        code: 0,
+        tenant_access_token: 'fake_cot_token',
+        expire: 7200,
+      });
+    }
+    if (url.includes('/message_cot/complete/')) {
+      completed.push(new URL(url).searchParams.get('reason') ?? '');
+      return jsonResponse({ code: 0 });
+    }
+    if (url.includes('/message_cot') && init?.method === 'PUT') {
+      const body = JSON.parse(String(init.body ?? '{}')) as {
+        events?: Array<{ event_type: string; content: string; timestamp: number }>;
+      };
+      events.push(...(body.events ?? []));
+      return jsonResponse({ code: 0 });
+    }
+    if (url.includes('/message_cot') && init?.method === 'POST') {
+      return jsonResponse({
+        code: 0,
+        data: { cot_id: 'cot_fake', message_id: 'om_cot_fake' },
+      });
+    }
+    throw new Error(`unexpected fake CoT request: ${init?.method ?? 'GET'} ${url}`);
+  });
+  return { events, completed };
+}
+
+function jsonResponse(body: unknown): Response {
+  return new Response(JSON.stringify(body), {
+    status: 200,
+    headers: { 'Content-Type': 'application/json' },
+  });
 }
 
 function deferred<T>(): {
@@ -640,6 +1337,23 @@ function lastMarkdown(channel: FakeLarkChannel): string {
   const content = channel.sent.at(-1)?.content as { markdown?: string } | undefined;
   expect(content?.markdown).toBeTypeOf('string');
   return content?.markdown ?? '';
+}
+
+function lastDeliveredMarkdown(channel: FakeLarkChannel): string {
+  const content = channel.delivered.at(-1)?.content as { markdown?: string } | undefined;
+  expect(content?.markdown).toBeTypeOf('string');
+  return content?.markdown ?? '';
+}
+
+function deliveredAcknowledgements(channel: FakeLarkChannel): string[] {
+  return channel.delivered
+    .map((entry) => (entry.content as { markdown?: string }).markdown ?? '')
+    .filter(
+      (markdown) =>
+        markdown.includes('已请求停止当前任务') ||
+        markdown.includes('已被中断') ||
+        markdown === '命令已处理。',
+    );
 }
 
 async function waitFor(predicate: () => boolean, timeoutMs = 3000): Promise<void> {

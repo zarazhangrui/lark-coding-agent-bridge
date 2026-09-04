@@ -8,6 +8,7 @@ import {
   effectiveLarkCliIdentity,
   normalizeProfileConfig,
 } from '../../../src/config/profile-schema';
+import { getPostDoneExitGraceMs } from '../../../src/config/schema';
 
 const app = {
   id: 'cli_test',
@@ -49,6 +50,22 @@ describe('profile schema', () => {
       defaultMode: 'danger-full-access',
       maxMode: 'danger-full-access',
     });
+  });
+
+  it('provides a typed, bounded post-terminal process-exit grace', () => {
+    const create = (postDoneExitGraceMs?: number) =>
+      createDefaultProfileConfig({
+        agentKind: 'claude',
+        accounts: { app },
+        ...(postDoneExitGraceMs === undefined
+          ? {}
+          : { preferences: { postDoneExitGraceMs } }),
+      });
+
+    expect(getPostDoneExitGraceMs(create())).toBe(30_000);
+    expect(getPostDoneExitGraceMs(create(120_000))).toBe(120_000);
+    expect(getPostDoneExitGraceMs(create(100))).toBe(5_000);
+    expect(getPostDoneExitGraceMs(create(1_000_000))).toBe(900_000);
   });
 
   it('defaults deployment mode to personal and parses team', () => {

@@ -3,6 +3,15 @@ import type { AgentRun } from '../agent/types';
 export interface RunHandle {
   run: AgentRun;
   interrupted: boolean;
+  /** Receipt-backed outcome for a current-scope `/stop` command reply. */
+  interruptionAcknowledgement?: Promise<boolean>;
+  /** Executor-owned stop path that also settles process tracking. */
+  requestStop?: () => Promise<void>;
+}
+
+export interface InterruptOptions {
+  /** Pending delivery outcome when the caller may own the acknowledgement. */
+  interruptionAcknowledgement?: Promise<boolean>;
 }
 
 export class ActiveRuns {
@@ -71,18 +80,24 @@ export class ActiveRuns {
 
   /**
    * Interrupt the current run for this chat, if any. Returns true if an
-   * interrupt was issued. Fires stop() fire-and-forget — the old run's
-   * generator exits on its own as the subprocess dies.
+   * interrupt was newly issued. An already-interrupted handle keeps its first
+   * acknowledgement owner and returns false. Fires stop() fire-and-forget —
+   * the old run's generator exits on its own as the subprocess dies.
    */
-  interrupt(chatId: string): boolean {
+  interrupt(chatId: string, options: InterruptOptions = {}): boolean {
     const h = this.handles.get(chatId);
-    if (!h) return false;
+    if (!h || h.interrupted) return false;
     this.reservations.delete(chatId);
     h.interrupted = true;
-    this.handles.delete(chatId);
-    void h.run.stop().catch(() => {
-      /* stop errors are non-fatal */
-    });
+    if (options.interruptionAcknowledgement) {
+      h.interruptionAcknowledgement ??= options.interruptionAcknowledgement;
+    }
+    const stopping = h.requestStop?.() ?? h.run.stop();
+    void stopping
+      .catch(() => {
+        /* stop errors are non-fatal */
+      })
+      .finally(() => this.unregister(chatId, h.run));
     return true;
   }
 
@@ -91,7 +106,7 @@ export class ActiveRuns {
     this.handles.clear();
     this.reservations.clear();
     for (const h of all) h.interrupted = true;
-    await Promise.allSettled(all.map((h) => h.run.stop()));
+    await Promise.allSettled(all.map((h) => h.requestStop?.() ?? h.run.stop()));
   }
 
   async waitForAll(timeoutMs = 300_000): Promise<void> {

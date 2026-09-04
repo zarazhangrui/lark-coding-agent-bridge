@@ -35,6 +35,7 @@ import {
   getCotMessages,
   getMaxConcurrentRuns,
   getMessageReplyMode,
+  getPostDoneExitGraceMs,
   getRunIdleTimeoutMs,
   getShowToolCalls,
 } from '../config/schema';
@@ -78,6 +79,8 @@ import {
 const DEBOUNCE_MS = 600;
 const STREAM_TERMINAL_GRACE_MS = 3000;
 const REACTION_CLEANUP_GRACE_MS = 1000;
+const SDK_PING_TIMEOUT_SECONDS = 20;
+const SDK_HTTP_TIMEOUT_MS = 30_000;
 
 const BRIDGE_AGENT_INSTRUCTIONS = [
   '你在 bridge 进程中运行，普通 lark-cli 会继承 LARK_CHANNEL=1 并进入 bridge-bound 模式。',
@@ -190,7 +193,12 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
   // Concurrency cap — reads `preferences.maxConcurrentRuns` on each acquire,
   // so /config bumps take effect for the next run.
   const pool = new ProcessPool(() => getMaxConcurrentRuns(controls.cfg));
-  const executor = new RunExecutor({ agent, pool, activeRuns });
+  const executor = new RunExecutor({
+    agent,
+    pool,
+    activeRuns,
+    postDoneExitGraceMs: getPostDoneExitGraceMs(controls.cfg),
+  });
 
   // Resolve the App Secret to plaintext. The config field can be a literal
   // string, a "${VAR}" template, or a {source, id} SecretRef referencing
@@ -255,16 +263,20 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
     },
     // SDK 1.65.0-alpha.3+ knobs.
     wsConfig: {
-      // 3s liveness watchdog: if no inbound message arrives within 3s after
-      // the last ping, SDK presumes connection dead and forces a reconnect.
-      pingTimeout: 3,
+      // Tolerate mild packet loss while still bounding half-dead connections.
+      // The server normally asks clients to ping only every 120 seconds, so a
+      // 20-second response window remains responsive without treating one
+      // delayed/lost pong as a dead socket.
+      pingTimeout: SDK_PING_TIMEOUT_SECONDS,
     },
     // 8s handshake timeout (replaces hardcoded 15s). Fast-fail + fast-retry
     // beats slow-fail in unstable networks.
     handshakeTimeoutMs: 8_000,
-    // Per-request REST timeout — without a cap a slow API can hang the
-    // event-handling thread.
-    httpTimeoutMs: 30_000,
+    // Per-request REST timeout. `/stop` renderer ownership waits for the
+    // receipt-checked command send itself, so this SDK deadline is also its
+    // bound; a separate timer could lose to a late successful receipt and
+    // produce both a fallback and an acknowledgement.
+    httpTimeoutMs: SDK_HTTP_TIMEOUT_MS,
     // Route WS + REST through HTTPS_PROXY / HTTP_PROXY when set (no-op otherwise).
     respectProxyEnv: true,
   };
@@ -1051,6 +1063,8 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
     if (getShowToolCalls(controls.cfg)) return state;
     return { ...state, blocks: state.blocks.filter((b) => b.kind !== 'tool') };
   };
+  const progressStateFor = (state: RunState): RunState =>
+    filterForPrefs(progressDeliveryState(state));
   const cardRenderOptions = callbackAuth
     ? {
         signCallback: (action: string) =>
@@ -1091,6 +1105,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
       if (!cotPublisher.disabled) {
         const cotDone = consumeCotEvents(execution.subscribe(), cotPublisher, {
           detail: cotMessages,
+          reserveAbnormalTerminal: true,
         });
         const finalState = await processAgentStream(
           handle,
@@ -1110,11 +1125,18 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
             reason: cotPublisher.degradedReason,
           });
         }
+        const interruptionAcknowledged = await wasInterruptionAcknowledged(handle, finalState);
+        const deliverable = suppressAcknowledgedInterruption(
+          finalState,
+          interruptionAcknowledged,
+        );
         await sendFinalReply({
           channel,
           chatId,
           scope,
-          state: finalAnswerOnlyState(finalState),
+          state: isAbnormalTerminal(finalState)
+            ? dedicatedTerminalReplyState(deliverable)
+            : finalAnswerOnlyState(deliverable),
           replyMode,
           sendOpts,
           cardRenderOptions,
@@ -1130,6 +1152,8 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
       let cardCtrl:
         | { update(next: object | ((current: object) => object)): Promise<void> }
         | undefined;
+      let initialCardWrite: Promise<void> | undefined;
+      let cardWriteFailure: unknown;
       const progress = createLazyProgressStream(scope, replyMode, () =>
         channel.stream(
           chatId,
@@ -1140,8 +1164,20 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
                 producerStarted = true;
                 if (progress.abandoned()) return;
                 cardCtrl = ctrl;
-                await ctrl.update(renderCard(filterForPrefs(latestState), cardRenderOptions));
+                initialCardWrite = ctrl.update(
+                  renderCard(progressStateFor(latestState), cardRenderOptions),
+                );
+                try {
+                  await initialCardWrite;
+                } catch (err) {
+                  cardWriteFailure = err;
+                  cardCtrl = undefined;
+                  throw err;
+                } finally {
+                  initialCardWrite = undefined;
+                }
                 await renderDone;
+                if (cardWriteFailure) throw cardWriteFailure;
               },
             },
           },
@@ -1156,9 +1192,19 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
         recordSession,
         async (state) => {
           latestState = state;
-          if (shouldOpenProgressStream(filterForPrefs(state))) progress.ensureOpen();
+          if (shouldOpenProgressStream(progressStateFor(state))) progress.ensureOpen();
+          const openingWrite = initialCardWrite;
+          if (openingWrite) {
+            await openingWrite.catch(() => {});
+            return;
+          }
           if (cardCtrl) {
-            await cardCtrl.update(renderCard(filterForPrefs(state), cardRenderOptions));
+            try {
+              await cardCtrl.update(renderCard(progressStateFor(state), cardRenderOptions));
+            } catch (err) {
+              cardWriteFailure = err;
+              cardCtrl = undefined;
+            }
           }
         },
       );
@@ -1170,25 +1216,34 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
           producerStarted: () => producerStarted,
           fallback: async (state) => {
             if (controls.profileConfig.agentKind === 'codex') return;
-            if (renderText(filterForPrefs(state)).trim() === '') return;
+            const fallbackState = progressStateFor(state);
+            if (renderText(fallbackState).trim() === '') return;
             await channel.send(
               chatId,
-              { card: renderCard(filterForPrefs(state), cardRenderOptions) },
+              { card: renderCard(fallbackState, cardRenderOptions) },
               sendOpts,
             );
           },
         });
       } catch (err) {
-        if (controls.profileConfig.agentKind !== 'codex') throw err;
         log.fail('stream', err, { mode: replyMode, step: 'progress-stream' });
       }
-      await recallIfEmptyStreamedReply(channel, progress, filterForPrefs(latestState), scope);
-      if (controls.profileConfig.agentKind === 'codex') {
+      await recallIfEmptyStreamedReply(channel, progress, progressStateFor(latestState), scope);
+      if (
+        controls.profileConfig.agentKind === 'codex' ||
+        isAbnormalTerminal(latestState)
+      ) {
+        const interruptionAcknowledged = await wasInterruptionAcknowledged(handle, latestState);
         await sendFinalReply({
           channel,
           chatId,
           scope,
-          state: finalReplyState(progress, filterForPrefs(latestState)),
+          state: finalReplyState(
+            progress,
+            filterForPrefs(latestState),
+            interruptionAcknowledged,
+            controls.profileConfig.agentKind === 'codex',
+          ),
           replyMode,
           sendOpts,
           cardRenderOptions,
@@ -1198,6 +1253,8 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
       let latestState: RunState = initialState;
       let producerStarted = false;
       let markdownCtrl: { setContent(markdown: string): Promise<void> } | undefined;
+      let initialMarkdownWrite: Promise<void> | undefined;
+      let markdownWriteFailure: unknown;
       const progress = createLazyProgressStream(scope, replyMode, () =>
         channel.stream(
           chatId,
@@ -1206,8 +1263,18 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
               producerStarted = true;
               if (progress.abandoned()) return;
               markdownCtrl = ctrl;
-              await ctrl.setContent(renderText(filterForPrefs(latestState)));
+              initialMarkdownWrite = ctrl.setContent(renderText(progressStateFor(latestState)));
+              try {
+                await initialMarkdownWrite;
+              } catch (err) {
+                markdownWriteFailure = err;
+                markdownCtrl = undefined;
+                throw err;
+              } finally {
+                initialMarkdownWrite = undefined;
+              }
               await renderDone;
+              if (markdownWriteFailure) throw markdownWriteFailure;
             },
           },
           sendOpts,
@@ -1221,9 +1288,19 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
         recordSession,
         async (state) => {
           latestState = state;
-          if (shouldOpenProgressStream(filterForPrefs(state))) progress.ensureOpen();
+          if (shouldOpenProgressStream(progressStateFor(state))) progress.ensureOpen();
+          const openingWrite = initialMarkdownWrite;
+          if (openingWrite) {
+            await openingWrite.catch(() => {});
+            return;
+          }
           if (markdownCtrl) {
-            await markdownCtrl.setContent(renderText(filterForPrefs(state)));
+            try {
+              await markdownCtrl.setContent(renderText(progressStateFor(state)));
+            } catch (err) {
+              markdownWriteFailure = err;
+              markdownCtrl = undefined;
+            }
           }
         },
       );
@@ -1235,23 +1312,31 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
           producerStarted: () => producerStarted,
           fallback: async (state) => {
             if (controls.profileConfig.agentKind === 'codex') return;
-            const body = renderText(filterForPrefs(state));
+            const body = renderText(progressStateFor(state));
             if (body.trim()) {
               await channel.send(chatId, { markdown: body }, sendOpts);
             }
           },
         });
       } catch (err) {
-        if (controls.profileConfig.agentKind !== 'codex') throw err;
         log.fail('stream', err, { mode: replyMode, step: 'progress-stream' });
       }
-      await recallIfEmptyStreamedReply(channel, progress, filterForPrefs(latestState), scope);
-      if (controls.profileConfig.agentKind === 'codex') {
+      await recallIfEmptyStreamedReply(channel, progress, progressStateFor(latestState), scope);
+      if (
+        controls.profileConfig.agentKind === 'codex' ||
+        isAbnormalTerminal(latestState)
+      ) {
+        const interruptionAcknowledged = await wasInterruptionAcknowledged(handle, latestState);
         await sendFinalReply({
           channel,
           chatId,
           scope,
-          state: finalReplyState(progress, filterForPrefs(latestState)),
+          state: finalReplyState(
+            progress,
+            filterForPrefs(latestState),
+            interruptionAcknowledged,
+            controls.profileConfig.agentKind === 'codex',
+          ),
           replyMode,
           sendOpts,
           cardRenderOptions,
@@ -1269,14 +1354,17 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
         recordSession,
         async () => {},
       );
+      const interruptionAcknowledged = await wasInterruptionAcknowledged(handle, finalState);
       await sendFinalReply({
         channel,
         chatId,
         scope,
-        state:
+        state: suppressAcknowledgedInterruption(
           controls.profileConfig.agentKind === 'codex'
             ? finalAnswerOnlyState(filterForPrefs(finalState))
             : filterForPrefs(finalState),
+          interruptionAcknowledged,
+        ),
         replyMode,
         sendOpts,
         cardRenderOptions,
@@ -1285,6 +1373,10 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
   } catch (err) {
     log.fail('stream', err);
   } finally {
+    // PendingQueue unblocks only after runAgentBatch returns. Keep that handoff
+    // closed until the executor has unregistered the scope and released its
+    // process slot, not merely until the terminal event has been rendered.
+    await execution.cleanupSettled;
     activePolicyFingerprints.delete(scope);
     scheduleWorkingReactionCleanup(channel, lastMsg.messageId, reactionPromise);
   }
@@ -1378,17 +1470,98 @@ function shouldOpenProgressStream(state: RunState): boolean {
  * turn end (`turn.failed`, or the process exiting before `turn.completed`)
  * flushes the pending message as text instead of `final_text`.
  *
- * Terminal notices are dropped for the same reason — the stream rendered them.
+ * Abnormal terminal notices are reserved for this dedicated reply. Progress
+ * streams show any preceding output but not the terminal notice, so a failure,
+ * interruption, or timeout cannot disappear if the stream delivery is lost.
  */
-function finalReplyState(progress: LazyProgressStream, state: RunState): RunState {
-  if (!progress.opened() || progress.abandoned()) return finalAnswerOnlyState(state);
+function finalReplyState(
+  progress: LazyProgressStream,
+  state: RunState,
+  interruptionAcknowledged: boolean,
+  includeFinalAnswer = true,
+): RunState {
+  const deliverable = suppressAcknowledgedInterruption(state, interruptionAcknowledged);
+  if (!includeFinalAnswer) {
+    return dedicatedTerminalReplyState(deliverable);
+  }
+  if (!progress.opened() || progress.abandoned()) return finalAnswerOnlyState(deliverable);
+  if (isAbnormalTerminal(deliverable)) {
+    return dedicatedTerminalReplyState(deliverable);
+  }
   return {
-    ...state,
-    blocks: state.finalText ? [{ kind: 'text', content: state.finalText, streaming: false }] : [],
+    ...deliverable,
+    blocks: deliverable.finalText
+      ? [{ kind: 'text', content: deliverable.finalText, streaming: false }]
+      : [],
     reasoning: { content: '', active: false },
     footer: null,
     terminal: 'done',
     errorMsg: undefined,
+  };
+}
+
+function dedicatedTerminalReplyState(state: RunState): RunState {
+  return {
+    ...state,
+    blocks: state.finalText
+      ? [{ kind: 'text', content: state.finalText, streaming: false }]
+      : [],
+    reasoning: { content: '', active: false },
+    footer: null,
+  };
+}
+
+function isAbnormalTerminal(state: RunState): boolean {
+  return (
+    state.terminal === 'error' ||
+    state.terminal === 'interrupted' ||
+    state.terminal === 'idle_timeout'
+  );
+}
+
+/**
+ * Keep abnormal terminal notices out of progress streams. Both agents post
+ * them once through the durable final-reply path, after any `/stop` command
+ * delivery decision settles.
+ */
+function progressDeliveryState(state: RunState): RunState {
+  if (!isAbnormalTerminal(state)) return state;
+  return {
+    ...state,
+    terminal: 'done',
+    errorMsg: undefined,
+    idleTimeoutMinutes: undefined,
+    footer: null,
+  };
+}
+
+async function wasInterruptionAcknowledged(
+  handle: RunHandle,
+  state: RunState,
+): Promise<boolean> {
+  if (state.terminal !== 'interrupted' || !handle.interruptionAcknowledgement) return false;
+  try {
+    return (await handle.interruptionAcknowledgement) === true;
+  } catch {
+    return false;
+  }
+}
+
+/** The interrupting command already sent the only terminal acknowledgement. */
+function suppressAcknowledgedInterruption(
+  state: RunState,
+  interruptionAcknowledged: boolean,
+): RunState {
+  if (!interruptionAcknowledged || state.terminal !== 'interrupted') return state;
+  return {
+    ...state,
+    blocks: [],
+    finalText: undefined,
+    reasoning: { content: '', active: false },
+    footer: null,
+    terminal: 'done',
+    errorMsg: undefined,
+    idleTimeoutMinutes: undefined,
   };
 }
 

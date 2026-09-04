@@ -263,7 +263,7 @@ export function finalAnswerOnlyState(state: RunState): RunState {
 export async function consumeCotEvents(
   events: AsyncIterable<AgentEvent>,
   publisher: CotPublisher,
-  opts: { detail: CotMessagesMode },
+  opts: { detail: CotMessagesMode; reserveAbnormalTerminal?: boolean },
 ): Promise<void> {
   let reasoningOpen = false;
   let textStepOpen = false;
@@ -361,6 +361,13 @@ export async function consumeCotEvents(
             stepId: finalStepId,
             stepName: '输出过程',
           });
+        }
+        const abnormal =
+          evt.type === 'error' ||
+          (evt.type === 'done' && evt.terminationReason !== 'normal');
+        if (abnormal && opts.reserveAbnormalTerminal) {
+          await publisher.finish('error');
+          return;
         }
         if (evt.type === 'error') {
           publisher.enqueue('RUN_ERROR', { message: evt.message, code: evt.terminationReason ?? 'error' });

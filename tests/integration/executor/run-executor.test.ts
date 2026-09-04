@@ -10,6 +10,7 @@ import {
   FakeAgentAdapter,
   type FakeAgentEvents,
   type FakeAgentRun,
+  type FakeWaitForExitResult,
 } from '../../helpers/fake-agent';
 
 const cleanups: Array<() => Promise<void>> = [];
@@ -229,7 +230,7 @@ describe('RunExecutor', () => {
     expect(h.activeRuns.get('scope-1')).toBeUndefined();
   });
 
-  it('stops and waits for the underlying run when execution is interrupted', async () => {
+  it('does not apply the post-done wait after explicitly interrupting a run', async () => {
     const h = await createHarness({
       events: [{ type: 'text', delta: 'running' }],
       waitForExit: true,
@@ -243,7 +244,38 @@ describe('RunExecutor', () => {
 
     const run = execution.run as FakeAgentRun;
     expect(run.stopped).toBe(true);
-    expect(run.waitForExitCalls).toBe(1);
+    expect(run.waitForExitCalls).toBe(0);
+  });
+
+  it('retains the active scope and pool slot while natural post-terminal cleanup is pending', async () => {
+    const exit = deferred<boolean>();
+    const h = await createHarness({
+      events: [{ type: 'done', terminationReason: 'normal' }],
+      waitForExit: exit.promise,
+      poolCap: 1,
+    });
+    const execution = await h.executor.submit({
+      scopeId: 'scope-1',
+      policy: policy(h.tmp.workspace),
+    });
+    const events = execution.subscribe()[Symbol.asyncIterator]();
+
+    try {
+      await expect(events.next()).resolves.toMatchObject({
+        done: false,
+        value: { type: 'done', terminationReason: 'normal' },
+      });
+      await waitFor(() => h.agent.runs[0]?.waitForExitCalls === 1);
+
+      expect(h.activeRuns.get('scope-1')?.run).toBe(execution.run);
+      expect(h.pool.snapshot()).toMatchObject({ active: 1, waiting: 0 });
+    } finally {
+      exit.resolve(true);
+    }
+
+    await expect(events.next()).resolves.toMatchObject({ done: true });
+    expect(h.activeRuns.get('scope-1')).toBeUndefined();
+    expect(h.pool.snapshot()).toMatchObject({ active: 0, waiting: 0 });
   });
 
   it('stops the underlying process when it does not exit after a terminal event', async () => {
@@ -268,7 +300,7 @@ describe('RunExecutor', () => {
 
 async function createHarness(options: {
   events?: FakeAgentEvents;
-  waitForExit?: boolean | readonly boolean[];
+  waitForExit?: FakeWaitForExitResult | readonly FakeWaitForExitResult[];
   poolCap?: number;
   agent?: AgentAdapter;
 }): Promise<{
@@ -326,6 +358,26 @@ async function collect(events: AsyncIterable<unknown>): Promise<unknown[]> {
   const out: unknown[] = [];
   for await (const event of events) out.push(event);
   return out;
+}
+
+function deferred<T>(): {
+  promise: Promise<T>;
+  resolve: (value: T) => void;
+} {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((res) => {
+    resolve = res;
+  });
+  return { promise, resolve };
+}
+
+async function waitFor(predicate: () => boolean, timeoutMs = 1000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error('timed out waiting for async work');
 }
 
 class ThrowingAgent implements AgentAdapter {
