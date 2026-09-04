@@ -13,7 +13,7 @@ import {
   type PermissionSource,
 } from './permissions';
 
-export type AgentKind = 'claude' | 'codex';
+export type AgentKind = 'claude' | 'codex' | 'kimi';
 export type SandboxMode = CodexSandboxMode;
 export type { AccessMode, PermissionConfig, PermissionSource };
 
@@ -49,6 +49,15 @@ export interface CodexConfig {
   inheritCodexHome?: boolean;
   ignoreUserConfig?: boolean;
   ignoreRules?: boolean;
+}
+
+export interface KimiConfig {
+  binaryPath: string;
+  realpath?: string;
+  version?: string;
+  sha256?: string;
+  owner?: number;
+  mode?: number;
 }
 
 export interface AttachmentConfig {
@@ -160,6 +169,7 @@ export interface ProfileConfig {
   permissions: PermissionConfig;
   permissionSource?: PermissionSource;
   codex?: CodexConfig;
+  kimi?: KimiConfig;
   attachments: AttachmentConfig;
   comments: CommentConfig;
   /** In-meeting agent settings. See {@link MeetingConfig}. */
@@ -204,6 +214,7 @@ export interface CreateDefaultProfileConfigInput {
   sandbox?: Partial<SandboxConfig>;
   permissions?: Partial<PermissionConfig>;
   codex?: CodexConfig;
+  kimi?: KimiConfig;
   secrets?: SecretsConfig;
 }
 
@@ -239,6 +250,7 @@ export function normalizeProfileConfig(input: unknown): ProfileConfig {
     sandbox?: Partial<SandboxConfig>;
     permissions?: Partial<PermissionConfig>;
     codex?: CodexConfig & { flags?: unknown };
+    kimi?: KimiConfig;
     attachments?: Partial<AttachmentConfig>;
     comments?: unknown;
     meeting?: unknown;
@@ -248,12 +260,15 @@ export function normalizeProfileConfig(input: unknown): ProfileConfig {
   if (raw.schemaVersion !== 2) {
     throw new Error('profile schemaVersion must be 2');
   }
-  if (raw.agentKind !== 'claude' && raw.agentKind !== 'codex') {
-    throw new Error('agentKind must be claude or codex');
+  if (raw.agentKind !== 'claude' && raw.agentKind !== 'codex' && raw.agentKind !== 'kimi') {
+    throw new Error('agentKind must be claude, codex or kimi');
   }
   const accounts = normalizeAccounts(raw.accounts);
   if (raw.agentKind === 'codex' && !raw.codex) {
     throw new Error('codex profile requires codex configuration');
+  }
+  if (raw.agentKind === 'kimi' && !raw.kimi) {
+    throw new Error('kimi profile requires kimi configuration');
   }
 
   const preferences = normalizePreferences(raw.preferences);
@@ -284,6 +299,7 @@ export function normalizeProfileConfig(input: unknown): ProfileConfig {
     permissions,
     permissionSource,
     ...(raw.codex ? { codex: normalizeCodex(raw.codex) } : {}),
+    ...(raw.kimi ? { kimi: normalizeKimi(raw.kimi) } : {}),
     attachments: {
       maxCount: numberOr(raw.attachments?.maxCount, 10),
       maxBytes: numberOr(raw.attachments?.maxBytes, 100 * 1024 * 1024),
@@ -389,6 +405,18 @@ function normalizeCodex(input: CodexConfig & { flags?: unknown }): CodexConfig {
     ignoreRules: input.ignoreRules !== false,
   };
   return codex;
+}
+
+function normalizeKimi(input: KimiConfig): KimiConfig {
+  const kimi: KimiConfig = {
+    binaryPath: input.binaryPath,
+    ...(typeof input.realpath === 'string' ? { realpath: input.realpath } : {}),
+    ...(typeof input.version === 'string' ? { version: input.version } : {}),
+    ...(typeof input.sha256 === 'string' ? { sha256: input.sha256 } : {}),
+    ...(typeof input.owner === 'number' ? { owner: input.owner } : {}),
+    ...(typeof input.mode === 'number' ? { mode: input.mode } : {}),
+  };
+  return kimi;
 }
 
 function normalizeComments(_input: unknown): CommentConfig {

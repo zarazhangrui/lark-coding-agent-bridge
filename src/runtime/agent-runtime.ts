@@ -1,5 +1,6 @@
 import { ClaudeAdapter } from '../agent/claude/adapter';
 import { CodexAdapter } from '../agent/codex/adapter';
+import { KimiAdapter } from '../agent/kimi/adapter';
 import { AgentPreflightError, type AgentAvailability } from '../agent/preflight';
 import type { AgentAdapter } from '../agent/types';
 import type { AppPaths } from '../config/app-paths';
@@ -49,6 +50,16 @@ export function createRuntimeAgent(
       larkChannel,
     });
   }
+  if (profileConfig.agentKind === 'kimi') {
+    const kimi = profileConfig.kimi;
+    if (!kimi?.binaryPath) {
+      throw new Error('kimi profile requires kimi.binaryPath');
+    }
+    return new KimiAdapter({
+      binary: kimi.binaryPath,
+      larkChannel,
+    });
+  }
   return new ClaudeAdapter({ larkChannel });
 }
 
@@ -58,9 +69,14 @@ export async function checkRuntimeAgentAvailability(agent: AgentAdapter): Promis
   if (ok) return { ok: true };
   const diagnostic = {
     code: 'agent-binary-not-found' as const,
-    agentId: agent.id === 'codex' ? ('codex' as const) : ('claude' as const),
+    agentId:
+      agent.id === 'kimi'
+        ? ('kimi' as const)
+        : agent.id === 'codex'
+          ? ('codex' as const)
+          : ('claude' as const),
     agentName: agent.displayName,
-    command: agent.id === 'codex' ? 'codex' : 'claude',
+    command: agent.id === 'kimi' ? 'kimi' : agent.id === 'codex' ? 'codex' : 'claude',
   };
   return { ok: false, diagnostic, error: new AgentPreflightError(diagnostic) };
 }

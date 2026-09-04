@@ -57,6 +57,7 @@ type StoredProfileConfig = Pick<
   | 'workspaces'
   | 'permissions'
   | 'codex'
+  | 'kimi'
   | 'attachments'
   | 'comments'
   | 'meeting'
@@ -96,6 +97,7 @@ function serializeProfileConfig(profile: ProfileConfig): StoredProfileConfig {
     workspaces: profile.workspaces,
     permissions: profile.permissions,
     ...(profile.codex ? { codex: profile.codex } : {}),
+    ...(profile.kimi ? { kimi: profile.kimi } : {}),
     attachments: profile.attachments,
     comments: {},
     meeting: profile.meeting,
@@ -296,7 +298,7 @@ async function pathExists(path: string): Promise<boolean> {
 }
 
 export function agentKindFromString(value: string | undefined): AgentKind | undefined {
-  if (value === 'claude' || value === 'codex') return value;
+  if (value === 'claude' || value === 'codex' || value === 'kimi') return value;
   if (value === undefined) return undefined;
   throw new Error(`unsupported agent: ${value}`);
 }
