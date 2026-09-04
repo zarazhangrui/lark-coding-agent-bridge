@@ -57,11 +57,13 @@ describe('Claude IM regression boundaries', () => {
     const source = await readFile(join(process.cwd(), 'src/bot/channel.ts'), 'utf8');
 
     expect(source).toContain('respondToMentionAll: false');
-    // The group-mention gate honors a per-chat override first, then the global
-    // setting (both resolved by requireMentionForChat).
+    // The group-mention gate delegates to the pure helper and honors the
+    // per-chat override through requireMentionForChat.
+    expect(source).toContain('groupMentionSkipReason');
     expect(source).toContain('requireMentionForChat(controls.profileConfig, controls.cfg, msg.chatId)');
-    expect(source).toContain('!msg.mentionedBot');
-    expect(source).toContain('msg.chatType !== \'p2p\'');
+    expect(source).toContain('mentionedBot: Boolean(msg.mentionedBot)');
+    expect(source).toContain('skip-other-mentioned');
+    expect(source).toContain('msg.chatType === \'p2p\'');
   });
 });
 

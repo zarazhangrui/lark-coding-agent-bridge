@@ -23,6 +23,13 @@ export interface ProfileAccess {
   admins: string[];
   requireMentionInGroup: boolean;
   /**
+   * Optional independent group admission mode (default false / undefined).
+   * When true, undirected chatter and messages that @-mention this bot pass,
+   * while messages that explicitly @-mention someone else are skipped.
+   * Takes precedence over {@link requireMentionInGroup} when enabled.
+   */
+  smartMention?: boolean;
+  /**
    * Per-chat override of {@link requireMentionInGroup}, keyed by chat_id.
    * `true` = require an @-mention in that chat, `false` = respond to every
    * message. A chat absent from the map follows the global setting. Takes
@@ -348,6 +355,7 @@ function normalizeAccess(
     allowedChats: stringArray(access?.allowedChats),
     admins: stringArray(access?.admins),
     requireMentionInGroup: access?.requireMentionInGroup ?? legacyRequireMentionInGroup ?? true,
+    smartMention: access?.smartMention === true,
     // Omit when empty so configs without per-chat overrides stay clean.
     ...(Object.keys(chatRequireMention).length > 0 ? { chatRequireMention } : {}),
   };

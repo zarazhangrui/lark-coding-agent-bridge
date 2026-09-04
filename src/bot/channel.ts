@@ -4,9 +4,11 @@ import type {
   NormalizedMessage,
 } from '@larksuite/channel';
 import { createLarkChannel } from '@larksuite/channel';
+import { getSmartMention } from '../config/schema';
 import { dirname, join } from 'node:path';
 import { claudeCapability, codexCapability } from '../agent/capability';
 import { modelLabel, normalizeModelSelection, resolveModelArg } from '../agent/models';
+import { groupMentionSkipReason } from '../policy/mention';
 import {
   buildAgentPrompt,
   type BridgePromptInteractiveCard,
@@ -721,20 +723,27 @@ async function intakeMessage(deps: IntakeDeps): Promise<void> {
   }
 
   // Group-mention policy. p2p is always unrestricted; in groups (regular and
-  // topic) we drop messages that don't @bot when the user has opted into the
-  // quiet-by-default behavior. A per-chat override (set from /config's group
-  // picker) takes priority over the global setting, so one group can respond
-  // to everything while others stay @-only (or vice versa). Slash commands are
-  // NOT exempt — the user chose strict mode so the group stays uniformly quiet
-  // unless mentioned. @全员 is already filtered by SDK
-  // (`respondToMentionAll: false`), so any event reaching here is either
-  // targeted or undirected chatter.
-  if (
-    msg.chatType !== 'p2p' &&
-    requireMentionForChat(controls.profileConfig, controls.cfg, msg.chatId) &&
-    !msg.mentionedBot
-  ) {
-    log.info('intake', 'skip-no-mention', { scope, chatType: msg.chatType });
+  // topic) we drop messages according to the mention admission mode:
+  //   smartMention=true  -> skip only messages that @ someone else; no-mention
+  //                         chatter and @-mentions of this bot pass.
+  //   smartMention=false -> fall back to requireMentionForChat (skip unless
+  //                         the bot is @-mentioned when required).
+  // @全员 is already filtered by SDK (`respondToMentionAll: false`), so any
+  // event reaching here is either targeted or undirected chatter.
+  const mentionSkip = msg.chatType === 'p2p'
+    ? null
+    : groupMentionSkipReason({
+        smartMention: getSmartMention(controls.cfg),
+        requireMention: requireMentionForChat(controls.profileConfig, controls.cfg, msg.chatId),
+        mentionedBot: Boolean(msg.mentionedBot),
+        mentionCount: msg.mentions.length,
+      });
+  if (mentionSkip) {
+    log.info('intake', mentionSkip === 'other-mentioned' ? 'skip-other-mentioned' : 'skip-no-mention', {
+      scope,
+      chatType: msg.chatType,
+      reason: mentionSkip,
+    });
     return;
   }
 

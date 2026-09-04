@@ -132,6 +132,7 @@ describe('profile schema', () => {
       allowedChats: [],
       admins: [],
       requireMentionInGroup: true,
+      smartMention: false,
     });
   });
 
