@@ -16,7 +16,7 @@ Status: runtime implemented; updater MVP implements manual integrity-verified ch
 - `ActiveRuns.interrupt(scope)` removes the run from the active map before asynchronous shutdown finishes.
 - `RunExecutor` assumes one OS process equals one run and releases the scope/process-pool slot around that lifecycle.
 - Codex thread history already uses `codex app-server` and `thread/list`, so the repository has a proven spawn/environment pattern.
-- Locally installed Codex CLI `0.141.0` exposes `turn/start`, `turn/steer`, `turn/interrupt`, `thread/start`, `thread/resume`, generated TypeScript protocol bindings, and terminal turn notifications.
+- Codex CLI `0.153.2` has been compatibility-tested against the long-lived App Server path. It preserves `turn/start`, `turn/steer`, `turn/interrupt`, `thread/start`, `thread/resume`, generated TypeScript protocol bindings, and terminal turn notifications; updater rollback remains compatible with protocol revisions `0.141` and `0.150`.
 - The current Agent Console depends directly on `ActiveRuns` and `RunExecutor`; those dependencies must move behind a runtime coordinator.
 
 ## Architectural decisions

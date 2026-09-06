@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, readFile, stat, utimes, writeFile } from 'node:fs/promi
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { validateBundle, type CompatibilityBundle } from '../../../src/update/manifest.js';
+import { assertSupportedProtocolRevision, validateBundle, type CompatibilityBundle } from '../../../src/update/manifest.js';
 import { npmInstallArgs, UpdateManager, withUpdateLock } from '../../../src/update/manager.js';
 import { resolveUpdatePaths } from '../../../src/update/paths.js';
 
@@ -15,6 +15,14 @@ describe('compatibility bundle updater', () => {
     expect(() => validateBundle({ ...manifest, components: { ...manifest.components, codex: { package: 'evil', version: '0.141.0', integrity } } })).toThrow();
     expect(() => validateBundle({ ...manifest, components: { ...manifest.components, codex: { package: '@openai/codex', version: '^0.141.0', integrity } } })).toThrow();
     expect(() => validateBundle({ ...manifest, bundleVersion: '../1.2.3' })).toThrow();
+  });
+  it('accepts the rollback and current Codex App Server protocol revisions', () => {
+    expect(() => assertSupportedProtocolRevision('codex-app-server-0.141')).not.toThrow();
+    expect(() => assertSupportedProtocolRevision('codex-app-server-0.150')).not.toThrow();
+    expect(() => assertSupportedProtocolRevision('codex-app-server-0.153')).not.toThrow();
+    expect(() => assertSupportedProtocolRevision('codex-app-server-0.154')).toThrow(
+      /unsupported protocol revision/,
+    );
   });
   it('does not switch the active pointer when install or health fails', async () => {
     const f = await fixture(); await mkdir(f.paths.root, { recursive: true }); const old = { bundleVersion: '1.0.0', releaseDir: join(f.paths.releases, '1.0.0'), components: manifest.components, protocolRevision: 'old', verifiedAt: 'x' }; await writeFile(f.paths.current, JSON.stringify(old));

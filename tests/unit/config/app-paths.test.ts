@@ -50,6 +50,7 @@ describe('resolveAppPaths', () => {
     expect(paths.larkCliSourceConfigFile).toBe(join(profileDir, 'lark-cli-source', 'config.json'));
     expect(paths.larkCliTargetConfigFile).toBe(join(profileDir, 'lark-cli', 'lark-channel', 'config.json'));
     expect(paths.mediaDir).toBe(join(profileDir, 'media'));
+    expect(paths.messageRecoveryFile).toBe(join(profileDir, 'message-recovery.json'));
     expect(paths.logsDir).toBe(join(profileDir, 'logs'));
     expect(paths.secretsGetterScript).toBe(join(root, 'secrets-getter'));
   });

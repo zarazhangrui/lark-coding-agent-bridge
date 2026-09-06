@@ -3,12 +3,13 @@ import { delimiter, isAbsolute, join, relative } from 'node:path';
 import { spawn } from 'node:child_process';
 import { resolveUpdatePaths } from './paths';
 import type { ReleasePointer } from './manager';
-import { validateBundle } from './manifest';
+import { assertSupportedProtocolRevision, validateBundle } from './manifest';
 export async function resolveValidatedManagedLauncher(root?: string): Promise<string | undefined> {
   const paths = resolveUpdatePaths(root);
   let pointer: ReleasePointer;
   try { pointer = JSON.parse(await readFile(paths.current, 'utf8')) as ReleasePointer; } catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined; throw error; }
   validateBundle({ schema: 'lark-channel-bundle.v1', bundleVersion: pointer.bundleVersion, protocolRevision: pointer.protocolRevision, components: pointer.components });
+  assertSupportedProtocolRevision(pointer.protocolRevision);
   if (typeof pointer.verifiedAt !== 'string' || !Number.isFinite(Date.parse(pointer.verifiedAt))) throw new Error('invalid managed pointer timestamp');
   const releases = await realpath(paths.releases); if ((await lstat(pointer.releaseDir)).isSymbolicLink()) throw new Error('managed release is a link'); const release = await realpath(pointer.releaseDir); assertContained(releases, release);
   for (const component of Object.values(pointer.components)) { const dir = join(release, 'node_modules', component.package); if ((await lstat(dir)).isSymbolicLink()) throw new Error('managed package is a link'); assertContained(release, await realpath(dir)); const pkg = JSON.parse(await readFile(join(dir, 'package.json'), 'utf8')) as { version?: string }; if (pkg.version !== component.version) throw new Error(`managed version mismatch: ${component.package}`); }

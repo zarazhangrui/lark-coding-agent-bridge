@@ -61,6 +61,11 @@ import { handleCommentMention } from './comments';
 import { recordRunSessionEvent, startRunFlow } from './run-flow';
 import { commandSessionCatalogIdentity } from './session-catalog-identity';
 import { startKeepalive } from './keepalive';
+import {
+  chatIdFromScope,
+  listRecoverableMessages,
+  MessageRecovery,
+} from './message-recovery';
 import { PendingQueue } from './pending-queue';
 import { ProcessPool } from './process-pool';
 import { fetchQuotedContext, fetchTopicContext, type QuotedContext } from './quote';
@@ -183,7 +188,10 @@ export interface StartChannelDeps {
   sessionCatalog?: SessionCatalog;
   workspaces: WorkspaceStore;
   controls: Controls;
-  appPaths?: Pick<AppPaths, 'secretsFile' | 'keystoreSaltFile' | 'mediaDir'>;
+  appPaths?: Pick<
+    AppPaths,
+    'secretsFile' | 'keystoreSaltFile' | 'mediaDir' | 'messageRecoveryFile'
+  >;
   codexRuntime?: CodexRuntimeCoordinator;
 }
 
@@ -281,6 +289,48 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
   const media = new MediaCache(channel, deps.appPaths?.mediaDir);
   let agentConsole: AgentConsoleServerHandle | undefined;
 
+  const deliverInboundMessage = async (
+    msg: NormalizedMessage,
+    source: 'realtime' | 'recovery',
+  ): Promise<void> => {
+    if (source === 'recovery') {
+      log.warn('message-recovery', 'delivering', {
+        chatId: msg.chatId,
+        messageId: msg.messageId,
+        createTime: msg.createTime,
+      });
+    }
+    await withTrace({ chatId: msg.chatId, msgId: msg.messageId }, () =>
+      intakeMessage({
+        channel,
+        agent,
+        sessions,
+        sessionCatalog,
+        workspaces,
+        activeRuns,
+        pending,
+        msg,
+        controls,
+        chatModeCache,
+        logThreadModeOverride,
+        executor,
+        codexRuntime: deps.codexRuntime,
+        pool,
+      }),
+    );
+  };
+  const messageRecovery = new MessageRecovery({
+    stateFile: deps.appPaths?.messageRecoveryFile,
+    listMessages: (chatId, startMs, endMs, chatType) =>
+      listRecoverableMessages(channel, chatId, startMs, endMs, chatType),
+    deliver: deliverInboundMessage,
+  });
+  await messageRecovery.load();
+  for (const entry of sessionCatalog?.entries() ?? []) {
+    const chatId = chatIdFromScope(entry.scopeId);
+    if (chatId) await messageRecovery.seedChat(chatId);
+  }
+
   // Pending → run handoff: while a run is active on a chat, block its pending
   // queue so messages keep accumulating without flushing. When the run ends,
   // unblock arms a fresh quiet-window timer. Net effect: at most one run per
@@ -345,24 +395,7 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
 
   channel.on({
     message: async (msg) => {
-      await withTrace({ chatId: msg.chatId, msgId: msg.messageId }, () =>
-        intakeMessage({
-          channel,
-          agent,
-          sessions,
-          sessionCatalog,
-          workspaces,
-          activeRuns,
-          pending,
-          msg,
-          controls,
-          chatModeCache,
-          logThreadModeOverride,
-          executor,
-          codexRuntime: deps.codexRuntime,
-          pool,
-        }),
-      ).catch((err) => log.fail('intake', err));
+      await messageRecovery.acceptRealtime(msg).catch((err) => log.fail('intake', err));
     },
     reject: (evt) => {
       log.info('intake', 'reject', { chatId: evt.chatId, reason: evt.reason });
@@ -420,6 +453,9 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
         log.info('ws', 'reconnected');
       }
       consecutiveReconnects = 0;
+      void messageRecovery.scanNow().catch((err) =>
+        log.warn('message-recovery', 'reconnect-scan-failed', { err: String(err) }),
+      );
     },
     // Classify common WS errors into the `network` phase so /doctor and grep
     // can find them without scanning generic `ws.fail` entries.
@@ -481,6 +517,7 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
     domain: probeDomain,
     forceReconnect: () => controls.restart(),
   });
+    messageRecovery.start();
 
     agentConsole = await startAgentConsoleServer({
     agent,
@@ -496,6 +533,7 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
       Promise.resolve().then(() => ownerRefresh?.stop()),
       Promise.resolve().then(() => knownChatsRefresh?.stop()),
       Promise.resolve().then(() => keepalive?.stop()),
+      Promise.resolve().then(() => messageRecovery.stop()),
       Promise.resolve().then(() => pending.cancelAll()),
       agentConsole?.close(),
       activeRuns.stopAll(),
@@ -511,6 +549,7 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
       ownerRefresh?.stop();
       knownChatsRefresh?.stop();
       keepalive?.stop();
+      messageRecovery.stop();
       pending.cancelAll();
       const [consoleResult, disconnectResult, stopAllResult, ...flushResults] = await Promise.allSettled([
         agentConsole?.close(),
@@ -519,6 +558,7 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
         sessions.flush(),
         sessionCatalog?.flush(),
         callbackNonceStore?.flush(),
+        messageRecovery.flush(),
         workspaces.flush(),
       ]);
       if (stopAllResult.status === 'rejected') {

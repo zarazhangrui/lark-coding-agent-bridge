@@ -5,6 +5,7 @@ import { buildLarkChannelEnv, type LarkChannelEnvContext } from '../../lark-chan
 import { mergeProcessEnv, spawnProcess, type SpawnedProcessByStdio } from '../../../platform/spawn';
 import { CodexAppServerClient } from './client';
 import { log } from '../../../core/logger';
+import pkg from '../../../../package.json';
 
 type Child = SpawnedProcessByStdio<Writable, Readable, Readable>;
 export interface CodexAppServerSupervisorOptions {
@@ -79,7 +80,7 @@ export class CodexAppServerSupervisor extends EventEmitter {
     });
     try {
       await client.request('initialize', {
-        clientInfo: { name: 'lark-channel-bridge', title: 'Lark Channel Bridge', version: '0.5.5' },
+        clientInfo: { name: 'lark-channel-bridge', title: 'Lark Channel Bridge', version: pkg.version },
         capabilities: null,
       });
       client.notify('initialized');

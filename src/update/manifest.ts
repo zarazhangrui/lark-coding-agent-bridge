@@ -2,6 +2,11 @@ export const BUNDLE_SCHEMA = 'lark-channel-bundle.v1';
 export const FIXED_PACKAGES = {
   bridge: 'lark-channel-bridge', codex: '@openai/codex', larkCli: '@larksuite/cli',
 } as const;
+export const SUPPORTED_PROTOCOL_REVISIONS = [
+  'codex-app-server-0.141',
+  'codex-app-server-0.150',
+  'codex-app-server-0.153',
+] as const;
 
 export interface CompatibilityBundle {
   schema: typeof BUNDLE_SCHEMA;
@@ -27,4 +32,10 @@ export function validateBundle(input: unknown): CompatibilityBundle {
 export function safeBundleDirName(version: string): string {
   if (!EXACT_SEMVER.test(version) || version.includes('/') || version.includes('\\') || version.includes('..')) throw new Error('unsafe bundle version path');
   return version;
+}
+
+export function assertSupportedProtocolRevision(revision: string): void {
+  if (!(SUPPORTED_PROTOCOL_REVISIONS as readonly string[]).includes(revision)) {
+    throw new Error(`unsupported protocol revision: ${revision}`);
+  }
 }

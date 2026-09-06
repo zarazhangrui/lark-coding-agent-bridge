@@ -23,6 +23,8 @@ export interface AppPaths {
   larkCliSourceConfigFile: string;
   larkCliTargetConfigFile: string;
   mediaDir: string;
+  /** Persistent REST catch-up cursors and inbound message-id dedup ledger. */
+  messageRecoveryFile: string;
   logsDir: string;
   /** Sidecar file describing the running bridge's local web-config server
    * ({ url, token, port, pid }); written on start, removed on stop. */
@@ -66,6 +68,7 @@ export function resolveAppPaths(opts: ResolveAppPathsOptions = {}): AppPaths {
     larkCliSourceConfigFile: join(profileDir, 'lark-cli-source', 'config.json'),
     larkCliTargetConfigFile: join(profileDir, 'lark-cli', 'lark-channel', 'config.json'),
     mediaDir: join(profileDir, 'media'),
+    messageRecoveryFile: join(profileDir, 'message-recovery.json'),
     logsDir: join(profileDir, 'logs'),
     uiFile: join(profileDir, 'ui.json'),
     hostUiFile: join(rootDir, 'ui.json'),

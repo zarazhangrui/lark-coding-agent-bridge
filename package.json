@@ -1,6 +1,6 @@
 {
   "name": "lark-channel-bridge",
-  "version": "0.5.5",
+  "version": "0.7.2-recovery.1",
   "larkChannelBundle": {
     "schema": "lark-channel-bundle.v1",
     "bundleVersion": "0.5.5",
@@ -58,7 +58,7 @@
   },
   "dependencies": {
     "@clack/prompts": "^1.4.0",
-    "@larksuite/channel": "^0.3.0",
+    "@larksuite/channel": "^0.6.0",
     "commander": "^12.1.0",
     "cross-spawn": "^7.0.6",
     "graceful-fs": "^4.2.11",
