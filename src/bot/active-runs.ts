@@ -10,6 +10,7 @@ export class ActiveRuns {
   private readonly reservations = new Set<string>();
   private pauseDepth = 0;
   private pauseReason: string | undefined;
+  private resumeWaiters: Array<() => void> = [];
 
   reserve(chatId: string): (() => void) | undefined {
     if (this.handles.has(chatId) || this.reservations.has(chatId)) return undefined;
@@ -40,7 +41,11 @@ export class ActiveRuns {
       if (released) return;
       released = true;
       this.pauseDepth = Math.max(0, this.pauseDepth - 1);
-      if (this.pauseDepth === 0) this.pauseReason = undefined;
+      if (this.pauseDepth === 0) {
+        this.pauseReason = undefined;
+        const waiters = this.resumeWaiters.splice(0);
+        for (const waiter of waiters) waiter();
+      }
     };
   }
 
@@ -50,6 +55,35 @@ export class ActiveRuns {
 
   newRunsPauseReason(): string | undefined {
     return this.pauseReason;
+  }
+
+  /**
+   * Resolves `true` as soon as new runs are no longer paused, or `false`
+   * once `timeoutMs` elapses first. Intended for smoothing over short-lived
+   * pauses (a reconnect that clears in a few seconds) without making callers
+   * that need an immediate answer (e.g. `nowait` submissions) wait at all —
+   * they should check `newRunsPaused()` directly instead.
+   */
+  waitForResume(timeoutMs: number): Promise<boolean> {
+    if (!this.newRunsPaused()) return Promise.resolve(true);
+    if (timeoutMs <= 0) return Promise.resolve(false);
+    return new Promise((resolve) => {
+      let settled = false;
+      const timer = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        const idx = this.resumeWaiters.indexOf(onResume);
+        if (idx >= 0) this.resumeWaiters.splice(idx, 1);
+        resolve(false);
+      }, timeoutMs);
+      const onResume = (): void => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve(true);
+      };
+      this.resumeWaiters.push(onResume);
+    });
   }
 
   get(chatId: string): RunHandle | undefined {

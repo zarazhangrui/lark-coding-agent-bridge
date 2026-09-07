@@ -128,6 +128,80 @@ describe('RunExecutor', () => {
     }
   });
 
+  it('with reconnectWaitMs configured, holds a submission until a short reconnect clears and then runs it', async () => {
+    const h = await createHarness({
+      events: [{ type: 'done', terminationReason: 'normal' }],
+      reconnectWaitMs: 5000,
+    });
+    const resume = h.activeRuns.pauseNewRuns('reconnect');
+
+    const submitPromise = h.executor.submit({
+      scopeId: 'scope-1',
+      policy: policy(h.tmp.workspace),
+    });
+    // Give submit() a tick to hit the paused check and start waiting.
+    await new Promise((r) => setTimeout(r, 10));
+    expect(h.agent.runs).toHaveLength(0);
+
+    resume();
+
+    const execution = await submitPromise;
+    expect(execution.runId).toBe('run-1');
+    expect(h.agent.runs).toHaveLength(1);
+    await collect(execution.subscribe());
+  });
+
+  it('with reconnectWaitMs configured, still rejects once the wait window elapses without a resume', async () => {
+    const h = await createHarness({ events: [], reconnectWaitMs: 20 });
+    const resume = h.activeRuns.pauseNewRuns('reconnect');
+    try {
+      await expect(
+        h.executor.submit({
+          scopeId: 'scope-1',
+          policy: policy(h.tmp.workspace),
+        }),
+      ).rejects.toMatchObject({ code: 'reconnect-in-progress' });
+      expect(h.agent.runs).toHaveLength(0);
+    } finally {
+      resume();
+    }
+  });
+
+  it('with reconnectWaitMs configured, nowait submissions still fail fast instead of waiting', async () => {
+    const h = await createHarness({ events: [], reconnectWaitMs: 5000 });
+    const resume = h.activeRuns.pauseNewRuns('reconnect');
+    try {
+      const start = Date.now();
+      await expect(
+        h.executor.submit({
+          scopeId: 'scope-1',
+          policy: policy(h.tmp.workspace),
+          nowait: true,
+        }),
+      ).rejects.toMatchObject({ code: 'reconnect-in-progress' });
+      expect(Date.now() - start).toBeLessThan(1000);
+    } finally {
+      resume();
+    }
+  });
+
+  it('without reconnectWaitMs configured, keeps the original immediate-reject behavior', async () => {
+    const h = await createHarness({ events: [] });
+    const resume = h.activeRuns.pauseNewRuns('reconnect');
+    try {
+      const start = Date.now();
+      await expect(
+        h.executor.submit({
+          scopeId: 'scope-1',
+          policy: policy(h.tmp.workspace),
+        }),
+      ).rejects.toMatchObject({ code: 'reconnect-in-progress' });
+      expect(Date.now() - start).toBeLessThan(1000);
+    } finally {
+      resume();
+    }
+  });
+
   it('rejects duplicate submissions for a scope that already has a run', async () => {
     const h = await createHarness({ events: [{ type: 'done', terminationReason: 'normal' }] });
 
@@ -271,6 +345,7 @@ async function createHarness(options: {
   waitForExit?: boolean | readonly boolean[];
   poolCap?: number;
   agent?: AgentAdapter;
+  reconnectWaitMs?: number;
 }): Promise<{
   tmp: TmpProfile;
   agent: FakeAgentAdapter;
@@ -301,6 +376,7 @@ async function createHarness(options: {
       createRunId: () => `run-${nextRun++}`,
       now: () => 1000,
       postDoneExitGraceMs: 10,
+      reconnectWaitMs: options.reconnectWaitMs,
     }),
   };
 }
