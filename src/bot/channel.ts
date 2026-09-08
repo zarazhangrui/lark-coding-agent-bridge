@@ -25,6 +25,7 @@ import {
   markIdleTimeout,
   markInterrupted,
   reduce,
+  type Block,
   type RunState,
 } from '../card/run-state';
 import { renderText } from '../card/text-renderer';
@@ -78,6 +79,13 @@ import {
 const DEBOUNCE_MS = 600;
 const STREAM_TERMINAL_GRACE_MS = 3000;
 const REACTION_CLEANUP_GRACE_MS = 1000;
+/**
+ * Prefix for `deliverStreamFailureFallback`. The streamed message may already
+ * show part of what follows, so this line has to explain the repetition — and
+ * has to make clear the run itself finished, since the frozen card it is
+ * apologising for looks exactly like a hung one.
+ */
+const STREAM_FALLBACK_NOTICE = '⚠️ 消息流式更新失败，本轮已结束，以下是完整回复：';
 
 const BRIDGE_AGENT_INSTRUCTIONS = [
   '你在 bridge 进程中运行，普通 lark-cli 会继承 LARK_CHANNEL=1 并进入 bridge-bound 模式。',
@@ -1179,8 +1187,21 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
           },
         });
       } catch (err) {
-        if (controls.profileConfig.agentKind !== 'codex') throw err;
         log.fail('stream', err, { mode: replyMode, step: 'progress-stream' });
+        // Codex posts its own dedicated final reply below, so the error is
+        // already covered there. Claude has nothing after this point — without
+        // an explicit fallback the answer dies with the stream.
+        if (controls.profileConfig.agentKind !== 'codex') {
+          await deliverStreamFailureFallback({
+            channel,
+            chatId,
+            scope,
+            state: filterForPrefs(latestState),
+            replyMode,
+            sendOpts,
+            cardRenderOptions,
+          });
+        }
       }
       await recallIfEmptyStreamedReply(channel, progress, filterForPrefs(latestState), scope);
       if (controls.profileConfig.agentKind === 'codex') {
@@ -1242,8 +1263,20 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
           },
         });
       } catch (err) {
-        if (controls.profileConfig.agentKind !== 'codex') throw err;
         log.fail('stream', err, { mode: replyMode, step: 'progress-stream' });
+        // Same asymmetry as the card branch above: Codex is covered by its own
+        // final reply, Claude would otherwise lose the answer entirely.
+        if (controls.profileConfig.agentKind !== 'codex') {
+          await deliverStreamFailureFallback({
+            channel,
+            chatId,
+            scope,
+            state: filterForPrefs(latestState),
+            replyMode,
+            sendOpts,
+            cardRenderOptions,
+          });
+        }
       }
       await recallIfEmptyStreamedReply(channel, progress, filterForPrefs(latestState), scope);
       if (controls.profileConfig.agentKind === 'codex') {
@@ -1747,6 +1780,55 @@ async function awaitRenderAwareStream(input: {
     if (input.producerStarted()) throw terminal.err;
     log.fail('stream', terminal.err, { mode: input.mode, step: 'stream' });
     await runFallbackReply(input.mode, first.state, input.fallback);
+  }
+}
+
+/**
+ * Last-resort delivery for a streaming reply that failed while the run had
+ * content to show.
+ *
+ * In card / markdown mode the progress stream is the *only* thing carrying the
+ * answer to the user, and every `flush` awaits a Feishu update call. A rejection
+ * there — a 400 on an oversized card, a rate limit, a card sequence conflict, a
+ * network blip — rejects `renderDone`, aborts `processAgentStream` mid-run, and
+ * used to reach nothing but `log.fail`. The run had finished, the answer was
+ * sitting in `latestState`, and the user was left with a card frozen mid-stream
+ * on `streaming_mode: true` — indistinguishable from a run that hung.
+ *
+ * Codex never hit this: its branch swallows the same error and posts a dedicated
+ * final reply right after. This gives Claude the same guarantee.
+ *
+ * Sent as a plain, non-streaming reply behind an explicit degraded notice. The
+ * stream may already have rendered part of this text, so the notice is what
+ * makes a partial duplicate self-explanatory. Repeated text is cosmetic; a
+ * silently dropped answer is the bug being fixed.
+ */
+async function deliverStreamFailureFallback(input: {
+  channel: LarkChannel;
+  chatId: string;
+  scope: string;
+  state: RunState;
+  replyMode: ReturnType<typeof getMessageReplyMode>;
+  sendOpts: { replyTo: string; replyInThread?: boolean };
+  cardRenderOptions: { signCallback?: (action: string) => string };
+}): Promise<void> {
+  // A `flush` that threw leaves the state on `running`, which would render a
+  // stop button and a "正在输出" footer onto a run that is already over.
+  const finalized = finalizeIfRunning(input.state);
+  const notice: Block = { kind: 'text', content: STREAM_FALLBACK_NOTICE, streaming: false };
+  try {
+    await sendFinalReply({
+      ...input,
+      state: { ...finalized, footer: null, blocks: [notice, ...finalized.blocks] },
+    });
+    log.info('outbound', 'stream-failure-fallback', {
+      scope: input.scope,
+      mode: input.replyMode,
+    });
+  } catch (err) {
+    // The channel itself is refusing us; there is nothing further to try. Log
+    // loudly so the loss is at least diagnosable from the profile log.
+    log.fail('outbound', err, { scope: input.scope, step: 'stream-failure-fallback' });
   }
 }
 
