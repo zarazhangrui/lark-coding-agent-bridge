@@ -115,6 +115,12 @@ export interface AppPreferences {
    */
   model?: string;
   /**
+   * Reasoning effort forwarded as `claude --effort` (`low` … `max`).
+   * `undefined` or the `'default'` sentinel omits the flag. Claude Code only —
+   * the Codex CLI has no equivalent, and the value is never forwarded there.
+   */
+  effort?: string;
+  /**
    * Whether to send a separate Lark COT process message before the final
    * answer. `brief` mirrors the lightweight tool/progress visibility from
    * the legacy tool display; `detailed` also includes tool args/output.
@@ -134,6 +140,26 @@ export interface AppPreferences {
    * can hang indefinitely). Per-scope `/timeout` overrides this.
    */
   runIdleTimeoutMinutes?: number;
+  /**
+   * Stall watchdog for runs blocked on an outstanding tool call, in minutes.
+   *
+   * Distinct from `runIdleTimeoutMinutes`, which deliberately *pauses* while a
+   * tool is in flight so a long Bash / MCP / OAuth call isn't killed mid-work.
+   * That pause is also the hole: a tool that never returns leaves the run with
+   * no timeout at all, holding its pool slot and its card open forever. This
+   * timer never pauses.
+   *
+   * Two-stage on purpose. At the threshold the card shows the stall and keeps
+   * the stop button — a slow-but-legitimate tool is left alone and the user
+   * decides. Only after `toolStallGraceMinutes` more silence is the run
+   * stopped. Default 60 + 60, so nothing dies before 2 hours of true silence —
+   * chosen to sit at or above the largest sensible `runIdleTimeoutMinutes`, so
+   * this watchdog never becomes the *shorter* of the two and silently caps a
+   * deliberately long idle setting. 0 / negative disables it entirely.
+   */
+  toolStallTimeoutMinutes?: number;
+  /** Grace between the stall warning and the kill. Default 60 minutes. */
+  toolStallGraceMinutes?: number;
   /**
    * Whether the bot only responds to messages that @-mention it in groups
    * (regular and topic groups). p2p is always unrestricted. Default true:
@@ -276,4 +302,31 @@ export function getRunIdleTimeoutMs(cfg: AppConfig): number | undefined {
   if (typeof raw !== 'number' || !Number.isFinite(raw) || raw <= 0) return undefined;
   const clamped = Math.min(Math.max(Math.floor(raw), 1), 120);
   return clamped * 60_000;
+}
+
+export const DEFAULT_TOOL_STALL_TIMEOUT_MINUTES = 60;
+export const DEFAULT_TOOL_STALL_GRACE_MINUTES = 60;
+
+/**
+ * Resolve the tool-stall threshold in ms. Unlike the idle watchdog this is
+ * **on by default** — a run wedged behind a tool call otherwise has no timeout
+ * whatsoever, and silently keeps a pool slot for the lifetime of the process.
+ * Explicit 0 / negative disables it. Clamped to [1, 240] minutes.
+ */
+export function getToolStallTimeoutMs(cfg: AppConfig): number | undefined {
+  const raw = cfg.preferences?.toolStallTimeoutMinutes;
+  if (raw === undefined) return DEFAULT_TOOL_STALL_TIMEOUT_MINUTES * 60_000;
+  if (typeof raw !== 'number' || !Number.isFinite(raw) || raw <= 0) return undefined;
+  return Math.min(Math.max(Math.floor(raw), 1), 240) * 60_000;
+}
+
+/**
+ * Grace between the stall warning and the kill. Clamped to [1, 240] minutes;
+ * 0 / negative means stop as soon as the threshold is hit (no warning window).
+ */
+export function getToolStallGraceMs(cfg: AppConfig): number {
+  const raw = cfg.preferences?.toolStallGraceMinutes;
+  if (raw === undefined) return DEFAULT_TOOL_STALL_GRACE_MINUTES * 60_000;
+  if (typeof raw !== 'number' || !Number.isFinite(raw) || raw <= 0) return 0;
+  return Math.min(Math.max(Math.floor(raw), 1), 240) * 60_000;
 }

@@ -1,5 +1,5 @@
 import { maskEmails } from './mask-email';
-import type { Block, RunState, ToolEntry } from './run-state';
+import type { Block, RunState, StallNotice, ToolEntry } from './run-state';
 import { toolHeaderText } from './tool-render';
 
 /**
@@ -25,16 +25,25 @@ export function renderText(state: RunState): string {
   } else if (state.terminal === 'idle_timeout') {
     const mins = state.idleTimeoutMinutes ?? 0;
     parts.push(`_⏱ ${mins} 分钟无响应,已自动终止_`);
+  } else if (state.terminal === 'stall_timeout') {
+    parts.push(`_⏱ ${stallText(state.stalled)},已自动终止_`);
   } else if (state.terminal === 'error' && state.errorMsg) {
     parts.push(`⚠️ agent 失败:${state.errorMsg}`);
-  } else if (state.terminal === 'running' && state.footer) {
-    parts.push(footerLine(state.footer));
+  } else if (state.terminal === 'running') {
+    if (state.stalled) parts.push(`_⏳ ${stallText(state.stalled)}_`);
+    if (state.footer) parts.push(footerLine(state.footer));
   }
 
   // Strip raw emails so the Feishu tenant audit doesn't reject the message
   // (see mask-email.ts). Never removes content, so emptiness checks upstream
   // still behave.
   return maskEmails(parts.join('\n\n'));
+}
+
+/** Mirrors `run-renderer`'s stall wording so both reply modes read alike. */
+function stallText(stalled: StallNotice | undefined): string {
+  const mins = stalled?.minutes ?? 0;
+  return stalled?.tool ? `工具 ${stalled.tool} 已 ${mins} 分钟无输出` : `已 ${mins} 分钟无输出`;
 }
 
 function renderBlock(block: Block): string {

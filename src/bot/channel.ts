@@ -20,12 +20,17 @@ import { CallbackAuth } from '../card/callback-auth';
 import { CallbackNonceStore } from '../card/callback-store';
 import { renderCard } from '../card/run-renderer';
 import {
+  clearStalled,
   finalizeIfRunning,
   initialState,
   markIdleTimeout,
   markInterrupted,
+  markStallTimeout,
+  markStalled,
   reduce,
+  type Block,
   type RunState,
+  type StallNotice,
 } from '../card/run-state';
 import { renderText } from '../card/text-renderer';
 import { tryHandleCommand, type Controls } from '../commands';
@@ -37,6 +42,8 @@ import {
   getMessageReplyMode,
   getRunIdleTimeoutMs,
   getShowToolCalls,
+  getToolStallGraceMs,
+  getToolStallTimeoutMs,
 } from '../config/schema';
 import { resolveAppSecret } from '../config/secret-resolver';
 import { log, reportMetric, withTrace } from '../core/logger';
@@ -78,6 +85,13 @@ import {
 const DEBOUNCE_MS = 600;
 const STREAM_TERMINAL_GRACE_MS = 3000;
 const REACTION_CLEANUP_GRACE_MS = 1000;
+/**
+ * Prefix for `deliverStreamFailureFallback`. The streamed message may already
+ * show part of what follows, so this line has to explain the repetition — and
+ * has to make clear the run itself finished, since the frozen card it is
+ * apologising for looks exactly like a hung one.
+ */
+const STREAM_FALLBACK_NOTICE = '⚠️ 消息流式更新失败，本轮已结束，以下是完整回复：';
 
 const BRIDGE_AGENT_INSTRUCTIONS = [
   '你在 bridge 进程中运行，普通 lark-cli 会继承 LARK_CHANNEL=1 并进入 bridge-bound 模式。',
@@ -1039,6 +1053,13 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
   if (idleTimeoutMs) {
     log.info('flush', 'idle-watchdog', { idleTimeoutMs });
   }
+  // Independent of the idle watchdog above, and on by default: this is the only
+  // timeout covering a run wedged behind a tool call that never returns.
+  const toolStallTimeoutMs = getToolStallTimeoutMs(controls.cfg);
+  const toolStallGraceMs = getToolStallGraceMs(controls.cfg);
+  if (toolStallTimeoutMs) {
+    log.info('flush', 'tool-stall-watchdog', { toolStallTimeoutMs, toolStallGraceMs });
+  }
 
   const replyMode = getMessageReplyMode(controls.cfg);
   log.info('flush', 'reply-mode', { mode: replyMode });
@@ -1099,6 +1120,8 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
           idleTimeoutMs,
           recordSession,
           async () => {},
+          toolStallTimeoutMs,
+          toolStallGraceMs,
         );
         await cotDone;
         if (cotPublisher.degradedReason) {
@@ -1161,6 +1184,8 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
             await cardCtrl.update(renderCard(filterForPrefs(state), cardRenderOptions));
           }
         },
+        toolStallTimeoutMs,
+        toolStallGraceMs,
       );
       try {
         await awaitRenderAwareStream({
@@ -1179,8 +1204,21 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
           },
         });
       } catch (err) {
-        if (controls.profileConfig.agentKind !== 'codex') throw err;
         log.fail('stream', err, { mode: replyMode, step: 'progress-stream' });
+        // Codex posts its own dedicated final reply below, so the error is
+        // already covered there. Claude has nothing after this point — without
+        // an explicit fallback the answer dies with the stream.
+        if (controls.profileConfig.agentKind !== 'codex') {
+          await deliverStreamFailureFallback({
+            channel,
+            chatId,
+            scope,
+            state: filterForPrefs(latestState),
+            replyMode,
+            sendOpts,
+            cardRenderOptions,
+          });
+        }
       }
       await recallIfEmptyStreamedReply(channel, progress, filterForPrefs(latestState), scope);
       if (controls.profileConfig.agentKind === 'codex') {
@@ -1226,6 +1264,8 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
             await markdownCtrl.setContent(renderText(filterForPrefs(state)));
           }
         },
+        toolStallTimeoutMs,
+        toolStallGraceMs,
       );
       try {
         await awaitRenderAwareStream({
@@ -1242,8 +1282,20 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
           },
         });
       } catch (err) {
-        if (controls.profileConfig.agentKind !== 'codex') throw err;
         log.fail('stream', err, { mode: replyMode, step: 'progress-stream' });
+        // Same asymmetry as the card branch above: Codex is covered by its own
+        // final reply, Claude would otherwise lose the answer entirely.
+        if (controls.profileConfig.agentKind !== 'codex') {
+          await deliverStreamFailureFallback({
+            channel,
+            chatId,
+            scope,
+            state: filterForPrefs(latestState),
+            replyMode,
+            sendOpts,
+            cardRenderOptions,
+          });
+        }
       }
       await recallIfEmptyStreamedReply(channel, progress, filterForPrefs(latestState), scope);
       if (controls.profileConfig.agentKind === 'codex') {
@@ -1268,6 +1320,8 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
         idleTimeoutMs,
         recordSession,
         async () => {},
+        toolStallTimeoutMs,
+        toolStallGraceMs,
       );
       await sendFinalReply({
         channel,
@@ -1554,6 +1608,8 @@ async function processAgentStream(
   idleTimeoutMs: number | undefined,
   recordSession: (event: AgentEvent) => void,
   flush: (state: RunState) => Promise<void>,
+  toolStallTimeoutMs?: number | undefined,
+  toolStallGraceMs = 0,
 ): Promise<RunState> {
   const runStart = Date.now();
   let state: RunState = initialState;
@@ -1575,6 +1631,7 @@ async function processAgentStream(
   let idleFired = false;
   let timer: NodeJS.Timeout | undefined;
   const inFlightTools = new Set<string>();
+  const toolNames = new Map<string, string>();
   const armOrPauseIdle = (): void => {
     if (!idleTimeoutMs) return;
     if (timer) clearTimeout(timer);
@@ -1591,6 +1648,80 @@ async function processAgentStream(
   };
   armOrPauseIdle();
 
+  // Tool-stall watchdog — the hole the idle watchdog leaves open by design.
+  //
+  // `armOrPauseIdle` refuses to arm while a tool is in flight, so a Bash / MCP
+  // / OAuth call that never returns leaves the run with no timeout at all: the
+  // card streams forever, the pool slot is never released, and the user cannot
+  // tell a wedged run from a busy one. This timer therefore never pauses.
+  //
+  // Two stages, because "silent for a while" and "dead" are not the same thing
+  // and only the user can tell them apart for a legitimately long tool:
+  //   1. threshold  → raise the notice on the card, keep the stop button, let
+  //                   it run. Nothing is killed on a guess.
+  //   2. + grace    → still nothing; stop the run and say why.
+  //
+  // Any event at all — including a `tool_result` from the slow tool — rewinds
+  // both stages and clears the notice.
+  let stallFired = false;
+  let stallNotice: StallNotice | undefined;
+  let stallWarnTimer: NodeJS.Timeout | undefined;
+  let stallKillTimer: NodeJS.Timeout | undefined;
+  /** Names the outstanding tool only when there is exactly one — else it is a guess. */
+  const describeStall = (minutes: number): StallNotice => {
+    const only = inFlightTools.size === 1 ? toolNames.get([...inFlightTools][0]!) : undefined;
+    return only ? { minutes, tool: only } : { minutes };
+  };
+  const clearStallTimers = (): void => {
+    if (stallWarnTimer) clearTimeout(stallWarnTimer);
+    if (stallKillTimer) clearTimeout(stallKillTimer);
+    stallWarnTimer = undefined;
+    stallKillTimer = undefined;
+  };
+  const rearmStall = (): void => {
+    if (!toolStallTimeoutMs) return;
+    clearStallTimers();
+    stallWarnTimer = setTimeout(() => {
+      const minutes = Math.round(toolStallTimeoutMs / 60_000);
+      stallNotice = describeStall(minutes);
+      log.warn('agent', 'tool-stall-warning', {
+        scope,
+        toolStallTimeoutMs,
+        inFlight: inFlightTools.size,
+        tool: stallNotice.tool,
+      });
+      // Push the warning to the card immediately; the next agent event may be
+      // hours away, and the whole point is not to wait for one.
+      void flush(markStalled(state, stallNotice)).catch((err) => {
+        log.warn('agent', 'tool-stall-flush-failed', {
+          scope,
+          err: err instanceof Error ? err.message : String(err),
+        });
+      });
+      if (toolStallGraceMs <= 0) {
+        stallKill();
+        return;
+      }
+      stallKillTimer = setTimeout(stallKill, toolStallGraceMs);
+    }, toolStallTimeoutMs);
+  };
+  const stallKill = (): void => {
+    stallFired = true;
+    handle.interrupted = true;
+    const totalMs = (toolStallTimeoutMs ?? 0) + Math.max(0, toolStallGraceMs);
+    stallNotice = describeStall(Math.round(totalMs / 60_000));
+    log.warn('agent', 'tool-stall-timeout', {
+      scope,
+      totalMs,
+      inFlight: inFlightTools.size,
+      tool: stallNotice.tool,
+    });
+    void handle.run.stop().catch(() => {
+      /* stop errors are non-fatal */
+    });
+  };
+  rearmStall();
+
   try {
     for await (const evt of events) {
       if (handle.interrupted) break;
@@ -1600,15 +1731,25 @@ async function processAgentStream(
       // closes it. Other event types are bookkept after the if/else.
       if (evt.type === 'tool_use') {
         inFlightTools.add(evt.id);
+        toolNames.set(evt.id, evt.name);
         log.info('agent', 'tool-in-flight', {
           tool: evt.name,
           inFlight: inFlightTools.size,
         });
       } else if (evt.type === 'tool_result') {
         inFlightTools.delete(evt.id);
+        toolNames.delete(evt.id);
         log.info('agent', 'tool-done', { inFlight: inFlightTools.size });
       }
       armOrPauseIdle();
+      // Any event proves the run is alive: rewind both stall stages and drop a
+      // warning already on screen. A tool that was merely slow leaves no trace.
+      rearmStall();
+      if (stallNotice && !stallFired) {
+        stallNotice = undefined;
+        state = clearStalled(state);
+        log.info('agent', 'tool-stall-cleared', { scope });
+      }
 
       if (evt.type === 'system') {
         recordSession(evt);
@@ -1643,6 +1784,7 @@ async function processAgentStream(
     }
   } finally {
     if (timer) clearTimeout(timer);
+    clearStallTimers();
   }
 
   // If state already reached a terminal event (done/error/etc.) before the
@@ -1652,6 +1794,10 @@ async function processAgentStream(
   if (state.terminal === 'running') {
     if (idleFired) {
       state = markIdleTimeout(state, Math.round(idleTimeoutMs! / 60_000));
+    } else if (stallFired) {
+      // Must precede the `interrupted` branch: `stallKill` sets that flag, and
+      // rendering "已被中断" would blame the user for a watchdog decision.
+      state = markStallTimeout(state, stallNotice ?? { minutes: 0 });
     } else if (handle.interrupted) {
       state = markInterrupted(state);
     } else {
@@ -1747,6 +1893,55 @@ async function awaitRenderAwareStream(input: {
     if (input.producerStarted()) throw terminal.err;
     log.fail('stream', terminal.err, { mode: input.mode, step: 'stream' });
     await runFallbackReply(input.mode, first.state, input.fallback);
+  }
+}
+
+/**
+ * Last-resort delivery for a streaming reply that failed while the run had
+ * content to show.
+ *
+ * In card / markdown mode the progress stream is the *only* thing carrying the
+ * answer to the user, and every `flush` awaits a Feishu update call. A rejection
+ * there — a 400 on an oversized card, a rate limit, a card sequence conflict, a
+ * network blip — rejects `renderDone`, aborts `processAgentStream` mid-run, and
+ * used to reach nothing but `log.fail`. The run had finished, the answer was
+ * sitting in `latestState`, and the user was left with a card frozen mid-stream
+ * on `streaming_mode: true` — indistinguishable from a run that hung.
+ *
+ * Codex never hit this: its branch swallows the same error and posts a dedicated
+ * final reply right after. This gives Claude the same guarantee.
+ *
+ * Sent as a plain, non-streaming reply behind an explicit degraded notice. The
+ * stream may already have rendered part of this text, so the notice is what
+ * makes a partial duplicate self-explanatory. Repeated text is cosmetic; a
+ * silently dropped answer is the bug being fixed.
+ */
+async function deliverStreamFailureFallback(input: {
+  channel: LarkChannel;
+  chatId: string;
+  scope: string;
+  state: RunState;
+  replyMode: ReturnType<typeof getMessageReplyMode>;
+  sendOpts: { replyTo: string; replyInThread?: boolean };
+  cardRenderOptions: { signCallback?: (action: string) => string };
+}): Promise<void> {
+  // A `flush` that threw leaves the state on `running`, which would render a
+  // stop button and a "正在输出" footer onto a run that is already over.
+  const finalized = finalizeIfRunning(input.state);
+  const notice: Block = { kind: 'text', content: STREAM_FALLBACK_NOTICE, streaming: false };
+  try {
+    await sendFinalReply({
+      ...input,
+      state: { ...finalized, footer: null, blocks: [notice, ...finalized.blocks] },
+    });
+    log.info('outbound', 'stream-failure-fallback', {
+      scope: input.scope,
+      mode: input.replyMode,
+    });
+  } catch (err) {
+    // The channel itself is refusing us; there is nothing further to try. Log
+    // loudly so the loss is at least diagnosable from the profile log.
+    log.fail('outbound', err, { scope: input.scope, step: 'stream-failure-fallback' });
   }
 }
 

@@ -1,5 +1,5 @@
 import { deepMaskEmails } from './mask-email';
-import type { Block, FooterStatus, RunState, ToolEntry } from './run-state';
+import type { Block, FooterStatus, RunState, StallNotice, ToolEntry } from './run-state';
 import { toolBodyMd, toolHeaderText } from './tool-render';
 
 const REASONING_MAX = 1500;
@@ -41,6 +41,8 @@ export function renderCard(state: RunState, options: RunCardRenderOptions = {}):
   } else if (state.terminal === 'idle_timeout') {
     const mins = state.idleTimeoutMinutes ?? 0;
     elements.push(noteMd(`_⏱ ${mins} 分钟无响应,已自动终止_`));
+  } else if (state.terminal === 'stall_timeout') {
+    elements.push(noteMd(`_⏱ ${stallText(state.stalled)},已自动终止_`));
   } else if (state.terminal === 'error' && state.errorMsg) {
     elements.push(noteMd(`⚠️ agent 失败：${state.errorMsg}`));
   } else if (state.terminal === 'done' && elements.length === 0) {
@@ -48,6 +50,10 @@ export function renderCard(state: RunState, options: RunCardRenderOptions = {}):
   }
 
   if (state.terminal === 'running') {
+    // Stage one of the stall watchdog. Sits above the footer and keeps the stop
+    // button, because the whole point is to hand the decision to the user
+    // before the grace window makes it for them.
+    if (state.stalled) elements.push(noteMd(`_⏳ ${stallText(state.stalled)}_`));
     if (state.footer) elements.push(footerStatus(state.footer));
     elements.push(stopButton(options));
   }
@@ -204,9 +210,24 @@ function footerStatus(status: Exclude<FooterStatus, null>): object {
   return noteMd(text);
 }
 
+/**
+ * "工具 Bash 已 20 分钟无输出" / "已 20 分钟无输出" when more than one tool is
+ * outstanding and naming one would be a guess.
+ */
+function stallText(stalled: StallNotice | undefined): string {
+  const mins = stalled?.minutes ?? 0;
+  return stalled?.tool
+    ? `工具 ${stalled.tool} 已 ${mins} 分钟无输出`
+    : `已 ${mins} 分钟无输出`;
+}
+
 function summaryText(state: RunState): string {
   if (state.terminal === 'interrupted') return '已中断';
   if (state.terminal === 'idle_timeout') return '已超时';
+  // Only blame a tool when one was actually outstanding — the same watchdog
+  // also bounds a run that went silent without ever calling one.
+  if (state.terminal === 'stall_timeout') return state.stalled?.tool ? '工具卡死' : '无响应';
+  if (state.stalled) return '疑似卡住';
   if (state.terminal === 'error') return '出错';
   if (state.terminal === 'done') return '已完成';
   if (state.footer === 'tool_running') return '正在调用工具';
