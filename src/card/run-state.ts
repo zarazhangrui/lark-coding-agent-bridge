@@ -15,7 +15,27 @@ export type Block =
   | { kind: 'tool'; tool: ToolEntry };
 
 export type FooterStatus = 'thinking' | 'tool_running' | 'streaming' | null;
-export type Terminal = 'running' | 'done' | 'interrupted' | 'error' | 'idle_timeout';
+export type Terminal =
+  | 'running'
+  | 'done'
+  | 'interrupted'
+  | 'error'
+  | 'idle_timeout'
+  | 'stall_timeout';
+
+/**
+ * A run that has produced no event for longer than the stall threshold while a
+ * tool call is still outstanding — the shape a wedged Bash / MCP / OAuth
+ * subprocess takes. Surfaced on the card *before* anything is killed, so a
+ * legitimately long tool can be left alone (or stopped by hand) rather than
+ * being guessed at.
+ */
+export interface StallNotice {
+  /** Whole minutes without an event, at the moment the warning was raised. */
+  minutes: number;
+  /** Name of the outstanding tool, when exactly one is in flight. */
+  tool?: string;
+}
 
 export interface RunState {
   blocks: Block[];
@@ -27,6 +47,57 @@ export interface RunState {
   /** Set when terminal === 'idle_timeout' — how long claude was idle before
    * the watchdog gave up (so the message can say "N 分钟无响应"). */
   idleTimeoutMinutes?: number;
+  /**
+   * Set while a run is stalled on an outstanding tool call, and again on the
+   * `stall_timeout` terminal. Cleared by the next event, so a tool that was
+   * merely slow leaves no trace once it reports back.
+   */
+  stalled?: StallNotice;
+  /** What the run footer reports. See {@link RunMeta}. */
+  meta?: RunMeta;
+  /**
+   * Set when `done` was synthesised from the stream simply ending, rather than
+   * reported by the agent — claude exiting 0 with empty or unparseable output,
+   * a truncated JSONL, a killed subprocess. The card renders it as an ordinary
+   * finish (leaving it mid-stream would be worse), but callers deciding
+   * *whether the work got done* must not read it as the agent saying so.
+   */
+  endedWithoutTerminalEvent?: boolean;
+}
+
+/**
+ * The "🧠 403K · Fable 5 · max" line under a finished reply.
+ *
+ * Every field is independently optional and the footer degrades field by
+ * field — it is a decoration, and no part of it is worth failing a reply over.
+ */
+export interface RunMeta {
+  /**
+   * Tokens that will be in context on the next turn: this turn's whole prompt
+   * (fresh + both cache tiers) plus what the model wrote. Deliberately not
+   * "tokens billed this turn", which is far smaller once the cache is warm and
+   * would read as though the conversation had barely grown.
+   */
+  contextTokens?: number;
+  /** The model's context window, when the CLI reported one. */
+  contextWindow?: number;
+  /** Model id as *actually* run, reported by the CLI — not what was requested. */
+  model?: string;
+  /** Reasoning effort this run was launched with. */
+  effort?: string;
+  /** Which round of a `/goal` continuation this run is, when one is active. */
+  goalRound?: number;
+  /** That goal's round ceiling, so the footer can show progress toward it. */
+  goalMaxRounds?: number;
+}
+
+/** Merge footer fields, keeping already-known values when the new one is absent. */
+export function withMeta(state: RunState, patch: RunMeta): RunState {
+  const merged: RunMeta = { ...state.meta };
+  for (const [key, value] of Object.entries(patch)) {
+    if (value !== undefined) (merged as Record<string, unknown>)[key] = value;
+  }
+  return { ...state, meta: merged };
 }
 
 export const initialState: RunState = {
@@ -161,6 +232,34 @@ export function markIdleTimeout(state: RunState, minutes: number): RunState {
   };
 }
 
+/**
+ * Raise the stall warning — stage one of the tool-stall watchdog. Purely
+ * additive: the run is untouched and still streaming, this only puts the fact
+ * on screen so a wedged tool stops being indistinguishable from a busy one.
+ */
+export function markStalled(state: RunState, notice: StallNotice): RunState {
+  return { ...state, stalled: notice };
+}
+
+/** Clear the stall warning — any event proves the run is alive again. */
+export function clearStalled(state: RunState): RunState {
+  if (!state.stalled) return state;
+  const { stalled: _dropped, ...rest } = state;
+  return rest;
+}
+
+/** Stage two: the grace window expired and the run was stopped. */
+export function markStallTimeout(state: RunState, notice: StallNotice): RunState {
+  return {
+    ...state,
+    blocks: closeStreamingText(state.blocks),
+    reasoning: { ...state.reasoning, active: false },
+    terminal: 'stall_timeout',
+    footer: null,
+    stalled: notice,
+  };
+}
+
 export function finalizeIfRunning(state: RunState): RunState {
   if (state.terminal !== 'running') return state;
   return {
@@ -169,5 +268,6 @@ export function finalizeIfRunning(state: RunState): RunState {
     reasoning: { ...state.reasoning, active: false },
     terminal: 'done',
     footer: null,
+    endedWithoutTerminalEvent: true,
   };
 }

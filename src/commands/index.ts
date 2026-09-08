@@ -7,6 +7,7 @@ import { claudeCapability, codexCapability } from '../agent/capability';
 import { DEFAULT_MODEL, normalizeModelSelection, supportedModels } from '../agent/models';
 import type { AgentAdapter } from '../agent/types';
 import type { ActiveRuns } from '../bot/active-runs';
+import { goalStopText, type GoalController } from '../bot/goal';
 import {
   accountCurrentCard,
   accountFailureCard,
@@ -29,6 +30,8 @@ import type { AppConfig, AppPreferences, MessageReplyMode, TenantBrand } from '.
 import {
   getAgentStopGraceMs,
   getCotMessages,
+  getGoalMaxHours,
+  getGoalMaxRounds,
   getMaxConcurrentRuns,
   getMessageReplyMode,
   getRequireMentionInGroup,
@@ -147,6 +150,23 @@ export interface CommandContext {
    * text command. Determines whether to update the existing card vs send a
    * new one. */
   fromCardAction?: boolean;
+  /** Continuation-loop state for this profile. Absent in card-action paths. */
+  goals?: GoalController;
+  /**
+   * Hand a synthetic user turn back to intake, to be queued once command
+   * handling finishes. Lets a command start real agent work without the
+   * command layer needing to know how runs are launched.
+   */
+  enqueueTask?: (content: string) => void;
+  /**
+   * Keep messages queued behind a running turn instead of dropping them.
+   *
+   * Commands normally supersede queued chatter. That is wrong for a command
+   * that only reports state: asking `/goal` how a goal is doing would silently
+   * throw away the correction the user typed a moment earlier, which the goal's
+   * next round was about to pick up.
+   */
+  keepPending?: () => void;
 }
 
 type Handler = (args: string, ctx: CommandContext) => Promise<void>;
@@ -177,6 +197,7 @@ const handlers: Record<string, Handler> = {
   '/account': handleAccount,
   '/config': handleConfig,
   '/stop': handleStop,
+  '/goal': handleGoal,
   '/timeout': handleTimeout,
   '/ps': handlePs,
   '/exit': handleExit,
@@ -846,6 +867,115 @@ function formatOwnerState(ctx: CommandContext): string {
   return `${state} owner=${owner}${refreshed}`;
 }
 
+const GOAL_USAGE = [
+  '用法:',
+  '- `/goal <目标>` 开启闭环模式并立刻开跑 —— 我会一轮接一轮做下去,直到自己判定目标达成',
+  '- `/goal` 看当前状态',
+  '- `/goal off` 停掉(`/stop` 也会停)',
+  '- `/goal resume` 接上被 bridge 重启打断的那个',
+].join('\n');
+
+/**
+ * `/goal` — run rounds until the goal is closed.
+ *
+ * The command only arms the loop and hands the goal back to intake as an
+ * ordinary user turn; the round-driving lives in `driveScopeRun`. That keeps
+ * the first round identical to a normal message, which is the whole point —
+ * looping changes how many runs happen, not what a run is.
+ */
+async function handleGoal(args: string, ctx: CommandContext): Promise<void> {
+  const goals = ctx.goals;
+  if (!goals) {
+    await reply(ctx, '❌ 当前入口不支持闭环模式。');
+    return;
+  }
+  const arg = args.trim();
+  const active = goals.get(ctx.scope);
+  // Everything except starting a *new* goal is a control/report action, and
+  // none of them should discard what the user queued for the current round.
+  if (arg === '' || arg === 'off' || arg === 'stop') ctx.keepPending?.();
+
+  if (!arg) {
+    if (active) {
+      const hours = Math.max(0, Math.round((active.deadlineAt - Date.now()) / 360_000) / 10);
+      await reply(
+        ctx,
+        [
+          `🔁 **闭环模式运行中** —— 已完成 ${active.round}/${active.maxRounds} 轮,剩余 ${hours} 小时`,
+          '',
+          `目标:${active.goal}`,
+          ...(active.lastReason ? ['', `上一轮的下一步:${active.lastReason}`] : []),
+          '',
+          '`/goal off` 或 `/stop` 可以停。',
+        ].join('\n'),
+      );
+      return;
+    }
+    const parked = goals.getAny(ctx.scope);
+    await reply(
+      ctx,
+      parked
+        ? `闭环模式未运行。上一个任务(已跑 ${parked.round} 轮)被 bridge 重启打断:${parked.goal}\n\n发 \`/goal resume\` 接着跑。\n\n${GOAL_USAGE}`
+        : `闭环模式未运行。\n\n${GOAL_USAGE}`,
+    );
+    return;
+  }
+
+  if (arg === 'off' || arg === 'stop') {
+    const ended = goals.end(ctx.scope, 'cancelled');
+    await reply(ctx, ended ? goalStopText('cancelled', ended) : '闭环模式本来就没开。');
+    return;
+  }
+
+  if (arg === 'resume') {
+    const resumed = goals.resume(ctx.scope, Date.now(), getGoalMaxHours(ctx.controls.cfg));
+    if (!resumed) {
+      await reply(ctx, '没有被打断的闭环任务可以接。');
+      return;
+    }
+    await reply(ctx, `🔁 接上闭环任务(已跑 ${resumed.round} 轮):${resumed.goal}`);
+    ctx.enqueueTask?.(
+      `继续之前被 bridge 重启打断的任务。目标:${resumed.goal}\n先确认当前进度到哪了,再接着推进。`,
+    );
+    return;
+  }
+
+  if (active) {
+    await reply(
+      ctx,
+      `⚠️ 这个会话已经有闭环任务在跑了(第 ${active.round}/${active.maxRounds} 轮):${active.goal}\n\n先 \`/goal off\` 再开新的。`,
+    );
+    return;
+  }
+
+  const maxRounds = getGoalMaxRounds(ctx.controls.cfg);
+  const maxHours = getGoalMaxHours(ctx.controls.cfg);
+  const started = goals.start({
+    scope: ctx.scope,
+    goal: arg,
+    chatId: ctx.msg.chatId,
+    ...(ctx.msg.threadId ? { threadId: ctx.msg.threadId } : {}),
+    maxRounds,
+    maxHours,
+    now: Date.now(),
+  });
+  await reply(
+    ctx,
+    [
+      `🔁 **闭环模式已开启** —— 最多 ${started.maxRounds} 轮 / ${maxHours} 小时`,
+      '',
+      `目标:${arg}`,
+      '',
+      '我会一轮接一轮做下去,每轮都会汇报进度;判定目标达成就自动停。中途 `/stop` 或 `/goal off` 可以叫停。',
+    ].join('\n'),
+  );
+  if (!ctx.enqueueTask) {
+    log.warn('command', 'loop-no-enqueue', { scope: ctx.scope });
+    return;
+  }
+  ctx.enqueueTask(arg);
+}
+
 async function handleStop(args: string, ctx: CommandContext): Promise<void> {
   const targetScope = args.trim();
   if (targetScope && !canRunAdminCommand(ctx.controls.profileConfig, ctx.controls, ctx.msg.senderId).ok) {
@@ -854,11 +984,19 @@ async function handleStop(args: string, ctx: CommandContext): Promise<void> {
   }
   const scope = targetScope || ctx.scope;
   const ok = ctx.activeRuns.interrupt(scope);
+  // Stopping the run has to stop the loop too. Otherwise the agent may already
+  // have written this round's continuation signal before being interrupted,
+  // and the loop would start round N+1 seconds after the user said stop.
+  const loopEnded = ctx.goals?.end(scope, 'cancelled');
   log.info('command', 'stop', {
     scope,
     targeted: Boolean(targetScope),
     interrupted: ok,
+    loopEnded: Boolean(loopEnded),
   });
+  if (loopEnded && !targetScope) {
+    await reply(ctx, goalStopText('cancelled', loopEnded));
+  }
   if (targetScope) {
     await reply(
       ctx,

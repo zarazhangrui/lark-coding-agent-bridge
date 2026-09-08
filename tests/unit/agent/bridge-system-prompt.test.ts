@@ -39,6 +39,51 @@ describe('bridge system prompt bot collaboration rules', () => {
   });
 });
 
+/**
+ * A run that spawns a detached job and returns reports only "I started it".
+ * The bridge sees nothing after `flush.end`, so the job's completion reaches
+ * the user only if the agent wires the notification itself.
+ */
+describe('bridge system prompt detached-job reporting', () => {
+  it('states that the bridge reports nothing once the run ends', () => {
+    expect(BRIDGE_SYSTEM_PROMPT).toContain('只汇报本轮 run 期间发生的事');
+  });
+
+  it('distinguishes a reaped child from a truly detached process', () => {
+    expect(BRIDGE_SYSTEM_PROMPT).toContain('run_in_background');
+    expect(BRIDGE_SYSTEM_PROMPT).toContain('setsid');
+    expect(BRIDGE_SYSTEM_PROMPT).toContain('活过本轮');
+  });
+
+  it('requires the agent to send its own completion notice', () => {
+    expect(BRIDGE_SYSTEM_PROMPT).toContain('你 detach，你负责回执');
+    expect(BRIDGE_SYSTEM_PROMPT).toContain('lark-cli im send');
+  });
+
+  it('pins the notice to the bridge_context chat rather than a hardcoded id', () => {
+    expect(BRIDGE_SYSTEM_PROMPT).toContain('不要写死');
+  });
+
+  it('demands the notice sit inside the same subshell, after the long command', () => {
+    // Detaching the notice separately would fire it immediately, which is the
+    // failure this whole section exists to prevent.
+    expect(BRIDGE_SYSTEM_PROMPT).toContain('同一个子 shell 内');
+  });
+
+  it('requires failures to be reported, not just successes', () => {
+    expect(BRIDGE_SYSTEM_PROMPT).toContain('只在成功时通知，等于把失败变成静默');
+    expect(BRIDGE_SYSTEM_PROMPT).toContain('退出码');
+  });
+
+  it('tells the agent to set expectations in its own reply', () => {
+    expect(BRIDGE_SYSTEM_PROMPT).toContain('跑完会在这里告诉你');
+  });
+
+  it('prefers finishing inside the run over detaching at all', () => {
+    expect(BRIDGE_SYSTEM_PROMPT).toContain('能在本轮内跑完的就不要 detach');
+  });
+});
+
 describe('buildBridgeSystemPrompt', () => {
   it('returns the base prompt unchanged when no identity is available', () => {
     expect(buildBridgeSystemPrompt(undefined)).toBe(BRIDGE_SYSTEM_PROMPT);
