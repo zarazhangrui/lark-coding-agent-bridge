@@ -64,6 +64,14 @@ export interface AgentRun {
    * 143 instead of 0; waiting it out lets it exit cleanly.
    */
   waitForExit(timeoutMs: number): Promise<boolean>;
+  /**
+   * Last-resort teardown: SIGKILL the process and destroy its pipes so the
+   * event iterator ends. `stop()` is the graceful path and normally suffices;
+   * this exists for the case where it didn't — a child that ignored SIGTERM,
+   * or a descendant still holding stdout open — and the caller has given up
+   * waiting. Optional: adapters that own no OS resources can omit it.
+   */
+  destroy?(): void;
 }
 
 /**

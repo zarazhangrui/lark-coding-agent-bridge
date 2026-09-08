@@ -13,6 +13,7 @@ export interface RunExecutorDeps {
   createRunId?: () => string;
   now?: () => number;
   postDoneExitGraceMs?: number;
+  stopReapGraceMs?: number;
 }
 
 export interface SubmitRunInput {
@@ -42,6 +43,20 @@ export interface RunExecution {
 }
 
 const DEFAULT_POST_DONE_EXIT_GRACE_MS = 2000;
+/**
+ * How long after a stop request the executor waits for the event stream to end
+ * on its own before releasing the run's resources regardless.
+ *
+ * Cleanup normally rides on the source iterable finishing, which is fine while
+ * the child cooperates: SIGTERM closes its stdout, the stream ends, the slot is
+ * released. It is not fine when the child ignores SIGTERM, when SIGKILL leaves
+ * a descendant holding the pipe, or when the adapter's generator is parked on a
+ * promise that never settles. In those cases the pool slot and the scope
+ * reservation were held for the lifetime of the process — every such run
+ * permanently burned one of `maxConcurrentRuns` (10 by default), so ten hangs
+ * silently wedged every chat on the bridge with no error anywhere.
+ */
+const DEFAULT_STOP_REAP_GRACE_MS = 30_000;
 
 export class RunExecutor {
   private readonly agent: AgentAdapter;
@@ -50,6 +65,7 @@ export class RunExecutor {
   private readonly createRunId: () => string;
   private readonly now: () => number;
   private readonly postDoneExitGraceMs: number;
+  private readonly stopReapGraceMs: number;
 
   constructor(deps: RunExecutorDeps) {
     this.agent = deps.agent;
@@ -58,6 +74,7 @@ export class RunExecutor {
     this.createRunId = deps.createRunId ?? randomUUID;
     this.now = deps.now ?? Date.now;
     this.postDoneExitGraceMs = deps.postDoneExitGraceMs ?? DEFAULT_POST_DONE_EXIT_GRACE_MS;
+    this.stopReapGraceMs = deps.stopReapGraceMs ?? DEFAULT_STOP_REAP_GRACE_MS;
   }
 
   async submit(input: SubmitRunInput): Promise<RunExecution> {
@@ -145,9 +162,33 @@ export class RunExecutor {
       permissionMode: input.policy.permissionMode,
     });
 
+    // Every stop path has to arm the reaper, not just `RunExecution.stop`.
+    // `ActiveRuns.interrupt` (the `/stop` command) and `ActiveRuns.stopAll`
+    // (shutdown) call `handle.run.stop()` straight through, and the stall
+    // watchdog does the same — all of them drop the handle without ever
+    // releasing the pool slot. Wrapping the run here is what makes the
+    // guarantee hold no matter who asks for the stop.
+    let armReaper = (): void => {};
+    const guardedStop = async (): Promise<void> => {
+      armReaper();
+      await run.stop();
+    };
+    // A Proxy rather than a spread: adapters expose `stopped` / `waitForExit`
+    // as prototype getters and methods over private fields, and a spread would
+    // both drop the getters and rebind `this` away from the instance.
+    const guardedRun: AgentRun = new Proxy(run, {
+      get(target, prop, _receiver) {
+        if (prop === 'stop') return guardedStop;
+        // Receiver is the target, not the proxy, so prototype getters and
+        // bound methods keep reaching their own private fields.
+        const value = Reflect.get(target, prop, target) as unknown;
+        return typeof value === 'function' ? value.bind(target) : value;
+      },
+    });
+
     let handle: RunHandle;
     try {
-      handle = this.activeRuns.register(input.scopeId, run);
+      handle = this.activeRuns.register(input.scopeId, guardedRun);
     } catch (err) {
       releaseScope();
       release();
@@ -158,10 +199,15 @@ export class RunExecutor {
       );
     }
     let cleaned = false;
+    let reaper: ReturnType<typeof setTimeout> | undefined;
     const cleanup = async (waitForExit: boolean): Promise<void> => {
       if (cleaned) return;
       cleaned = true;
-      this.activeRuns.unregister(input.scopeId, run);
+      if (reaper) clearTimeout(reaper);
+      reaper = undefined;
+      // Must unregister the same object that was registered, or the identity
+      // check in `ActiveRuns.unregister` silently keeps the scope occupied.
+      this.activeRuns.unregister(input.scopeId, guardedRun);
       release();
       if (waitForExit) {
         const exited = await run.waitForExit(this.postDoneExitGraceMs);
@@ -187,16 +233,52 @@ export class RunExecutor {
       await cleanup(!handle.interrupted);
     });
 
+    armReaper = (): void => {
+      if (cleaned || reaper) return;
+      reaper = setTimeout(() => {
+        if (cleaned) return;
+        log.warn('run', 'stop-reap', {
+          ...dimensions,
+          graceMs: this.stopReapGraceMs,
+          reason: 'event stream did not end after stop; releasing resources anyway',
+        });
+        // Release the subscribers. Without this, a caller awaiting the stream
+        // — `processAgentStream`, and therefore the reply that tells the user
+        // anything at all — stays parked on a source that will never produce
+        // again, and the card is never finalized.
+        fanout.forceFinish();
+        // Then tear the source down for real. Waking subscribers alone leaves
+        // `pump()` parked on `source.next()`, still holding the run's event
+        // iterator and the child's stdout — and, if the child ignored the
+        // earlier SIGTERM, leaves it running as an orphan. `destroy()`
+        // SIGKILLs and closes the pipes so the iterator actually ends.
+        try {
+          run.destroy?.();
+        } catch (err) {
+          log.warn('run', 'stop-reap-destroy-failed', {
+            ...dimensions,
+            err: err instanceof Error ? err.message : String(err),
+          });
+        }
+        void cleanup(false);
+      }, this.stopReapGraceMs);
+      // A pending reaper must never be the reason the process stays alive.
+      reaper.unref?.();
+    };
+
     return {
       runId,
       scopeId: input.scopeId,
-      run,
+      run: guardedRun,
       handle,
       subscribe: () => fanout.subscribe(),
       stop: async () => {
         handle.interrupted = true;
-        await run.stop();
+        await guardedRun.stop();
         await run.waitForExit(this.postDoneExitGraceMs);
+        // The explicit path still cleans up inline — the reaper armed by
+        // `guardedRun.stop` is only the backstop for stops that come in
+        // through `ActiveRuns` and never reach this method.
         await cleanup(false);
       },
     };
@@ -281,6 +363,20 @@ class EventFanout {
         };
       },
     };
+  }
+
+  /**
+   * Release every subscriber without waiting on the source.
+   *
+   * The pump itself stays parked on a source that will never yield again —
+   * there is no portable way to cancel an async iterator mid-`next()` — but it
+   * holds nothing but itself once `onDone` has run. What matters is that
+   * consumers stop waiting on a dead stream and can finalize their output.
+   */
+  forceFinish(): void {
+    if (this.done) return;
+    this.done = true;
+    this.wakeAll();
   }
 
   private start(): void {

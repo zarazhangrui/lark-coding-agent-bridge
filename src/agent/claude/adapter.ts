@@ -166,6 +166,25 @@ export class ClaudeAdapter implements AgentAdapter {
           });
         });
       },
+      destroy(): void {
+        // Order matters: kill first so nothing writes into a destroyed pipe,
+        // then tear the pipes down so a readline iterator parked on stdout
+        // ends instead of waiting on a descendant that inherited the fd.
+        try {
+          if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+        } catch {
+          // Already reaped — nothing to kill.
+        }
+        log.warn('agent', 'destroy', { pid: child.pid ?? null });
+        for (const stream of [child.stdout, child.stderr, child.stdin]) {
+          try {
+            stream.destroy();
+          } catch {
+            // Best-effort: a stream already torn down is the desired state.
+          }
+        }
+        systemPromptFile.cleanup();
+      },
       waitForExit(timeoutMs: number): Promise<boolean> {
         if (child.exitCode !== null || child.signalCode !== null) {
           return Promise.resolve(true);
