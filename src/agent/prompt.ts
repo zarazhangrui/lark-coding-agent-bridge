@@ -18,6 +18,12 @@ export interface BridgePromptContext {
   /** Accounts @-mentioned in the triggering message(s), deduped across the batch. */
   mentions?: BridgePromptMention[];
   threadId?: string;
+  /**
+   * Path prefix a detached job writes under to post a note and earn the agent
+   * another round — see the 后台回执 section of the bridge system prompt.
+   * Per-scope and stable, so a job can hold it for as long as it runs.
+   */
+  wakePrefix?: string;
   messageIds?: string[];
   source: BridgePromptSource;
 }

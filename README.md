@@ -151,6 +151,7 @@ If a profile was created with the wrong agent kind, stop or unregister any match
 | `/invite group` | Allow the current group to use the bot |
 | `/invite all group` | Allow all groups the bot has joined |
 | `/remove user @name`, `/remove admin @name`, `/remove group` | Remove access entries |
+| `/goal <goal>` | Pursue a goal across as many runs as it takes (`/goal` for status, `/goal off` to stop) |
 | `/stop` | Stop the current run, including the card stop button |
 | `/timeout [N\|off\|default]` | Set or clear the current session idle watchdog |
 | `/ps` | List local bridge processes |
@@ -160,6 +161,54 @@ If a profile was created with the wrong agent kind, stop or unregister any match
 | `/help` | Help card |
 
 DMs do not require an @ mention. Groups and topic groups require `@bot` by default; `@all` is ignored. Cloud-doc comments in supported document types run when the bot is mentioned.
+
+## Goal mode (`/goal`)
+
+A headless `claude -p` / `codex exec` run is one-shot. When the turn ends the process is gone, so anything the agent promised to do "afterwards" never happens — and a job it detached with `nohup` survives only to *notify*, never to check the result and decide what to do next. Work that genuinely needs several rounds has nowhere to live.
+
+`/goal <goal>` closes that. After each round the bridge asks whether the goal is closed; if not, it starts another round on the same session, so the agent resumes with its full context. The work spans as many runs as it needs while staying one conversation.
+
+```
+/goal 部署新二进制并跑出第一个基线数字
+```
+
+Each round replies as usual, with `🔁 3/20` on the footer so a round-three progress report is not mistaken for an answer to whatever was asked last. Anything you send mid-goal is folded into the next round rather than waiting for the whole thing to finish, so you can steer without stopping it.
+
+**Signalling is opt-out: silence ends it.** Each round gets its own signal file, and the agent must write the next step into it to earn another round. An agent that crashes, is interrupted, or simply forgets therefore *stops* — the cost of that failure is one "继续" from you, rather than an unattended run of API calls. A round's file is per-round, so a leftover one can never trigger a later round.
+
+It stops on any of:
+
+- the agent leaving the signal file unwritten (the goal is closed)
+- `goalMaxRounds` rounds, default 20
+- `goalMaxHours` elapsed, default 8
+- three rounds in a row giving the identical reason — restating a blocker is not progress
+- `/stop` or `/goal off`
+
+Every ending posts why, and whether the goal was actually reached. A bridge restart kills the in-flight run, so the goal is parked rather than resumed silently: the chat gets a notice and `/goal resume` picks it back up from the round it reached.
+
+## Background callbacks (后台回执)
+
+`/goal` covers work the agent does itself, round after round. The other shape is a job that **outlives** the run: a build, an upload, a batch that takes twenty minutes. `nohup` keeps it alive, but the agent that started it is gone, and until now the only way that job could speak was to send a Feishu message — which, with the profile's `lark-cli` resolving to user identity, went out *as the user*.
+
+Every run's `bridge_context` now carries a `wakePrefix` path. A detached job writes one line under it:
+
+```bash
+nohup bash -c '
+  <the real command> > /tmp/job.log 2>&1
+  rc=$?
+  f=$(mktemp "<bridge_context.wakePrefix>.XXXXXX")
+  printf %s "done (exit=$rc); log at /tmp/job.log" > "$f"
+  mv "$f" "$f.wake"
+' >/dev/null 2>&1 &
+```
+
+The bridge sweeps for `*.wake` every 2s and does two things: posts the line into the chat **as the bot**, and hands it to the agent as a fresh turn on the same session. So the agent comes back with full context and finishes the job. `mktemp` + `mv` is not decoration — a fixed filename loses one of two concurrent reports, and writing `.wake` in place can be swept half-written.
+
+The prefix names the run that handed it out, so a report threads back to *its own* message and is attributed to whoever started it — a colleague using the same group meanwhile does not end up owning someone else's job. It is derived rather than allocated, so it survives restarts, and it is the same mechanism in a DM, a group, and a topic — no @-mention involved.
+
+Delivery is at-least-once: a report is removed only after it has been handed off, so a crash or a restart mid-delivery replays it rather than swallowing it. One written while the bridge was down is delivered on the next start (up to a day later). If the chat post itself fails, the agent is told so and puts the content in its own reply instead of acknowledging something nobody saw. A scope accepts 30 wakes an hour; past that the chat gets one throttle notice and the rest are dropped.
+
+Under a Codex `workspace-write` sandbox the inbox is passed as `--add-dir`, so a job can write it from outside the workspace. Under `read-only` nothing can be written at all, and the channel is unavailable along with everything else.
 
 ## Reply Display and COT
 
@@ -307,7 +356,12 @@ Cloud-doc comments do not need a separate workspace binding or document allowlis
 
 **The bot stays silent or the local CLI never replies.** Usually the local `claude` or `codex` CLI is not logged in, or the current session points to a working directory that no longer exists. Send `/status` to inspect; `/new` often fixes it by starting a fresh session.
 
-**The agent subprocess looks frozen (card stuck on the last frame).** The bridge supports an idle watchdog: if the agent emits nothing for N minutes, the process is killed and the card is annotated with the auto-termination reason. Disabled by default. Enable with `/config` globally, or `/timeout 10` for the current session; `/timeout off` disables it for the session; `/timeout default` clears the session override.
+**The agent subprocess looks frozen (card stuck on the last frame).** Two complementary watchdogs cover this.
+
+- **Tool-stall watchdog (`toolStallTimeoutMinutes`, on by default).** Covers a run wedged on a tool call that never returns — a blocked Bash, an interactive command waiting on stdin, a hung MCP server. Two stages: after 60 minutes of silence the card is annotated with "工具 X 已 60 分钟无输出" and keeps its ⏹ stop button, but **nothing is killed**; only after a further 60 minutes (`toolStallGraceMinutes`) without any event is the run stopped, with the reason shown on the card. A legitimately long tool (OAuth authorization, a slow build) therefore gets a full 2-hour window, and you see the warning before anything dies. The default sits at the top of `runIdleTimeoutMinutes`' range on purpose — a shorter one would quietly become the binding limit and cap a deliberately long idle setting. Any event — including the slow tool finally returning — clears the warning and resets both stages. Set to `0` to disable.
+- **Idle watchdog (`runIdleTimeoutMinutes`, off by default).** Kills the run when the agent emits nothing for N minutes. It deliberately **pauses while a tool call is outstanding** so long tools aren't killed mid-work — which is exactly the gap the stall watchdog above fills. Enable with `/config` globally, or `/timeout 10` for the current session; `/timeout off` disables it for the session; `/timeout default` clears the session override.
+
+**A reply never arrived (the card is stuck streaming even though the agent finished).** When a streaming card update fails — an oversized-card 400, a rate limit, a card sequence conflict, a network blip — the bridge re-sends the run's accumulated reply as a plain message prefixed with "⚠️ 消息流式更新失败". Receiving it means the run **did** finish and that message body is the complete result; it may partially repeat what the card already showed.
 
 **The agent says it cannot see an image I sent.** Upgrade to the latest version. Releases before 0.1.0 had a filename-dedup bug.
 

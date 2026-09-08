@@ -126,6 +126,42 @@ describe('ClaudeAdapter process contract', () => {
     expect(record.argv[5]).toBe('bypassPermissions');
   });
 
+  it('passes the reasoning effort level through to the CLI', async () => {
+    const fake = await createFakeClaude({
+      lines: [{ type: 'result', session_id: 'sess-1' }],
+    });
+    cleanup.push(fake.dir);
+
+    const run = new ClaudeAdapter({ binary: fake.path }).run({
+      runId: 'run-effort',
+      prompt: 'go',
+      cwd: fake.dir,
+      model: 'claude-fable-5',
+      effort: 'xhigh',
+    });
+    await collect(run.events);
+    const record = await readRecord(fake.recordPath);
+
+    expect(record.argv.slice(-4)).toEqual(['--model', 'claude-fable-5', '--effort', 'xhigh']);
+  });
+
+  it('omits --effort entirely when no level is set', async () => {
+    const fake = await createFakeClaude({
+      lines: [{ type: 'result', session_id: 'sess-1' }],
+    });
+    cleanup.push(fake.dir);
+
+    const run = new ClaudeAdapter({ binary: fake.path }).run({
+      runId: 'run-no-effort',
+      prompt: 'go',
+      cwd: fake.dir,
+    });
+    await collect(run.events);
+    const record = await readRecord(fake.recordPath);
+
+    expect(record.argv).not.toContain('--effort');
+  });
+
   it('includes stderr when the process exits non-zero', async () => {
     const fake = await createFakeClaude({
       lines: [{ type: 'assistant', message: { content: [{ type: 'text', text: 'before failure' }] } }],

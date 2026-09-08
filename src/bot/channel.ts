@@ -6,7 +6,12 @@ import type {
 import { createLarkChannel } from '@larksuite/channel';
 import { dirname, join } from 'node:path';
 import { claudeCapability, codexCapability } from '../agent/capability';
-import { modelLabel, normalizeModelSelection, resolveModelArg } from '../agent/models';
+import {
+  modelLabel,
+  normalizeModelSelection,
+  resolveEffortArg,
+  resolveModelArg,
+} from '../agent/models';
 import {
   buildAgentPrompt,
   type BridgePromptInteractiveCard,
@@ -20,23 +25,34 @@ import { CallbackAuth } from '../card/callback-auth';
 import { CallbackNonceStore } from '../card/callback-store';
 import { renderCard } from '../card/run-renderer';
 import {
+  clearStalled,
   finalizeIfRunning,
   initialState,
   markIdleTimeout,
   markInterrupted,
+  markStallTimeout,
+  markStalled,
   reduce,
+  withMeta,
+  type Block,
   type RunState,
+  type StallNotice,
+  type Terminal,
 } from '../card/run-state';
-import { renderText } from '../card/text-renderer';
+import { hasDeliverableContent, renderText } from '../card/text-renderer';
 import { tryHandleCommand, type Controls } from '../commands';
 import type { AppConfig } from '../config/schema';
 import {
   getAgentStopGraceMs,
   getCotMessages,
+  getGoalMaxHours,
+  getGoalMaxRounds,
   getMaxConcurrentRuns,
   getMessageReplyMode,
   getRunIdleTimeoutMs,
   getShowToolCalls,
+  getToolStallGraceMs,
+  getToolStallTimeoutMs,
 } from '../config/schema';
 import { resolveAppSecret } from '../config/secret-resolver';
 import { log, reportMetric, withTrace } from '../core/logger';
@@ -58,6 +74,22 @@ import type { WorkspaceStore } from '../workspace/store';
 import { ActiveRuns, type RunHandle } from './active-runs';
 import { ChatModeCache, type ChatMode } from './chat-mode-cache';
 import { handleCommentMention } from './comments';
+import {
+  GoalController,
+  goalContinuationTurn,
+  goalProtocolInstruction,
+  goalStopText,
+  prepareGoalSignal,
+  readGoalSignal,
+} from './goal';
+import {
+  WakeInbox,
+  wakeDirFor,
+  wakeNoticeText,
+  wakeTurn,
+  type Wake,
+  type WakeRoute,
+} from './wake';
 import { recordRunSessionEvent, startRunFlow } from './run-flow';
 import { commandSessionCatalogIdentity } from './session-catalog-identity';
 import { startKeepalive } from './keepalive';
@@ -78,6 +110,13 @@ import {
 const DEBOUNCE_MS = 600;
 const STREAM_TERMINAL_GRACE_MS = 3000;
 const REACTION_CLEANUP_GRACE_MS = 1000;
+/**
+ * Prefix for `deliverStreamFailureFallback`. The streamed message may already
+ * show part of what follows, so this line has to explain the repetition — and
+ * has to make clear the run itself finished, since the frozen card it is
+ * apologising for looks exactly like a hung one.
+ */
+const STREAM_FALLBACK_NOTICE = '⚠️ 消息流式更新失败，本轮已结束，以下是完整回复：';
 
 const BRIDGE_AGENT_INSTRUCTIONS = [
   '你在 bridge 进程中运行，普通 lark-cli 会继承 LARK_CHANNEL=1 并进入 bridge-bound 模式。',
@@ -191,6 +230,18 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
   // so /config bumps take effect for the next run.
   const pool = new ProcessPool(() => getMaxConcurrentRuns(controls.cfg));
   const executor = new RunExecutor({ agent, pool, activeRuns });
+  // `/goal` continuation state. Persisted next to the other per-profile
+  // state so a restart — which kills every in-flight run — can still tell the
+  // user which goal it cut off, and let them resume it.
+  const goalsPath = deps.appPaths?.mediaDir
+    ? join(dirname(deps.appPaths.mediaDir), 'goals.json')
+    : undefined;
+  const goals = new GoalController(goalsPath);
+  await goals.load();
+  // 后台回执 inbox. Shares the profile directory with the goal state for the
+  // same reason: a detached job can outlive several restarts, and its wake has
+  // to survive being written while no bridge is listening.
+  const wake = new WakeInbox(goalsPath ? wakeDirFor(goalsPath) : undefined);
 
   // Resolve the App Secret to plaintext. The config field can be a literal
   // string, a "${VAR}" template, or a {source, id} SecretRef referencing
@@ -304,7 +355,7 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
             threadId: firstMsg.threadId,
           });
         }
-        await runAgentBatch({
+        await driveScopeRun({
           channel,
           executor,
           sessions,
@@ -319,6 +370,9 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
           lastRunModelByScope,
           scope,
           mode,
+          goals,
+          pending,
+          wake,
         });
       } catch (err) {
         log.fail('flush', err);
@@ -349,6 +403,7 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
           logThreadModeOverride,
           executor,
           pool,
+          goals,
         }),
       ).catch((err) => log.fail('intake', err));
     },
@@ -493,6 +548,35 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
   });
   console.log('正在监听消息。按 Ctrl+C 退出。\n');
 
+  // A restart kills every run, so any loop still marked active was cut off
+  // mid-goal. Tell its chat rather than resuming silently: restarts are
+  // usually deploys, and firing agent runs at boot is not something the user
+  // asked for at that moment.
+  // Signals whose round died with a previous process would otherwise sit in the
+  // profile forever once their goal is replaced rather than resumed.
+  void goals
+    .sweepSignals(Date.now())
+    .catch((err) => log.warn('goal', 'signal-sweep-failed', { err: String(err) }));
+
+  // Awaited before the sweeper starts, not fired alongside it: housekeeping
+  // hands back reports a previous process died mid-delivery, and a sweep
+  // running at the same time could be holding one of those very files.
+  await wake
+    .sweepStale(Date.now())
+    .catch((err) => log.warn('wake', 'stale-sweep-failed', { err: String(err) }));
+  wake.start((w) => handleWake({ channel, pending, wake: w }));
+
+  for (const cut of goals.markInterrupted()) {
+    void channel
+      .send(cut.chatId, {
+        markdown:
+          `⚠️ bridge 重启,闭环任务被打断(已完成 ${cut.round} 轮)。\n\n` +
+          `目标:${cut.goal}\n\n` +
+          '要接着跑发 `/goal resume`;不需要就忽略这条。',
+      })
+      .catch((err) => log.warn('goal', 'restart-notice-failed', { err: String(err) }));
+  }
+
   // App-level keepalive: 15s probe + wake-up detection + HTTP reachability.
   // Defense-in-depth — the SDK's pingTimeout watchdog handles half-dead WS,
   // this catches anything that the SDK misses (silent state stuck, etc.).
@@ -513,6 +597,10 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
       ownerRefresh.stop();
       knownChatsRefresh.stop();
       keepalive.stop();
+      // Awaited before `pending.cancelAll()` below: a wake mid-dispatch has
+      // already consumed its file, and letting it queue after the drain would
+      // start a run against a channel that is closing.
+      await wake.stop();
       // Stop meeting timers but stay in the meetings: /reconnect tears the
       // channel down and rebuilds it, and auto-leaving every meeting on a
       // reconnect would be surprising.
@@ -526,6 +614,11 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
         sessionCatalog?.flush(),
         callbackNonceStore?.flush(),
         workspaces.flush(),
+        // Without this the process can exit between `schedulePersist` and the
+        // atomic write: a goal started just before a restart would come back
+        // unknown, and one just cancelled would come back as a ghost the
+        // restart notice offers to resume.
+        goals.flush(),
       ]);
       if (stopAllResult.status === 'rejected') {
         log.fail('disconnect', stopAllResult.reason, { step: 'stopAll' });
@@ -625,6 +718,7 @@ interface IntakeDeps {
   logThreadModeOverride: LogThreadModeOverride;
   executor: RunExecutor;
   pool: ProcessPool;
+  goals: GoalController;
 }
 
 type LogThreadModeOverride = (input: {
@@ -648,6 +742,7 @@ async function intakeMessage(deps: IntakeDeps): Promise<void> {
     logThreadModeOverride,
     executor,
     pool,
+    goals,
   } = deps;
   const preview = msg.content.length > 80 ? `${msg.content.slice(0, 80)}…` : msg.content;
   // Resolve scope (and underlying chat mode) once at intake — every
@@ -755,11 +850,23 @@ async function intakeMessage(deps: IntakeDeps): Promise<void> {
     return;
   }
 
+  // A command that starts work (`/goal <目标>`) hands the turn back here as
+  // text rather than launching a run itself, so it goes through the same
+  // debounce → batch → run path as anything the user types.
+  let queuedTask: string | undefined;
+  let keepPending = false;
   const handled = await tryHandleCommand({
     channel,
     msg: emsg,
     scope,
     chatMode,
+    goals,
+    enqueueTask: (content: string) => {
+      queuedTask = content;
+    },
+    keepPending: () => {
+      keepPending = true;
+    },
     sessions,
     workspaces,
     agent,
@@ -778,8 +885,14 @@ async function intakeMessage(deps: IntakeDeps): Promise<void> {
     controls,
   });
   if (handled) {
-    const dropped = pending.cancel(scope);
-    log.info('intake', 'command', { scope, droppedPending: dropped.length });
+    const dropped = keepPending ? [] : pending.cancel(scope);
+    log.info('intake', 'command', {
+      scope,
+      droppedPending: dropped.length,
+      ...(keepPending ? { keptPending: true } : {}),
+    });
+    // Pushed after the cancel above, or it would be dropped as stale chatter.
+    if (queuedTask !== undefined) pending.push(scope, { ...emsg, content: queuedTask });
     return;
   }
 
@@ -802,9 +915,284 @@ interface RunBatchDeps {
   lastRunModelByScope: Map<string, string>;
   scope: string;
   mode: ChatMode;
+  /** 后台回执 inbox — re-armed each run so a wake routes to the live chat. */
+  wake: WakeInbox;
+  /** Set when this run is one round of a `/goal` continuation. */
+  goalMode?: GoalRunContext;
 }
 
-async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
+interface GoalRunContext {
+  /** Protocol text (including this round's signal path) for the prompt. */
+  instruction: string;
+  round: number;
+  maxRounds: number;
+}
+
+interface GoalDriveDeps extends Omit<RunBatchDeps, 'goalMode' | 'batch'> {
+  batch: NormalizedMessage[];
+  goals: GoalController;
+  pending: PendingQueue;
+}
+
+/**
+ * Run one batch — then keep running it until the goal is closed, if this scope
+ * has an active `/goal`.
+ *
+ * Everything a continuation round needs (session, cwd, card routing, watchdogs)
+ * already lives in `runAgentBatch`, so a round is just another call to it with
+ * a synthetic user turn. That keeps a looped run and a normal run literally the
+ * same code path, rather than a second, thinner one that drifts.
+ */
+async function driveScopeRun(deps: GoalDriveDeps): Promise<void> {
+  const { goals, pending, channel, scope, mode } = deps;
+  const anchor = deps.batch[0];
+  if (!anchor) return;
+  let batch = deps.batch;
+  // Identity of the goal this driver belongs to, and the round it is running.
+  // Held outside the loop so the catch below can close the right goal.
+  let goalId: string | undefined;
+  let round = 0;
+  // A round that produced nothing gets one retry before the goal gives up. The
+  // known cause is transient — the next run picks the prompt back up — and the
+  // alternative is ending a multi-hour goal on a turn the agent never saw.
+  let silentRetries = 0;
+
+  try {
+    for (;;) {
+      const state = goals.get(scope);
+      let goalMode: GoalRunContext | undefined;
+      let signalPath: string | undefined;
+      if (state) {
+        goalId = state.id;
+        round = state.round + 1;
+        signalPath = goals.signalPath(state.id, round);
+        await prepareGoalSignal(signalPath);
+        goalMode = {
+          round,
+          maxRounds: state.maxRounds,
+          instruction: goalProtocolInstruction({
+            goal: state.goal,
+            round,
+            maxRounds: state.maxRounds,
+            signalPath,
+            deadlineAt: state.deadlineAt,
+            now: Date.now(),
+          }),
+        };
+      }
+
+      const outcome = await runAgentBatch({ ...deps, batch, ...(goalMode ? { goalMode } : {}) });
+      if (!state || !signalPath) return;
+
+      const signal = await readGoalSignal(signalPath);
+      const endRound = (stop: 'done' | 'run-failed' | 'silent'): Promise<void> | undefined => {
+        // `expectId` guards the window where `/goal off` during this round was
+        // followed by a new goal: without it this round would close that one.
+        const ended = goals.end(scope, stop, { expectId: state.id, roundsRun: round });
+        return ended ? sendGoalNotice(channel, anchor, mode, goalStopText(stop, ended)) : undefined;
+      };
+
+      // A run that did not reach `done` decides nothing — not "achieved", and
+      // not "continue" either. Agents write the signal partway through a round,
+      // so one killed by the stall watchdog or felled by an adapter error can
+      // leave a `continue` behind that describes a plan it never carried out.
+      // Believing it would run the next round on top of a broken one.
+      if (outcome === 'run-failed') {
+        await endRound('run-failed');
+        return;
+      }
+      // Absent is "done"; unreadable is not. Treating a broken signal channel
+      // as silence would report every goal as achieved the moment /tmp went
+      // read-only.
+      if (signal.kind === 'unreadable') {
+        log.warn('goal', 'signal-unreadable', { scope, round, err: signal.error });
+        await endRound('run-failed');
+        return;
+      }
+      if (signal.kind === 'none') {
+        // The agent said nothing and signalled nothing. It did not decide the
+        // goal was met — most likely it never saw the prompt.
+        if (outcome === 'completed-silent') {
+          if (silentRetries < 1) {
+            silentRetries++;
+            log.warn('goal', 'silent-round-retry', { scope, round });
+            continue;
+          }
+          await endRound('silent');
+          return;
+        }
+        await endRound('done');
+        return;
+      }
+      silentRetries = 0;
+
+      const reason = signal.reason;
+      const advance = goals.advance(scope, state.id, reason, Date.now());
+      // Gone or replaced — `/stop`, `/goal off`, or a different goal now owns
+      // this scope. Either way this round does not get to extend anything.
+      if (!advance) return;
+      if (!advance.ok) {
+        await sendGoalNotice(channel, anchor, mode, goalStopText(advance.stop, advance.state));
+        return;
+      }
+
+      // Anything the user said mid-round joins the next one instead of waiting
+      // for the whole goal to finish — otherwise a steer sent at round 3 of 20
+      // sits unread for hours.
+      const queued = pending.cancel(scope);
+      if (queued.length > 0) {
+        log.info('goal', 'merged-user-messages', { scope, count: queued.length });
+      }
+      batch = [
+        continuationMessage(
+          anchor,
+          goalContinuationTurn({
+            round: advance.state.round + 1,
+            goal: advance.state.goal,
+            reason,
+          }),
+        ),
+        ...queued,
+      ];
+    }
+  } catch (err) {
+    // Whatever threw, it happened outside the reply path's own error handling
+    // (attachment resolution, the run-policy flow, a quote fetch). Leaving the
+    // goal active would strand it: nothing else drives a goal, so `/goal` would
+    // keep reporting "运行中" with no run behind it, and starting a new goal
+    // would be refused.
+    if (goalId) {
+      const failed = goals.end(scope, 'run-failed', { expectId: goalId, roundsRun: round });
+      if (failed) {
+        await sendGoalNotice(channel, anchor, mode, goalStopText('run-failed', failed));
+      }
+    }
+    throw err;
+  }
+}
+
+/**
+ * Deliver one 后台回执: show it, then hand it to the agent.
+ *
+ * Both halves matter and they are not the same act. Posting is what the user
+ * sees — with the bot's name on it, which is the whole point of replacing the
+ * old "send it as the user" path. Injecting is what continues the work, and it
+ * goes through `pending` rather than starting a run directly so it obeys every
+ * rule an ordinary message does: it merges with anything else waiting, it waits
+ * out a run already in flight, and a `/goal` round absorbs it instead of
+ * racing it.
+ *
+ * A failure to post is not a reason to drop the wake — the job reported
+ * something real, and losing it because Feishu blipped is the exact silence
+ * this channel exists to prevent. But the agent is told the post failed, so it
+ * knows the user has not seen the report and puts the content in its reply
+ * instead of acknowledging something nobody read.
+ */
+async function handleWake(deps: {
+  channel: LarkChannel;
+  pending: PendingQueue;
+  wake: Wake;
+}): Promise<void> {
+  const { channel, pending, wake } = deps;
+  const { route, text, kind } = wake;
+  let posted = true;
+  try {
+    await channel.send(route.chatId, { markdown: wakeNoticeText(text) }, {
+      replyTo: route.anchorId,
+      ...(route.mode === 'topic' && route.threadId ? { replyInThread: true } : {}),
+    });
+  } catch (err) {
+    posted = false;
+    log.warn('wake', 'notice-failed', { scope: route.scope, err: String(err) });
+  }
+  if (kind !== 'wake') return;
+  const size = pending.push(route.scope, wakeMessage(route, wakeTurn(text, { posted })));
+  log.info('wake', 'queued', { scope: route.scope, queueSize: size, posted });
+}
+
+/**
+ * The synthetic message a wake enters the queue as.
+ *
+ * Modelled on the anchor's routing (its `messageId` is what replies thread to)
+ * and attributed to the person whose run launched the job — see
+ * {@link WakeRoute.senderId}. Carries no resources or mentions: there is no
+ * Feishu message behind it to re-fetch.
+ */
+function wakeMessage(route: WakeRoute, content: string): NormalizedMessage {
+  return {
+    messageId: route.anchorId,
+    chatId: route.chatId,
+    chatType: route.mode === 'p2p' ? 'p2p' : 'group',
+    ...(route.mode !== 'p2p' ? { chatMode: route.mode } : {}),
+    senderId: route.senderId,
+    senderName: '后台回执',
+    content,
+    rawContentType: 'text',
+    resources: [],
+    mentions: [],
+    mentionAll: false,
+    // A wake is already inside the conversation the bot is part of; it does not
+    // need to earn its way past the group @-mention gate, and it never reaches
+    // it — `pending.push` is downstream of intake.
+    mentionedBot: true,
+    ...(route.threadId ? { threadId: route.threadId } : {}),
+    createTime: Date.now(),
+  } as NormalizedMessage;
+}
+
+/**
+ * A synthetic user turn for a continuation round.
+ *
+ * Keeps the anchor's identity and routing (its `messageId` is what replies are
+ * threaded to, so it has to stay a message Feishu knows) while dropping
+ * everything that would be re-processed: attachments would be re-uploaded and
+ * the quoted message re-fetched, once per round, for the whole loop.
+ */
+function continuationMessage(anchor: NormalizedMessage, content: string): NormalizedMessage {
+  return {
+    ...anchor,
+    content,
+    resources: [],
+    mentions: [],
+    replyToMessageId: undefined,
+    raw: undefined,
+  } as unknown as NormalizedMessage;
+}
+
+/** Why a loop ended, posted where the loop's own replies went. */
+async function sendGoalNotice(
+  channel: LarkChannel,
+  anchor: NormalizedMessage,
+  mode: ChatMode,
+  text: string,
+): Promise<void> {
+  try {
+    await channel.send(anchor.chatId, { markdown: text }, {
+      replyTo: anchor.messageId,
+      ...(mode === 'topic' && anchor.threadId ? { replyInThread: true } : {}),
+    });
+  } catch (err) {
+    log.warn('goal', 'notice-failed', { chatId: anchor.chatId, err: String(err) });
+  }
+}
+
+/**
+ * How a round ended, from the perspective of whether its work got done.
+ *
+ * The distinction that matters is *when* things broke. A run that never
+ * reached `done` — an agent error, a watchdog kill, an interrupt, a rejected
+ * flow — did not finish its work, and anything it left behind (including a
+ * continuation signal written early in the round) says nothing about where it
+ * actually got to. A run that reached `done` and then failed to deliver its
+ * reply did finish; only the message was lost.
+ *
+ * Collapsing the two is wrong in both directions: treating delivery failure as
+ * a dead round ends goals over one Feishu blip, and treating a killed run as a
+ * finished one continues a goal on a round that died mid-tool.
+ */
+type RoundOutcome = 'completed' | 'completed-silent' | 'delivery-failed' | 'run-failed';
+
+async function runAgentBatch(deps: RunBatchDeps): Promise<RoundOutcome> {
   const {
     channel,
     executor,
@@ -820,14 +1208,28 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
     lastRunModelByScope,
     scope,
     mode,
+    wake,
+    goalMode,
   } = deps;
-  if (batch.length === 0) return;
+  if (batch.length === 0) return 'completed';
   const firstMsg = batch[0];
   const lastMsg = batch[batch.length - 1];
-  if (!firstMsg || !lastMsg) return;
+  if (!firstMsg || !lastMsg) return 'completed';
 
   const chatId = firstMsg.chatId;
   const threadId = firstMsg.threadId;
+
+  // Armed every run: the prefix a job is handed names *this* run, so its
+  // report threads back to this message and is attributed to this sender even
+  // if somebody else uses the chat while the job is still running.
+  const wakePrefix = await wake.arm({
+    scope,
+    chatId,
+    ...(threadId ? { threadId } : {}),
+    mode,
+    anchorId: firstMsg.messageId,
+    senderId: firstMsg.senderId,
+  });
 
   const resourceItems = batch.flatMap((m) =>
     m.resources.map((r) => ({ messageId: m.messageId, resource: r })),
@@ -907,12 +1309,18 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
   const prevModel = lastRunModelByScope.get(scope);
   const modelSwitched = prevModel !== undefined && prevModel !== modelSelection;
   lastRunModelByScope.set(scope, modelSelection);
-  const extraInstructions = modelSwitched
-    ? [
-        `用户刚把本会话使用的模型切换为「${modelLabel(agentKind, modelPref)}」。` +
-          '之前的对话里可能提到别的模型,请以当前模型为准;若被问到你用的是什么模型,据此回答。',
-      ]
-    : undefined;
+  const instructions: string[] = [];
+  if (modelSwitched) {
+    instructions.push(
+      `用户刚把本会话使用的模型切换为「${modelLabel(agentKind, modelPref)}」。` +
+        '之前的对话里可能提到别的模型,请以当前模型为准;若被问到你用的是什么模型,据此回答。',
+    );
+  }
+  // Restated every round on purpose — the signal path is per-round, so a
+  // continuation that reused the previous round's instruction would write to a
+  // file nobody reads and the loop would end looking like the agent was done.
+  if (goalMode) instructions.push(goalMode.instruction);
+  const extraInstructions = instructions.length > 0 ? instructions : undefined;
 
   const prompt = buildPrompt(
     batch,
@@ -921,6 +1329,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
     topicContext,
     channel.botIdentity,
     extraInstructions,
+    wakePrefix,
   );
   log.info('prompt', 'built', {
     promptChars: prompt.length,
@@ -988,7 +1397,11 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
       code: flow.rejectReason.code,
     });
     await channel.send(chatId, { markdown: flow.rejectReason.userVisible }, sendOpts);
-    return;
+    // The agent never started — an unusable cwd, a full pool, a denied policy.
+    // The reason went to the user already, but for a goal this is emphatically
+    // not "round finished": calling it completed would close the goal as
+    // achieved on a round that never ran.
+    return 'run-failed';
   }
 
   const { execution, cwdRealpath: cwd } = flow;
@@ -1039,6 +1452,45 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
   if (idleTimeoutMs) {
     log.info('flush', 'idle-watchdog', { idleTimeoutMs });
   }
+  // Independent of the idle watchdog above, and on by default: this is the only
+  // timeout covering a run wedged behind a tool call that never returns.
+  const toolStallTimeoutMs = getToolStallTimeoutMs(controls.cfg);
+  const toolStallGraceMs = getToolStallGraceMs(controls.cfg);
+  if (toolStallTimeoutMs) {
+    log.info('flush', 'tool-stall-watchdog', { toolStallTimeoutMs, toolStallGraceMs });
+  }
+
+  // Outcome of this round's run, recorded wherever the stream resolves.
+  let roundTerminal: Terminal | undefined;
+  // `terminal: 'done'` alone is not the agent saying it finished: a stream that
+  // just ends gets `done` synthesised so the card is not left mid-stream, and
+  // for a goal that is the difference between "achieved" and "the process
+  // vanished without a word".
+  let roundEndSynthesised = false;
+  // Whether the agent produced anything at all this round. A headless run can
+  // finish cleanly having said nothing — a `-p --resume` turn consumed by
+  // pending task-notifications or queue bookkeeping returns `result` at zero
+  // cost without ever reaching the model. Silence is not a decision, so a goal
+  // must not read it as "achieved".
+  let roundHadOutput = false;
+  const trackTerminal = (state: RunState): RunState => {
+    // Called both as each state is rendered and once on the resolved value. The
+    // former is what survives a terminal render that throws — the stream then
+    // rejects and never resolves, and reading only the resolved value would
+    // report a finished run as one that never ran.
+    roundTerminal = state.terminal;
+    roundEndSynthesised = state.endedWithoutTerminalEvent === true;
+    roundHadOutput = hasDeliverableContent(state);
+    return state;
+  };
+  /**
+   * Still `undefined` means the stream never resolved — it rejected, and one of
+   * the reply-path catches handled it (that is where a broken adapter lands,
+   * not in the outer catch). Either way the run did not reach `done`.
+   */
+  const runReachedDone = (): boolean => roundTerminal === 'done' && !roundEndSynthesised;
+  const outcome = (): RoundOutcome =>
+    runReachedDone() ? (roundHadOutput ? 'completed' : 'completed-silent') : 'run-failed';
 
   const replyMode = getMessageReplyMode(controls.cfg);
   log.info('flush', 'reply-mode', { mode: replyMode });
@@ -1047,9 +1499,17 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
 
   // Re-read prefs on every flush so toggling /config mid-stream takes
   // effect immediately. Cheap object lookups, no allocation when on.
+  const runEffort = resolveEffortArg(agentKind, controls.profileConfig.preferences.effort);
   const filterForPrefs = (state: RunState): RunState => {
-    if (getShowToolCalls(controls.cfg)) return state;
-    return { ...state, blocks: state.blocks.filter((b) => b.kind !== 'tool') };
+    // Effort and loop round never arrive as agent events — they're what we
+    // launched with, so they're stamped on at render time rather than tracked
+    // through the stream.
+    const stamped = withMeta(state, {
+      ...(runEffort ? { effort: runEffort } : {}),
+      ...(goalMode ? { goalRound: goalMode.round, goalMaxRounds: goalMode.maxRounds } : {}),
+    });
+    if (getShowToolCalls(controls.cfg)) return stamped;
+    return { ...stamped, blocks: stamped.blocks.filter((b) => b.kind !== 'tool') };
   };
   const cardRenderOptions = callbackAuth
     ? {
@@ -1092,14 +1552,16 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
         const cotDone = consumeCotEvents(execution.subscribe(), cotPublisher, {
           detail: cotMessages,
         });
-        const finalState = await processAgentStream(
+        const finalState = await (processAgentStream(
           handle,
           eventStream,
           scope,
           idleTimeoutMs,
           recordSession,
           async () => {},
-        );
+          toolStallTimeoutMs,
+          toolStallGraceMs,
+        )).then(trackTerminal);
         await cotDone;
         if (cotPublisher.degradedReason) {
           await sendCotDegradedNotice({
@@ -1114,12 +1576,15 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
           channel,
           chatId,
           scope,
-          state: finalAnswerOnlyState(finalState),
+          // Through `filterForPrefs` like every other reply path — it is what
+          // stamps the run footer's effort on, and a COT reply that silently
+          // dropped it was the one inconsistency between the modes.
+          state: finalAnswerOnlyState(filterForPrefs(finalState)),
           replyMode,
           sendOpts,
           cardRenderOptions,
         });
-        return;
+        return outcome();
       }
       log.warn('cot', 'fallback-existing-reply', { reason: 'create-disabled' });
     }
@@ -1148,20 +1613,25 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
           sendOpts,
         ),
       );
-      const renderDone = processAgentStream(
+      const renderDone = (processAgentStream(
         handle,
         eventStream,
         scope,
         idleTimeoutMs,
         recordSession,
         async (state) => {
+          // Recorded before the update that may throw: a terminal state that
+          // reached us is a run that finished, even if showing it fails.
+          trackTerminal(state);
           latestState = state;
           if (shouldOpenProgressStream(filterForPrefs(state))) progress.ensureOpen();
           if (cardCtrl) {
             await cardCtrl.update(renderCard(filterForPrefs(state), cardRenderOptions));
           }
         },
-      );
+        toolStallTimeoutMs,
+        toolStallGraceMs,
+      )).then(trackTerminal);
       try {
         await awaitRenderAwareStream({
           mode: replyMode,
@@ -1170,7 +1640,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
           producerStarted: () => producerStarted,
           fallback: async (state) => {
             if (controls.profileConfig.agentKind === 'codex') return;
-            if (renderText(filterForPrefs(state)).trim() === '') return;
+            if (!hasDeliverableContent(filterForPrefs(state))) return;
             await channel.send(
               chatId,
               { card: renderCard(filterForPrefs(state), cardRenderOptions) },
@@ -1179,8 +1649,21 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
           },
         });
       } catch (err) {
-        if (controls.profileConfig.agentKind !== 'codex') throw err;
         log.fail('stream', err, { mode: replyMode, step: 'progress-stream' });
+        // Codex posts its own dedicated final reply below, so the error is
+        // already covered there. Claude has nothing after this point — without
+        // an explicit fallback the answer dies with the stream.
+        if (controls.profileConfig.agentKind !== 'codex') {
+          await deliverStreamFailureFallback({
+            channel,
+            chatId,
+            scope,
+            state: filterForPrefs(latestState),
+            replyMode,
+            sendOpts,
+            cardRenderOptions,
+          });
+        }
       }
       await recallIfEmptyStreamedReply(channel, progress, filterForPrefs(latestState), scope);
       if (controls.profileConfig.agentKind === 'codex') {
@@ -1213,20 +1696,24 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
           sendOpts,
         ),
       );
-      const renderDone = processAgentStream(
+      const renderDone = (processAgentStream(
         handle,
         eventStream,
         scope,
         idleTimeoutMs,
         recordSession,
         async (state) => {
+          // See the card branch: recorded before the update that may throw.
+          trackTerminal(state);
           latestState = state;
           if (shouldOpenProgressStream(filterForPrefs(state))) progress.ensureOpen();
           if (markdownCtrl) {
             await markdownCtrl.setContent(renderText(filterForPrefs(state)));
           }
         },
-      );
+        toolStallTimeoutMs,
+        toolStallGraceMs,
+      )).then(trackTerminal);
       try {
         await awaitRenderAwareStream({
           mode: replyMode,
@@ -1235,15 +1722,30 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
           producerStarted: () => producerStarted,
           fallback: async (state) => {
             if (controls.profileConfig.agentKind === 'codex') return;
-            const body = renderText(filterForPrefs(state));
-            if (body.trim()) {
-              await channel.send(chatId, { markdown: body }, sendOpts);
+            if (hasDeliverableContent(filterForPrefs(state))) {
+              await channel.send(
+                chatId,
+                { markdown: renderText(filterForPrefs(state)) },
+                sendOpts,
+              );
             }
           },
         });
       } catch (err) {
-        if (controls.profileConfig.agentKind !== 'codex') throw err;
         log.fail('stream', err, { mode: replyMode, step: 'progress-stream' });
+        // Same asymmetry as the card branch above: Codex is covered by its own
+        // final reply, Claude would otherwise lose the answer entirely.
+        if (controls.profileConfig.agentKind !== 'codex') {
+          await deliverStreamFailureFallback({
+            channel,
+            chatId,
+            scope,
+            state: filterForPrefs(latestState),
+            replyMode,
+            sendOpts,
+            cardRenderOptions,
+          });
+        }
       }
       await recallIfEmptyStreamedReply(channel, progress, filterForPrefs(latestState), scope);
       if (controls.profileConfig.agentKind === 'codex') {
@@ -1261,14 +1763,16 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
       // text mode: drain the agent stream without sending anything during
       // the run, then post the final rendered text once as a plain markdown
       // (msg_type=post) message — no card, no streaming, no typewriter.
-      const finalState = await processAgentStream(
+      const finalState = await (processAgentStream(
         handle,
         eventStream,
         scope,
         idleTimeoutMs,
         recordSession,
         async () => {},
-      );
+        toolStallTimeoutMs,
+        toolStallGraceMs,
+      )).then(trackTerminal);
       await sendFinalReply({
         channel,
         chatId,
@@ -1284,10 +1788,15 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
     }
   } catch (err) {
     log.fail('stream', err);
+    // Swallowed so one broken reply cannot take the bridge down. Which failure
+    // this was still comes from the run's own terminal state: reaching `done`
+    // first means the agent finished and only the message was lost.
+    return runReachedDone() ? 'delivery-failed' : 'run-failed';
   } finally {
     activePolicyFingerprints.delete(scope);
     scheduleWorkingReactionCleanup(channel, lastMsg.messageId, reactionPromise);
   }
+  return outcome();
 }
 
 interface LazyProgressStream {
@@ -1417,7 +1926,7 @@ async function recallIfEmptyStreamedReply(
     );
     return;
   }
-  if (renderText(finalState).trim() !== '') return;
+  if (hasDeliverableContent(finalState)) return;
   const result = await progress.settled.catch(() => undefined);
   await recallStreamedMessage(channel, result, scope);
 }
@@ -1453,9 +1962,13 @@ async function sendFinalReply(input: {
   const body = renderText(input.state);
 
   // Nothing deliverable to send (agent produced no text on a clean finish;
-  // error/interrupt/timeout keep `body` non-empty via their notices). Skip
+  // error/interrupt/timeout keep the body non-empty via their notices). Skip
   // rather than post an empty card that renders as "(no content)".
-  if (!body.trim()) {
+  //
+  // Measured without the footer on purpose: it is appended to every terminal
+  // state, so counting it here would turn "nothing to say" into a message
+  // containing only `🧠 403K · Fable 5 · xhigh`.
+  if (!hasDeliverableContent(input.state)) {
     log.info('outbound', 'skip-empty', { scope: input.scope, mode: input.replyMode });
     return;
   }
@@ -1554,6 +2067,8 @@ async function processAgentStream(
   idleTimeoutMs: number | undefined,
   recordSession: (event: AgentEvent) => void,
   flush: (state: RunState) => Promise<void>,
+  toolStallTimeoutMs?: number | undefined,
+  toolStallGraceMs = 0,
 ): Promise<RunState> {
   const runStart = Date.now();
   let state: RunState = initialState;
@@ -1575,6 +2090,7 @@ async function processAgentStream(
   let idleFired = false;
   let timer: NodeJS.Timeout | undefined;
   const inFlightTools = new Set<string>();
+  const toolNames = new Map<string, string>();
   const armOrPauseIdle = (): void => {
     if (!idleTimeoutMs) return;
     if (timer) clearTimeout(timer);
@@ -1591,6 +2107,80 @@ async function processAgentStream(
   };
   armOrPauseIdle();
 
+  // Tool-stall watchdog — the hole the idle watchdog leaves open by design.
+  //
+  // `armOrPauseIdle` refuses to arm while a tool is in flight, so a Bash / MCP
+  // / OAuth call that never returns leaves the run with no timeout at all: the
+  // card streams forever, the pool slot is never released, and the user cannot
+  // tell a wedged run from a busy one. This timer therefore never pauses.
+  //
+  // Two stages, because "silent for a while" and "dead" are not the same thing
+  // and only the user can tell them apart for a legitimately long tool:
+  //   1. threshold  → raise the notice on the card, keep the stop button, let
+  //                   it run. Nothing is killed on a guess.
+  //   2. + grace    → still nothing; stop the run and say why.
+  //
+  // Any event at all — including a `tool_result` from the slow tool — rewinds
+  // both stages and clears the notice.
+  let stallFired = false;
+  let stallNotice: StallNotice | undefined;
+  let stallWarnTimer: NodeJS.Timeout | undefined;
+  let stallKillTimer: NodeJS.Timeout | undefined;
+  /** Names the outstanding tool only when there is exactly one — else it is a guess. */
+  const describeStall = (minutes: number): StallNotice => {
+    const only = inFlightTools.size === 1 ? toolNames.get([...inFlightTools][0]!) : undefined;
+    return only ? { minutes, tool: only } : { minutes };
+  };
+  const clearStallTimers = (): void => {
+    if (stallWarnTimer) clearTimeout(stallWarnTimer);
+    if (stallKillTimer) clearTimeout(stallKillTimer);
+    stallWarnTimer = undefined;
+    stallKillTimer = undefined;
+  };
+  const rearmStall = (): void => {
+    if (!toolStallTimeoutMs) return;
+    clearStallTimers();
+    stallWarnTimer = setTimeout(() => {
+      const minutes = Math.round(toolStallTimeoutMs / 60_000);
+      stallNotice = describeStall(minutes);
+      log.warn('agent', 'tool-stall-warning', {
+        scope,
+        toolStallTimeoutMs,
+        inFlight: inFlightTools.size,
+        tool: stallNotice.tool,
+      });
+      // Push the warning to the card immediately; the next agent event may be
+      // hours away, and the whole point is not to wait for one.
+      void flush(markStalled(state, stallNotice)).catch((err) => {
+        log.warn('agent', 'tool-stall-flush-failed', {
+          scope,
+          err: err instanceof Error ? err.message : String(err),
+        });
+      });
+      if (toolStallGraceMs <= 0) {
+        stallKill();
+        return;
+      }
+      stallKillTimer = setTimeout(stallKill, toolStallGraceMs);
+    }, toolStallTimeoutMs);
+  };
+  const stallKill = (): void => {
+    stallFired = true;
+    handle.interrupted = true;
+    const totalMs = (toolStallTimeoutMs ?? 0) + Math.max(0, toolStallGraceMs);
+    stallNotice = describeStall(Math.round(totalMs / 60_000));
+    log.warn('agent', 'tool-stall-timeout', {
+      scope,
+      totalMs,
+      inFlight: inFlightTools.size,
+      tool: stallNotice.tool,
+    });
+    void handle.run.stop().catch(() => {
+      /* stop errors are non-fatal */
+    });
+  };
+  rearmStall();
+
   try {
     for await (const evt of events) {
       if (handle.interrupted) break;
@@ -1600,18 +2190,31 @@ async function processAgentStream(
       // closes it. Other event types are bookkept after the if/else.
       if (evt.type === 'tool_use') {
         inFlightTools.add(evt.id);
+        toolNames.set(evt.id, evt.name);
         log.info('agent', 'tool-in-flight', {
           tool: evt.name,
           inFlight: inFlightTools.size,
         });
       } else if (evt.type === 'tool_result') {
         inFlightTools.delete(evt.id);
+        toolNames.delete(evt.id);
         log.info('agent', 'tool-done', { inFlight: inFlightTools.size });
       }
       armOrPauseIdle();
+      // Any event proves the run is alive: rewind both stall stages and drop a
+      // warning already on screen. A tool that was merely slow leaves no trace.
+      rearmStall();
+      if (stallNotice && !stallFired) {
+        stallNotice = undefined;
+        state = clearStalled(state);
+        log.info('agent', 'tool-stall-cleared', { scope });
+      }
 
       if (evt.type === 'system') {
         recordSession(evt);
+        // Ground truth for the footer: what the CLI actually loaded, which can
+        // differ from what was requested (unknown id, account fallback).
+        if (evt.model) state = withMeta(state, { model: evt.model });
         continue;
       }
       if (evt.type === 'usage') {
@@ -1626,6 +2229,13 @@ async function processAgentStream(
           if (inputTokens !== undefined) reportMetric('tokens_in', inputTokens);
           if (outputTokens !== undefined) reportMetric('tokens_out', outputTokens);
         }
+        // Already summed by the adapter — the arithmetic is provider-specific
+        // (see `AgentEvent.usage.contextTokens`), so doing it here would apply
+        // Claude's token semantics to Codex's differently-shaped usage.
+        state = withMeta(state, {
+          contextTokens: evt.contextTokens,
+          contextWindow: evt.contextWindow,
+        });
         continue;
       }
 
@@ -1643,6 +2253,7 @@ async function processAgentStream(
     }
   } finally {
     if (timer) clearTimeout(timer);
+    clearStallTimers();
   }
 
   // If state already reached a terminal event (done/error/etc.) before the
@@ -1652,6 +2263,10 @@ async function processAgentStream(
   if (state.terminal === 'running') {
     if (idleFired) {
       state = markIdleTimeout(state, Math.round(idleTimeoutMs! / 60_000));
+    } else if (stallFired) {
+      // Must precede the `interrupted` branch: `stallKill` sets that flag, and
+      // rendering "已被中断" would blame the user for a watchdog decision.
+      state = markStallTimeout(state, stallNotice ?? { minutes: 0 });
     } else if (handle.interrupted) {
       state = markInterrupted(state);
     } else {
@@ -1750,6 +2365,55 @@ async function awaitRenderAwareStream(input: {
   }
 }
 
+/**
+ * Last-resort delivery for a streaming reply that failed while the run had
+ * content to show.
+ *
+ * In card / markdown mode the progress stream is the *only* thing carrying the
+ * answer to the user, and every `flush` awaits a Feishu update call. A rejection
+ * there — a 400 on an oversized card, a rate limit, a card sequence conflict, a
+ * network blip — rejects `renderDone`, aborts `processAgentStream` mid-run, and
+ * used to reach nothing but `log.fail`. The run had finished, the answer was
+ * sitting in `latestState`, and the user was left with a card frozen mid-stream
+ * on `streaming_mode: true` — indistinguishable from a run that hung.
+ *
+ * Codex never hit this: its branch swallows the same error and posts a dedicated
+ * final reply right after. This gives Claude the same guarantee.
+ *
+ * Sent as a plain, non-streaming reply behind an explicit degraded notice. The
+ * stream may already have rendered part of this text, so the notice is what
+ * makes a partial duplicate self-explanatory. Repeated text is cosmetic; a
+ * silently dropped answer is the bug being fixed.
+ */
+async function deliverStreamFailureFallback(input: {
+  channel: LarkChannel;
+  chatId: string;
+  scope: string;
+  state: RunState;
+  replyMode: ReturnType<typeof getMessageReplyMode>;
+  sendOpts: { replyTo: string; replyInThread?: boolean };
+  cardRenderOptions: { signCallback?: (action: string) => string };
+}): Promise<void> {
+  // A `flush` that threw leaves the state on `running`, which would render a
+  // stop button and a "正在输出" footer onto a run that is already over.
+  const finalized = finalizeIfRunning(input.state);
+  const notice: Block = { kind: 'text', content: STREAM_FALLBACK_NOTICE, streaming: false };
+  try {
+    await sendFinalReply({
+      ...input,
+      state: { ...finalized, footer: null, blocks: [notice, ...finalized.blocks] },
+    });
+    log.info('outbound', 'stream-failure-fallback', {
+      scope: input.scope,
+      mode: input.replyMode,
+    });
+  } catch (err) {
+    // The channel itself is refusing us; there is nothing further to try. Log
+    // loudly so the loss is at least diagnosable from the profile log.
+    log.fail('outbound', err, { scope: input.scope, step: 'stream-failure-fallback' });
+  }
+}
+
 async function runFallbackReply(
   mode: 'card' | 'markdown',
   state: RunState,
@@ -1807,6 +2471,7 @@ function buildPrompt(
   topicContext: QuotedContext[] = [],
   botIdentity?: { openId: string; name?: string },
   extraInstructions?: string[],
+  wakePrefix?: string,
 ): string {
   const first = batch[0];
   if (!first) return '';
@@ -1843,6 +2508,7 @@ function buildPrompt(
       ...(botIdentity?.openId ? { botOpenId: botIdentity.openId } : {}),
       ...(mentions.length > 0 ? { mentions } : {}),
       ...(first.threadId ? { threadId: first.threadId } : {}),
+      ...(wakePrefix ? { wakePrefix } : {}),
       messageIds: batch.map((m) => m.messageId),
       source: 'im',
     },

@@ -9,6 +9,15 @@ export interface BuildCodexArgsInput {
   ignoreRules?: boolean;
   /** Forwarded to `codex exec --model`. Omitted uses the Codex default. */
   model?: string;
+  /**
+   * Directories outside the workspace that the run must be able to write.
+   *
+   * Only meaningful under `workspace-write`: `read-only` writes nothing and
+   * `danger-full-access` already writes everywhere. Used for the 后台回执
+   * inbox, which lives in the profile directory — a detached job that cannot
+   * write it can never wake the agent, and would fail silently in the sandbox.
+   */
+  writableDirs?: readonly string[];
 }
 
 export function buildCodexArgs(input: BuildCodexArgsInput): string[] {
@@ -28,6 +37,9 @@ export function buildCodexArgs(input: BuildCodexArgsInput): string[] {
     'approval_policy="never"',
     '-c',
     'shell_environment_policy.inherit="all"',
+    ...(input.sandbox === 'workspace-write'
+      ? (input.writableDirs ?? []).flatMap((dir) => ['--add-dir', dir])
+      : []),
     ...(input.ignoreUserConfig === true ? ['--ignore-user-config'] : []),
     ...(input.ignoreRules === false ? [] : ['--ignore-rules']),
     '--skip-git-repo-check',

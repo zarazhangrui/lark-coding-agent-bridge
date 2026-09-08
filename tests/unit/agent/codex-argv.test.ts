@@ -137,3 +137,24 @@ describe('Codex argv contract', () => {
   });
 
 });
+
+describe('buildCodexArgs writable dirs', () => {
+  it('grants extra directories under workspace-write', () => {
+    const args = buildCodexArgs({
+      cwd: '/w',
+      sandbox: 'workspace-write',
+      writableDirs: ['/state/wake'],
+    });
+    expect(args).toContain('--add-dir');
+    expect(args[args.indexOf('--add-dir') + 1]).toBe('/state/wake');
+  });
+
+  it('leaves them off when the sandbox makes them meaningless', () => {
+    // read-only writes nothing anywhere; danger-full-access already writes
+    // everywhere. Passing the flag in either case is noise at best.
+    for (const sandbox of ['read-only', 'danger-full-access'] as const) {
+      const args = buildCodexArgs({ cwd: '/w', sandbox, writableDirs: ['/state/wake'] });
+      expect(args).not.toContain('--add-dir');
+    }
+  });
+});

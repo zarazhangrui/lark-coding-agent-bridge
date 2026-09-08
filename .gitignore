@@ -22,3 +22,6 @@ web/dist/
 scripts/
 CHANGELOG.md
 tests-smoke/
+
+# pnpm local store (never commit)
+.pnpm-store/

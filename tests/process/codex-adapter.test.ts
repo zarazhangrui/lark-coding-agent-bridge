@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { CodexAdapter } from '../../src/agent/codex/adapter.js';
 import { buildCodexArgs } from '../../src/agent/codex/argv.js';
+import { wakeDirIn } from '../../src/bot/wake.js';
 import type { AgentEvent } from '../../src/agent/types.js';
 
 interface FakeBinary {
@@ -177,6 +178,9 @@ describe('CodexAdapter process contract', () => {
         sandbox: 'workspace-write',
         threadId: 'thread-old',
         images: [image],
+        // The 后台回执 inbox sits outside the workspace, so a sandboxed run has
+        // to be granted it explicitly or a detached job can never wake anyone.
+        writableDirs: [wakeDirIn(fake.dir)],
       }),
     );
   });
