@@ -73,14 +73,53 @@ describe('Claude stream-json translator', () => {
       ...translateEvent({
         type: 'result',
         session_id: 'sess-2',
-        usage: { input_tokens: 12, output_tokens: 34, cache_read_input_tokens: 5 },
+        // Top-level totals are summed over every request the agentic loop
+        // made; `iterations` describes the final message. Shapes and ratios
+        // here are taken from a real 4-tool-call run.
+        usage: {
+          input_tokens: 8,
+          output_tokens: 895,
+          cache_read_input_tokens: 144_499,
+          cache_creation_input_tokens: 15_764,
+          iterations: [
+            {
+              input_tokens: 2,
+              output_tokens: 678,
+              cache_read_input_tokens: 40_113,
+              cache_creation_input_tokens: 75,
+            },
+          ],
+        },
         total_cost_usd: 0.1234,
       }),
     ]).toEqual([
-      { type: 'usage', inputTokens: 12, outputTokens: 34, cachedInputTokens: 5, costUsd: 0.1234 },
+      {
+        type: 'usage',
+        // Final request only: 2 + 40113 + 75 + 678. Summing the top-level
+        // totals instead would give 161166 — four times over, and past a 1M
+        // window within a normal session.
+        contextTokens: 40_868,
+        inputTokens: 8,
+        outputTokens: 895,
+        cachedInputTokens: 144_499,
+        cacheCreationInputTokens: 15_764,
+        contextWindow: undefined,
+        costUsd: 0.1234,
+      },
       { type: 'done', sessionId: 'sess-2', terminationReason: 'normal' },
     ]);
     expect([...translateEvent({ type: 'result', session_id: 'sess-2' })][0]).not.toHaveProperty('threadId');
+  });
+
+  it('reports no context size when the CLI gives no per-request breakdown', () => {
+    // Cumulative totals cannot be decomposed into the final request, and no
+    // footer beats a fourfold-wrong one.
+    const [usage] = [...translateEvent({
+      type: 'result',
+      session_id: 'sess-3',
+      usage: { input_tokens: 8, output_tokens: 895, cache_read_input_tokens: 144_499 },
+    })];
+    expect(usage).toMatchObject({ type: 'usage', contextTokens: undefined });
   });
 
   it('ignores unknown, empty, and incomplete raw events', () => {

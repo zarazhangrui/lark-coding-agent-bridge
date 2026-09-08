@@ -160,6 +160,13 @@ export class CodexJsonlTranslator {
     }
     const usage = recordValue(raw.usage);
     if (usage) {
+      // No context size is reported for Codex runs. `turn.completed.usage`
+      // looks like a per-turn *total* — i.e. summed over every model request
+      // the turn made — which is the same trap that made the Claude footer
+      // read four times high, and Codex exposes no per-request breakdown to
+      // recover the last request from. Until that is verified against a real
+      // multi-request turn, the footer drops the segment rather than risk a
+      // confidently wrong number.
       events.push({
         type: 'usage',
         inputTokens: numberValue(usage.input_tokens ?? usage.inputTokens),

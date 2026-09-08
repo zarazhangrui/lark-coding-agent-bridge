@@ -27,13 +27,64 @@ export interface ModelOption {
  */
 const CLAUDE_MODELS: ModelOption[] = [
   { value: DEFAULT_MODEL, label: '跟随默认（不指定）' },
-  { value: 'claude-opus-4-8', label: 'Opus 4.8（最新）' },
+  { value: 'claude-fable-5', label: 'Fable 5（最强）' },
+  { value: 'claude-opus-5', label: 'Opus 5（最新）' },
+  { value: 'claude-opus-4-8', label: 'Opus 4.8' },
   { value: 'claude-opus-4-7', label: 'Opus 4.7' },
   { value: 'claude-sonnet-5', label: 'Sonnet 5（最新）' },
   { value: 'claude-sonnet-4-6', label: 'Sonnet 4.6' },
   { value: 'claude-haiku-4-5', label: 'Haiku 4.5（最新）' },
   { value: 'opusplan', label: 'Opus Plan（规划用 Opus，执行用 Sonnet）' },
 ];
+
+/**
+ * Sentinel meaning "don't pass `--effort`; let the CLI / model decide".
+ * Same rationale as {@link DEFAULT_MODEL} — Feishu's `select_static` rejects
+ * an empty `initial_option`.
+ */
+export const DEFAULT_EFFORT = 'default';
+
+/**
+ * Reasoning effort levels accepted by `claude --effort`. Higher levels think
+ * longer and spend more tokens; `xhigh` is the recommended setting for coding
+ * and agentic work, which is what runs through this bridge.
+ *
+ * Claude Code only — the Codex CLI has no equivalent flag, so the picker is
+ * hidden and the value is never forwarded for codex profiles.
+ */
+const CLAUDE_EFFORTS: ModelOption[] = [
+  { value: DEFAULT_EFFORT, label: '跟随默认（不指定）' },
+  { value: 'low', label: 'low（最快最省）' },
+  { value: 'medium', label: 'medium' },
+  { value: 'high', label: 'high' },
+  { value: 'xhigh', label: 'xhigh（编码/agent 推荐）' },
+  { value: 'max', label: 'max（最深，最慢最贵）' },
+];
+
+/** Effort picker options; empty for agents with no effort flag. */
+export function supportedEfforts(agentKind: AgentKind): ModelOption[] {
+  return agentKind === 'codex' ? [] : CLAUDE_EFFORTS;
+}
+
+/** True when the selection means "use the agent default" (no `--effort`). */
+export function isDefaultEffort(value: string | undefined): boolean {
+  return !value || value === DEFAULT_EFFORT;
+}
+
+/**
+ * Resolve the effort string to hand the agent, or `undefined` to omit the
+ * flag. Unknown values fall back to the default rather than being forwarded —
+ * `claude` rejects an unrecognised level outright, which would fail the run.
+ */
+export function resolveEffortArg(
+  agentKind: AgentKind,
+  value: string | undefined,
+): string | undefined {
+  if (isDefaultEffort(value)) return undefined;
+  return supportedEfforts(agentKind).some((e) => e.value === value)
+    ? (value as string)
+    : undefined;
+}
 
 /** Codex CLI models. Forwarded to `codex exec --model`. */
 const CODEX_MODELS: ModelOption[] = [

@@ -58,6 +58,10 @@ describe('Codex JSONL translator', () => {
     ).toEqual([
       { type: 'final_text', content: 'hello' },
       {
+        // No context size for Codex: `turn.completed.usage` looks like a
+        // per-turn total (summed over the turn's requests) and there is no
+        // per-request breakdown to recover the last one from.
+        contextTokens: undefined,
         type: 'usage',
         inputTokens: 12,
         outputTokens: 34,
