@@ -23,6 +23,22 @@ describe('platform spawn env', () => {
     ]);
   });
 
+  it('strips foreign agent-detection signals so lark-cli children stay in lark-channel context', () => {
+    const env = mergeProcessEnv(
+      {
+        Path: '/bin',
+        HERMES_HOME: '/Users/me/AppData/Local/hermes',
+        OpenClaw_Home: '/opt/openclaw',
+      },
+      { LARK_CHANNEL: '1' },
+    );
+
+    expect(Object.keys(env).filter((key) => key.toLowerCase() === 'hermes_home')).toEqual([]);
+    expect(Object.keys(env).filter((key) => key.toLowerCase() === 'openclaw_home')).toEqual([]);
+    expect(env.Path).toBe('/bin');
+    expect(env.LARK_CHANNEL).toBe('1');
+  });
+
   it('adapters use cross-spawn without shell invocation', async () => {
     const [claudeSource, codexSource] = await Promise.all([
       readFile(new URL('../../../src/agent/claude/adapter.ts', import.meta.url), 'utf8'),
