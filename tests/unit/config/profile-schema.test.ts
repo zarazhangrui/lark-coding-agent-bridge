@@ -298,6 +298,7 @@ describe('profile schema', () => {
 
     expect(cfg.codex).toMatchObject({
       binaryPath: '/usr/local/bin/codex',
+      runtime: 'exec',
       realpath: '/opt/codex/bin/codex',
       version: 'codex 1.2.3',
       sha256: 'abc123',
@@ -322,6 +323,17 @@ describe('profile schema', () => {
     });
 
     expect(cfg.codex?.inheritCodexHome).toBe(false);
+  });
+
+  it('accepts the experimental app-server Codex runtime', () => {
+    const cfg = normalizeProfileConfig({
+      schemaVersion: 2,
+      agentKind: 'codex',
+      accounts: { app },
+      codex: { binaryPath: '/usr/local/bin/codex', runtime: 'app-server' },
+    });
+
+    expect(cfg.codex?.runtime).toBe('app-server');
   });
 
   it('defaults Claude permissions to full/full and derives legacy sandbox for runtime compatibility', () => {

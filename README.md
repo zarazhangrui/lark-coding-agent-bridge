@@ -218,6 +218,29 @@ Mode mapping:
 
 The legacy `sandbox` field is still readable for old configs. After the bridge saves the profile, it migrates that setting to canonical `permissions`.
 
+## Codex app-server runtime (experimental)
+
+Codex profiles keep the established `codex exec --json` behavior by default. To migrate a
+profile to the persistent app-server runtime, set its `codex.runtime` field to
+`"app-server"` and restart that profile:
+
+```json
+{
+  "codex": {
+    "binaryPath": "codex",
+    "runtime": "app-server"
+  }
+}
+```
+
+The bridge starts the local `codex app-server daemon` when needed and connects through
+`codex app-server proxy`; it never exposes the daemon remotely or stops the shared daemon.
+Each Feishu chat/topic continues to map to its own Codex thread. If the experimental runtime
+is incompatible with the installed Codex CLI, set `runtime` back to `"exec"` and restart the
+bridge. The daemon requires the standalone Codex installation managed by the Codex installer;
+verify it with `codex app-server daemon start` before enabling this runtime. Do not switch a
+profile while it has an active turn.
+
 ## Data directories
 
 | Path | Content |

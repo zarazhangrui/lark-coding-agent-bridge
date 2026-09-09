@@ -17,14 +17,17 @@ import type {
 } from '../types';
 import { buildCodexArgs } from './argv';
 import { CodexJsonlTranslator, type CodexFinishReason } from './jsonl';
+import { CodexAppServerRuntime } from './app-server';
 
 export interface CodexAdapterOptions {
   binary: string;
   profileStateDir: string;
+  runtime?: 'exec' | 'app-server';
   codexHome?: string;
   inheritCodexHome?: boolean;
   ignoreUserConfig?: boolean;
   ignoreRules?: boolean;
+  reasoningEffort?: 'minimal' | 'low' | 'medium' | 'high' | 'xhigh';
   sandbox?: SandboxMode;
   stopGraceMs?: number;
   larkChannel?: LarkChannelEnvContext;
@@ -45,6 +48,9 @@ export class CodexAdapter implements AgentAdapter {
   private readonly sandbox: SandboxMode;
   private readonly defaultStopGraceMs: number;
   private readonly larkChannel: LarkChannelEnvContext | undefined;
+  private readonly runtime: 'exec' | 'app-server';
+  private readonly reasoningEffort: CodexAdapterOptions['reasoningEffort'];
+  private appServer: CodexAppServerRuntime | undefined;
   private botIdentity: AgentBotIdentity | undefined;
 
   constructor(opts: CodexAdapterOptions) {
@@ -57,10 +63,17 @@ export class CodexAdapter implements AgentAdapter {
     this.sandbox = opts.sandbox ?? 'danger-full-access';
     this.defaultStopGraceMs = opts.stopGraceMs ?? 5000;
     this.larkChannel = opts.larkChannel;
+    this.runtime = opts.runtime ?? 'exec';
+    this.reasoningEffort = opts.reasoningEffort;
   }
 
   setBotIdentity(identity: AgentBotIdentity): void {
     this.botIdentity = identity;
+  }
+
+  async dispose(): Promise<void> {
+    await this.appServer?.close();
+    this.appServer = undefined;
   }
 
   async isAvailable(): Promise<boolean> {
@@ -91,6 +104,20 @@ export class CodexAdapter implements AgentAdapter {
   run(opts: AgentRunOptions): AgentRun {
     if (!opts.cwd) {
       throw new Error('cwd is required for CodexAdapter.run');
+    }
+
+    if (this.runtime === 'app-server') {
+      this.appServer ??= new CodexAppServerRuntime({
+        binary: this.binary,
+        profileStateDir: this.profileStateDir,
+        codexHome: this.codexHome,
+        inheritCodexHome: this.inheritCodexHome,
+        sandbox: this.sandbox,
+        reasoningEffort: this.reasoningEffort,
+        larkChannel: this.larkChannel,
+        getBotIdentity: () => this.botIdentity,
+      });
+      return this.appServer.run(opts);
     }
 
     const args = buildCodexArgs({

@@ -141,6 +141,9 @@ class ManagedProfile {
     } catch (err) {
       log.warn('supervisor', 'disconnect-failed', { profile: this.profile, err: String(err) });
     }
+    await this.agent.dispose?.().catch((err) =>
+      log.warn('agent', 'dispose-failed', { profile: this.profile, err: String(err) }),
+    );
     if (this.entry) {
       await unregister(this.entry.id, this.appPaths.userRegistryFile).catch(() => undefined);
     }
@@ -239,6 +242,9 @@ class ManagedProfile {
       } catch (err) {
         log.warn('supervisor', 'old-disconnect-failed', { profile: this.profile, err: String(err) });
       }
+      await this.agent.dispose?.().catch((err) =>
+        log.warn('agent', 'dispose-failed', { profile: this.profile, err: String(err) }),
+      );
       this.bridge = nextBridge;
       await updateEntry(
         this.entry.id,

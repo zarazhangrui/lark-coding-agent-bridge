@@ -218,6 +218,26 @@ bridge 会检查所选目录存在、是目录，并且不是 `/`、Home 根、�
 
 旧版 `sandbox` 字段仍可读取。bridge 保存 profile 后，会把该设置迁移为 canonical `permissions`。
 
+## Codex app-server 运行时（实验性）
+
+Codex profile 默认仍使用既有的 `codex exec --json`。要平滑迁移某个 profile，请在它的
+`codex.runtime` 中设为 `"app-server"`，然后重启该 profile：
+
+```json
+{
+  "codex": {
+    "binaryPath": "codex",
+    "runtime": "app-server"
+  }
+}
+```
+
+bridge 会按需启动本机 `codex app-server daemon`，再通过 `codex app-server proxy` 连接；
+它不会把 daemon 暴露到远程，也不会在停止 bridge 时停止共享 daemon。每个飞书聊天/话题仍会
+独立映射到一个 Codex thread。若实验性运行时与本机 Codex CLI 不兼容，把 `runtime` 改回
+`"exec"` 并重启 bridge 即可回退。daemon 依赖 Codex installer 管理的 standalone 安装；启用
+前请先执行 `codex app-server daemon start` 验证。请不要在有活跃 turn 时切换 profile。
+
 ## 数据目录
 
 | 路径 | 内容 |

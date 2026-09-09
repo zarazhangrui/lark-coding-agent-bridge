@@ -4,7 +4,7 @@ import { homedir } from 'node:os';
 import { dirname, isAbsolute } from 'node:path';
 import type { LarkChannel, NormalizedMessage } from '@larksuite/channel';
 import { claudeCapability, codexCapability } from '../agent/capability';
-import { DEFAULT_MODEL, normalizeModelSelection, supportedModels } from '../agent/models';
+import { DEFAULT_MODEL, modelLabel, normalizeModelSelection, supportedModels } from '../agent/models';
 import type { AgentAdapter } from '../agent/types';
 import type { ActiveRuns } from '../bot/active-runs';
 import {
@@ -176,6 +176,7 @@ const handlers: Record<string, Handler> = {
   '/help': handleHelp,
   '/account': handleAccount,
   '/config': handleConfig,
+  '/model': handleModel,
   '/stop': handleStop,
   '/timeout': handleTimeout,
   '/ps': handlePs,
@@ -196,6 +197,7 @@ const handlers: Record<string, Handler> = {
 const ADMIN_COMMANDS = new Set([
   '/account',
   '/config',
+  '/model',
   '/ps',
   '/exit',
   '/reconnect',
@@ -1718,6 +1720,49 @@ async function handleConfig(args: string, ctx: CommandContext): Promise<void> {
     default:
       await reply(ctx, '用法:`/config`');
   }
+}
+
+/** Fast text alternative to the model selector in `/config`. */
+async function handleModel(args: string, ctx: CommandContext): Promise<void> {
+  const requested = args.trim().toLowerCase();
+  const agentKind = ctx.controls.profileConfig.agentKind;
+  const current = normalizeModelSelection(agentKind, ctx.controls.cfg.preferences?.model);
+  if (!requested || requested === 'status') {
+    await reply(
+      ctx,
+      `当前模型：${modelLabel(agentKind, current)}（推理强度：medium）\n用法：\`/model gpt-6\`、\`/model gpt-5.6\`、\`/model default\``,
+    );
+    return;
+  }
+  if (agentKind !== 'codex') {
+    await reply(ctx, '当前 profile 不是 Codex；请使用 `/config` 选择该 agent 支持的模型。');
+    return;
+  }
+  const aliases: Record<string, string> = {
+    'gpt-6': 'gpt-6-astra',
+    '6': 'gpt-6-astra',
+    'gpt-6-astra': 'gpt-6-astra',
+    'gpt-5.6': 'gpt-5.6-terra',
+    '5.6': 'gpt-5.6-terra',
+    'gpt-5.6-terra': 'gpt-5.6-terra',
+    default: DEFAULT_MODEL,
+  };
+  const selection = aliases[requested];
+  if (!selection) {
+    await reply(ctx, '可选：`/model gpt-6`、`/model gpt-5.6`、`/model default`。');
+    return;
+  }
+  await savePreferencesConfig(
+    ctx,
+    {
+      ...(ctx.controls.cfg.preferences ?? {}),
+      ...(selection === DEFAULT_MODEL ? { model: undefined } : { model: selection }),
+    },
+    getRequireMentionInGroup(ctx.controls.cfg),
+    ctx.controls.profileConfig.larkCli.identityPreset,
+    ctx.controls.profileConfig.mode,
+  );
+  await reply(ctx, `已切换为 ${modelLabel(agentKind, selection)}（medium），下一条消息起生效。`);
 }
 
 async function showConfigForm(ctx: CommandContext): Promise<void> {

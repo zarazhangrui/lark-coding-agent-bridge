@@ -40,6 +40,8 @@ export interface SandboxConfig {
 
 export interface CodexConfig {
   binaryPath: string;
+  /** `exec` preserves the pre-app-server behavior. */
+  runtime?: 'exec' | 'app-server';
   realpath?: string;
   version?: string;
   sha256?: string;
@@ -49,6 +51,8 @@ export interface CodexConfig {
   inheritCodexHome?: boolean;
   ignoreUserConfig?: boolean;
   ignoreRules?: boolean;
+  /** Per-thread reasoning effort for the app-server runtime. */
+  reasoningEffort?: 'minimal' | 'low' | 'medium' | 'high' | 'xhigh';
 }
 
 export interface AttachmentConfig {
@@ -378,6 +382,7 @@ function normalizeWorkspaces(input: {
 function normalizeCodex(input: CodexConfig & { flags?: unknown }): CodexConfig {
   const codex: CodexConfig = {
     binaryPath: input.binaryPath,
+    runtime: input.runtime === 'app-server' ? 'app-server' : 'exec',
     ...(typeof input.realpath === 'string' ? { realpath: input.realpath } : {}),
     ...(typeof input.version === 'string' ? { version: input.version } : {}),
     ...(typeof input.sha256 === 'string' ? { sha256: input.sha256 } : {}),
@@ -387,8 +392,13 @@ function normalizeCodex(input: CodexConfig & { flags?: unknown }): CodexConfig {
     inheritCodexHome: input.inheritCodexHome !== false,
     ignoreUserConfig: input.ignoreUserConfig === true,
     ignoreRules: input.ignoreRules !== false,
+    ...(isCodexReasoningEffort(input.reasoningEffort) ? { reasoningEffort: input.reasoningEffort } : {}),
   };
   return codex;
+}
+
+function isCodexReasoningEffort(value: unknown): value is NonNullable<CodexConfig['reasoningEffort']> {
+  return value === 'minimal' || value === 'low' || value === 'medium' || value === 'high' || value === 'xhigh';
 }
 
 function normalizeComments(_input: unknown): CommentConfig {

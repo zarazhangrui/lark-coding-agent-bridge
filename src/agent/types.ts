@@ -89,4 +89,6 @@ export interface AgentAdapter {
    * Adapters that don't bake identity into their prompts may omit it.
    */
   setBotIdentity?(identity: AgentBotIdentity): void;
+  /** Release adapter-owned local resources. Shared system services are retained. */
+  dispose?(): Promise<void>;
 }
