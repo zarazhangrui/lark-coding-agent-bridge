@@ -15,6 +15,8 @@ interface ContentBlock {
 interface ClaudeRawEvent {
   type?: string;
   subtype?: string;
+  result?: string;
+  is_error?: boolean;
   session_id?: string;
   cwd?: string;
   model?: string;
@@ -71,6 +73,14 @@ export function* translateEvent(raw: unknown): Generator<AgentEvent> {
   }
 
   if (evt.type === 'result') {
+    if (
+      evt.subtype === 'success' &&
+      evt.is_error !== true &&
+      typeof evt.result === 'string' &&
+      evt.result.trim()
+    ) {
+      yield { type: 'final_text', content: evt.result };
+    }
     if (evt.usage) {
       yield {
         type: 'usage',

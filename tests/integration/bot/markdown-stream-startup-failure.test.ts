@@ -1,8 +1,10 @@
 import type { NormalizedMessage } from '@larksuite/channel';
-import { realpath } from 'node:fs/promises';
+import { chmod, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { AgentEvent } from '../../../src/agent/types.js';
+import type { AgentAdapter, AgentEvent } from '../../../src/agent/types.js';
+import { ClaudeAdapter } from '../../../src/agent/claude/adapter.js';
 import type { FakeAgentEvents } from '../../helpers/fake-agent.js';
 import { createDefaultProfileConfig } from '../../../src/config/profile-schema.js';
 import { log } from '../../../src/core/logger.js';
@@ -201,6 +203,87 @@ describe('markdown stream startup failures', () => {
     expect(h.channel.sent).toHaveLength(1);
     expect(lastMarkdown(h.channel)).toContain('FINAL_SENTINEL');
     expect(h.channel.sent[0]?.options).toMatchObject({ replyTo: 'om_final' });
+  });
+
+  it('sends only the successful Claude result through the text-mode channel', async () => {
+    const binary = await createFakeBinary([
+      JSON.stringify({
+        type: 'assistant',
+        message: { content: [{ type: 'text', text: 'assistant process should stay hidden' }] },
+      }),
+      JSON.stringify({
+        type: 'result',
+        subtype: 'success',
+        is_error: false,
+        result: '第一段最终答案\n\n第二段最终答案',
+        session_id: 'sess-channel-result',
+        usage: { input_tokens: 3, output_tokens: 4 },
+      }),
+    ]);
+    cleanups.push(binary.cleanup);
+    const h = await createHarness({ agentKind: 'claude', messageReply: 'text' });
+    // 未设置持久化迁移标记时，`text` 会被兼容逻辑转换为 markdown。
+    h.controls.cfg.preferences.messageReplyMigrated = true;
+    await startTestBridge(h, new ClaudeAdapter({ binary: binary.path }));
+
+    await h.channel.handlers.message?.(message('om_channel_result', 'run'));
+    await waitFor(() => h.channel.sent.length === 1);
+
+    expect(h.channel.sent).toHaveLength(1);
+    const content = h.channel.sent[0]?.content as { markdown?: string } | undefined;
+    expect(content?.markdown).toBe('第一段最终答案\n\n第二段最终答案');
+  });
+
+  it.each([
+    { name: 'completes a CoT bubble', createFails: false },
+    { name: 'falls back when CoT creation fails', createFails: true },
+  ])('sends only the final result when it $name', async ({ createFails }) => {
+    const cotUrls = mockCotApi(createFails);
+    const binary = await createFakeBinary([
+      JSON.stringify({
+        type: 'assistant',
+        message: { content: [{ type: 'text', text: '过程文本不应进入最终消息' }] },
+      }),
+      JSON.stringify({
+        type: 'assistant',
+        message: {
+          content: [{ type: 'tool_use', id: 'tool-cot', name: 'Bash', input: { command: 'true' } }],
+        },
+      }),
+      JSON.stringify({
+        type: 'user',
+        message: {
+          content: [{ type: 'tool_result', tool_use_id: 'tool-cot', content: 'ok' }],
+        },
+      }),
+      JSON.stringify({
+        type: 'assistant',
+        message: { content: [{ type: 'text', text: '末条 assistant 草稿也不应进入最终消息' }] },
+      }),
+      JSON.stringify({
+        type: 'result',
+        subtype: 'success',
+        result: 'CoT 路径最终答案',
+        session_id: 'sess-cot-result',
+      }),
+    ]);
+    cleanups.push(binary.cleanup);
+    const h = await createHarness({
+      agentKind: 'claude',
+      messageReply: 'text',
+      cotMessages: 'brief',
+    });
+    h.controls.cfg.preferences.messageReplyMigrated = true;
+    await startTestBridge(h, new ClaudeAdapter({ binary: binary.path }));
+
+    await h.channel.handlers.message?.(message('om_cot_result', 'run'));
+    await waitFor(() => h.channel.sent.length === 1);
+
+    expect(h.channel.sent).toHaveLength(1);
+    const content = h.channel.sent[0]?.content as { markdown?: string } | undefined;
+    expect(content?.markdown).toBe('CoT 路径最终答案');
+    expect(cotUrls.some((url) => url.includes('/open-apis/im/v1/message_cot'))).toBe(true);
+    expect(cotUrls.some((url) => url.includes('/complete/'))).toBe(!createFails);
   });
 
   it('opens no progress stream for a final-only round', async () => {
@@ -436,6 +519,7 @@ async function createHarness(options: {
   /** One run's events, or one array per run. */
   events?: FakeAgentEvents;
   messageReply?: 'card' | 'markdown' | 'text';
+  cotMessages?: 'off' | 'brief' | 'detailed';
   /** Codex holds its answer back for a dedicated final reply; Claude streams it. */
   agentKind?: 'claude' | 'codex';
 } = {}): Promise<{
@@ -464,7 +548,14 @@ async function createHarness(options: {
     codex: {
       binaryPath: '/usr/local/bin/codex',
     },
-    ...(options.messageReply ? { preferences: { messageReply: options.messageReply } } : {}),
+    ...(options.messageReply || options.cotMessages
+      ? {
+          preferences: {
+            ...(options.messageReply ? { messageReply: options.messageReply } : {}),
+            ...(options.cotMessages ? { cotMessages: options.cotMessages } : {}),
+          },
+        }
+      : {}),
   });
   const profileConfig = {
     ...baseProfileConfig,
@@ -507,21 +598,72 @@ async function createHarness(options: {
   };
 }
 
-async function startTestBridge(h: {
-  profileConfig: ReturnType<typeof createDefaultProfileConfig>;
-  agent: FakeAgentAdapter;
-  sessions: SessionStore;
-  workspaces: WorkspaceStore;
-  controls: ReturnType<typeof createControls>;
-}): Promise<void> {
+async function startTestBridge(
+  h: {
+    profileConfig: ReturnType<typeof createDefaultProfileConfig>;
+    agent: FakeAgentAdapter;
+    sessions: SessionStore;
+    workspaces: WorkspaceStore;
+    controls: ReturnType<typeof createControls>;
+  },
+  agent: AgentAdapter = h.agent,
+): Promise<void> {
   const bridge = await startChannel({
     cfg: h.profileConfig,
-    agent: h.agent,
+    agent,
     sessions: h.sessions,
     workspaces: h.workspaces,
     controls: h.controls,
   });
   cleanups.push(() => bridge.disconnect());
+}
+
+async function createFakeBinary(lines: string[]): Promise<{
+  path: string;
+  cleanup(): Promise<void>;
+}> {
+  const dir = await mkdtemp(join(tmpdir(), 'claude-channel-result-test-'));
+  const path = join(dir, 'fake-claude.mjs');
+  await writeFile(
+    path,
+    [
+      '#!/usr/bin/env node',
+      `const lines = ${JSON.stringify(lines)};`,
+      'for (const line of lines) console.log(line);',
+      'process.exit(0);',
+    ].join('\n'),
+    'utf8',
+  );
+  await chmod(path, 0o755);
+  return {
+    path,
+    cleanup: () => rm(dir, { recursive: true, force: true }),
+  };
+}
+
+function mockCotApi(createFails: boolean): string[] {
+  const urls: string[] = [];
+  vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+    const url = String(input);
+    urls.push(url);
+    const method = String(init?.method ?? 'GET');
+    if (url.includes('/open-apis/auth/v3/tenant_access_token/internal')) {
+      return new Response(JSON.stringify({ code: 0, tenant_access_token: 'token', expire: 7200 }));
+    }
+    if (url.includes('/complete/')) {
+      return new Response(JSON.stringify({ code: 0 }));
+    }
+    if (method === 'POST' && url.includes('receive_id_type=chat_id')) {
+      return createFails
+        ? new Response(JSON.stringify({ code: 10002, msg: 'COT creation rejected' }))
+        : new Response(JSON.stringify({ code: 0, data: { cot_id: 'cot_test', message_id: 'om_cot_test' } }));
+    }
+    if (method === 'PUT' && url.includes('/open-apis/im/v1/message_cot')) {
+      return new Response(JSON.stringify({ code: 0 }));
+    }
+    throw new Error(`unexpected COT request: ${method} ${url}`);
+  });
+  return urls;
 }
 
 function createFakeLarkChannel(harnessOptions: {
