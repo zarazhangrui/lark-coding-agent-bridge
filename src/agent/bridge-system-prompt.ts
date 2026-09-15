@@ -64,7 +64,7 @@ export const BRIDGE_SYSTEM_PROMPT = `# lark-channel-bridge 运行约定
 你想发一张可交互的卡片让用户点选时：
 
 1. 用 \`lark-cli\` 把卡发到 \`bridge_context.chat_id\`：
-   \`lark-cli im send-card --chat-id <chat_id> --card '<json>'\`
+   \`"$LARK_CHANNEL_LARK_CLI_BIN" im send-card --chat-id <chat_id> --card '<json>'\`
 2. 卡片用 CardKit 2.0 schema（\`schema: "2.0"\`）。
 3. **如果你希望用户点按钮后回调到你（让你在同一会话里继续处理）**：
    - 按钮的 \`value\` 对象**必须**同时包含 \`__bridge_cb: true\` 和 \`bridge_token: "<signed token>"\`。
@@ -99,8 +99,10 @@ bridge 会给你的子进程注入当前运行 profile 的环境变量:
 - \`LARK_CHANNEL_PROFILE\`: 当前 bridge profile
 - \`LARK_CHANNEL_CONFIG\`: 当前 profile 的 lark-cli source projection
 - \`LARKSUITE_CLI_CONFIG_DIR\`: 当前 profile 的 lark-cli 私有配置目录
+- \`LARKSUITE_CLI_DATA_DIR\`: bridge 启动账号的 lark-cli data 目录（Linux keychain 存储位置）
+- \`LARK_CHANNEL_LARK_CLI_BIN\`: lark-cli 的绝对路径
 
-因此普通 \`lark-cli ...\` 命令会自动进入当前 lark-channel 工作区,读取当前 profile 的私有 lark-cli 配置。不要 unset \`LARK_CHANNEL\` / \`LARK_CHANNEL_HOME\` / \`LARK_CHANNEL_PROFILE\` / \`LARKSUITE_CLI_CONFIG_DIR\`,也不要用 \`env -u LARK_CHANNEL\` 绕回本机普通配置。
+调用 lark-cli 时必须使用 \`"$LARK_CHANNEL_LARK_CLI_BIN" ...\`，不要调用裸的 \`lark-cli ...\`：agent 的 login shell 可能重置 PATH。该命令会自动进入当前 lark-channel 工作区,读取当前 profile 的私有配置和 keychain。不要 unset \`LARK_CHANNEL\` / \`LARK_CHANNEL_HOME\` / \`LARK_CHANNEL_PROFILE\` / \`LARKSUITE_CLI_CONFIG_DIR\` / \`LARKSUITE_CLI_DATA_DIR\` / \`LARK_CHANNEL_LARK_CLI_BIN\`,也不要用 \`env -u LARK_CHANNEL\` 绕回本机普通配置。
 
 如果 \`lark-cli\` 提示 \`lark-channel context detected but lark-cli is not bound to it\`,不要改用普通 profile,不要直接读取 \`config.json\` 里的账号或密钥,也不要自行执行 bind。停止当前操作并请用户重启 bridge 或运行 bridge doctor/preflight。
 
@@ -115,12 +117,12 @@ bridge 会给你的子进程注入当前运行 profile 的环境变量:
    - \`chat_type: group\`（含 topic 群）—— **不要**调 \`lark-cli auth login\`。device flow 把 \`verification_url\` 发到群里，谁先点谁拿走 token——会绑定到错的身份。正确做法是回复用户："授权要在私聊里做，请单独私信我。"
 2. **禁止** 用 \`run_in_background: true\` 调 \`lark-cli auth login\`——它会被你 exit 时一起带走，用户还没点完就丢了。
 3. **推荐两阶段流**（lark-cli 在 \`--no-wait\` 的输出里也会告诉你这套）：
-   - 先跑 \`lark-cli auth login --no-wait --json [--recommend | --domain ... | --scope ...]\`，**这一步秒返回**，stdout 里有 \`verification_url\` 和 \`device_code\`。
+   - 先跑 \`"$LARK_CHANNEL_LARK_CLI_BIN" auth login --no-wait --json [--recommend | --domain ... | --scope ...]\`，**这一步秒返回**，stdout 里有 \`verification_url\` 和 \`device_code\`。
    - 把 \`verification_url\` **原样**用代码块发给用户（不要 Markdown 链接化、不要 URL 编码）。
-   - 紧接着同一轮里跑 \`lark-cli auth login --device-code <code>\`，**这一步前台阻塞**直到用户点完或 10 分钟超时——这是你应该等的地方，不要丢到后台。
+   - 紧接着同一轮里跑 \`"$LARK_CHANNEL_LARK_CLI_BIN" auth login --device-code <code>\`，**这一步前台阻塞**直到用户点完或 10 分钟超时——这是你应该等的地方，不要丢到后台。
 4. \`lark-cli auth login --device-code <code>\` 成功后,继续在同一个当前 profile 环境里执行:
-   - \`lark-cli config strict-mode off\`
-   - \`lark-cli config default-as auto\`
+   - \`"$LARK_CHANNEL_LARK_CLI_BIN" config strict-mode off\`
+   - \`"$LARK_CHANNEL_LARK_CLI_BIN" config default-as auto\`
    这会让当前 profile 同时可用应用身份和已授权用户身份。不要重新 bind,不要绕回本机普通配置。
    这是内部顺序执行身份策略收敛,不要把 strict-mode/default-as 这类内部配置命令展示给用户,也不要让用户判断这些命令。面向用户只说："当前 profile 还没有可用的用户身份授权,请打开下面链接完成授权;授权完成后我会继续处理。"
 5. 如果当前 profile 已经有用户授权,但 \`--as user\` 仍被 strict-mode/default-as 拒绝,不要向用户展示内部命令;在用户明确要求使用用户身份时,内部顺序执行身份策略收敛后重试原命令。

@@ -39,6 +39,19 @@ describe('bridge system prompt bot collaboration rules', () => {
   });
 });
 
+describe('bridge lark-cli runtime rules', () => {
+  it('uses the injected absolute executable instead of relying on PATH', () => {
+    expect(BRIDGE_SYSTEM_PROMPT).toContain('LARK_CHANNEL_LARK_CLI_BIN');
+    expect(BRIDGE_SYSTEM_PROMPT).toContain('"$LARK_CHANNEL_LARK_CLI_BIN" auth login');
+    expect(BRIDGE_SYSTEM_PROMPT).toContain('不要调用裸的');
+  });
+
+  it('keeps Linux keychain lookup independent from an isolated HOME', () => {
+    expect(BRIDGE_SYSTEM_PROMPT).toContain('LARKSUITE_CLI_DATA_DIR');
+    expect(BRIDGE_SYSTEM_PROMPT).toContain('Linux keychain');
+  });
+});
+
 describe('buildBridgeSystemPrompt', () => {
   it('returns the base prompt unchanged when no identity is available', () => {
     expect(buildBridgeSystemPrompt(undefined)).toBe(BRIDGE_SYSTEM_PROMPT);
