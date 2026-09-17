@@ -1,5 +1,5 @@
 import type { NormalizedMessage } from '@larksuite/channel';
-import { claudeCapability, codexCapability } from '../agent/capability';
+import { capabilityForAgentKind } from '../agent/capability';
 import type { Controls } from '../commands';
 import type { AccessDecision } from '../policy/access';
 import { evaluateRunPolicy } from '../policy/run-policy';
@@ -22,9 +22,7 @@ export async function commandSessionCatalogIdentity(input: {
   const workspace = await resolveWorkingDirectory(requestedCwd);
   if (!workspace.ok) return undefined;
   const capability =
-    input.controls.profileConfig.agentKind === 'codex'
-      ? codexCapability(input.controls.profileConfig)
-      : claudeCapability(input.controls.profileConfig);
+    capabilityForAgentKind(input.controls.profileConfig.agentKind, input.controls.profileConfig);
   const policy = evaluateRunPolicy({
     scope: {
       source: 'im',

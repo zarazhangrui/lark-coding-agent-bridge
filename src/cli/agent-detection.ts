@@ -1,8 +1,9 @@
 import { constants } from 'node:fs';
 import { access } from 'node:fs/promises';
 import { delimiter, extname, isAbsolute, join } from 'node:path';
+import { defaultKimiBinaryPath } from '../agent/kimi/binary';
 
-export type AgentKind = 'claude' | 'codex';
+export type AgentKind = 'claude' | 'codex' | 'kimi';
 
 export interface DetectedAgent {
   kind: AgentKind;
@@ -48,6 +49,10 @@ export async function detectInstalledAgents(): Promise<DetectedAgent[]> {
   const candidates: Array<{ kind: AgentKind; command: string }> = [
     { kind: 'claude', command: process.env.LARK_CHANNEL_CLAUDE_BIN ?? 'claude' },
     { kind: 'codex', command: process.env.LARK_CHANNEL_CODEX_BIN ?? 'codex' },
+    // kimi is not expected on PATH; defaultKimiBinaryPath applies
+    // LARK_CHANNEL_KIMI_BIN then ~/.kimi-code/bin/kimi (absolute, so
+    // resolveExecutablePath checks it directly).
+    { kind: 'kimi', command: defaultKimiBinaryPath() },
   ];
   const detected: DetectedAgent[] = [];
   for (const candidate of candidates) {
