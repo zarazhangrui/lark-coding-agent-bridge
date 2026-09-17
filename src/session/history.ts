@@ -16,13 +16,20 @@ function encodeCwd(cwd: string): string {
   return cwd.replace(/[^A-Za-z0-9]/g, '-');
 }
 
-function claudeProjectDir(cwd: string): string {
-  return join(homedir(), '.claude', 'projects', encodeCwd(cwd));
+/** Session transcript root for claude-shaped agents; qodercli uses `~/.qoder`. */
+export type SessionHistoryRoot = '.claude' | '.qoder';
+
+function projectDir(cwd: string, root: SessionHistoryRoot): string {
+  return join(homedir(), root, 'projects', encodeCwd(cwd));
 }
 
 /** Return the most recent `limit` jsonl sessions for the given cwd, newest first. */
-export async function listRecentSessions(cwd: string, limit = 5): Promise<SessionSummary[]> {
-  const dir = claudeProjectDir(cwd);
+export async function listRecentSessions(
+  cwd: string,
+  limit = 5,
+  root: SessionHistoryRoot = '.claude',
+): Promise<SessionSummary[]> {
+  const dir = projectDir(cwd, root);
   let files: string[];
   try {
     files = await readdir(dir);

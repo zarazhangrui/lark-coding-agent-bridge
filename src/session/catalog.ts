@@ -4,6 +4,7 @@ import { dirname } from 'node:path';
 import { paths } from '../config/paths';
 import { log } from '../core/logger';
 import type { AgentCapabilityId } from '../agent/capability';
+import { isSessionIdAgent } from '../agent/capability';
 
 export type CatalogAgentId = AgentCapabilityId;
 export type SessionCatalogStatus = 'active' | 'archived';
@@ -247,14 +248,14 @@ function matchesIdentity(entry: SessionCatalogEntry, input: SessionCatalogIdenti
 }
 
 function isValidAgentEntry(entry: SessionCatalogEntry): boolean {
-  if (entry.agentId === 'claude') return Boolean(entry.sessionId) && !entry.threadId;
+  if (isSessionIdAgent(entry.agentId)) return Boolean(entry.sessionId) && !entry.threadId;
   return Boolean(entry.threadId) && !entry.sessionId;
 }
 
 function assertAgentIdentity(input: UpsertSessionCatalogInput): void {
-  if (input.agentId === 'claude') {
+  if (isSessionIdAgent(input.agentId)) {
     if (!input.sessionId || input.threadId) {
-      throw new Error('Claude catalog entries require sessionId and must not include threadId');
+      throw new Error('Session-based catalog entries require sessionId and must not include threadId');
     }
     return;
   }

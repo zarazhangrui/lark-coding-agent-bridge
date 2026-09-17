@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { BRIDGE_SYSTEM_PROMPT } from '../../../src/agent/bridge-system-prompt';
-import { claudeCapability, codexCapability } from '../../../src/agent/capability';
+import {
+  capabilityForAgentKind,
+  claudeCapability,
+  codexCapability,
+  isSessionIdAgent,
+  qodercliCapability,
+} from '../../../src/agent/capability';
 import { createDefaultProfileConfig } from '../../../src/config/profile-schema';
 
 describe('agent capability contract', () => {
@@ -71,5 +77,31 @@ describe('agent capability contract', () => {
     });
 
     expect(codexCapability(profile).permissions.maxAccess).toBe('read-only');
+  });
+
+  it('defines Qoder capability with claude-shaped sessions and stdin prompt injection', () => {
+    expect(qodercliCapability()).toMatchObject({
+      agentId: 'qodercli',
+      sessionKind: 'claude-session',
+      promptInjection: 'stdin-prefix',
+      supportsNativeHistory: true,
+      systemPrompt: BRIDGE_SYSTEM_PROMPT,
+      permissions: {
+        maxAccess: 'full',
+      },
+    });
+  });
+
+  it('routes capabilityForAgentKind to the matching capability', () => {
+    const permissions = { defaultAccess: 'full', maxAccess: 'full' } as const;
+    expect(capabilityForAgentKind('claude', { permissions }).agentId).toBe('claude');
+    expect(capabilityForAgentKind('codex', { permissions }).agentId).toBe('codex');
+    expect(capabilityForAgentKind('qodercli', { permissions }).agentId).toBe('qodercli');
+  });
+
+  it('treats qodercli as a session-id agent like claude', () => {
+    expect(isSessionIdAgent('claude')).toBe(true);
+    expect(isSessionIdAgent('qodercli')).toBe(true);
+    expect(isSessionIdAgent('codex')).toBe(false);
   });
 });

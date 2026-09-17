@@ -43,9 +43,25 @@ const CODEX_MODELS: ModelOption[] = [
   { value: 'o3', label: 'o3' },
 ];
 
+/**
+ * Qoder CLI models. Forwarded to `qodercli --model`. Pinned to qodercli's
+ * tier aliases, which stay stable across accounts; the full third-party
+ * roster varies per account (`qodercli --list-models`), and unknown values
+ * fall back to the account default via {@link normalizeModelSelection}.
+ */
+const QODER_MODELS: ModelOption[] = [
+  { value: DEFAULT_MODEL, label: '跟随默认（不指定）' },
+  { value: 'Ultimate', label: 'Ultimate（最强）' },
+  { value: 'Performance', label: 'Performance（均衡）' },
+  { value: 'Efficient', label: 'Efficient（经济）' },
+  { value: 'Lite', label: 'Lite（轻量）' },
+];
+
 /** The model picker options for a profile's agent kind. */
 export function supportedModels(agentKind: AgentKind): ModelOption[] {
-  return agentKind === 'codex' ? CODEX_MODELS : CLAUDE_MODELS;
+  if (agentKind === 'codex') return CODEX_MODELS;
+  if (agentKind === 'qodercli') return QODER_MODELS;
+  return CLAUDE_MODELS;
 }
 
 /** True when the selection means "use the agent default" (no `--model`). */

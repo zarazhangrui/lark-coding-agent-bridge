@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { mkdir } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import type { CommentEvent, LarkChannel } from '@larksuite/channel';
-import { claudeCapability, codexCapability } from '../agent/capability';
+import { capabilityForAgentKind, isSessionIdAgent } from '../agent/capability';
 import type { AgentAdapter, AgentEvent } from '../agent/types';
 import { getAgentStopGraceMs } from '../config/schema';
 import type { Controls } from '../commands';
@@ -186,10 +186,10 @@ export async function handleCommentMention(deps: CommentDeps): Promise<void> {
     : false;
 
   try {
-    const capability =
-      controls.profileConfig.agentKind === 'codex'
-        ? codexCapability(controls.profileConfig)
-        : claudeCapability(controls.profileConfig);
+    const capability = capabilityForAgentKind(
+      controls.profileConfig.agentKind,
+      controls.profileConfig,
+    );
     const runTimeoutMs = commentRunTimeoutMs(sessions, runScopeId);
     const threadTimeoutMs = commentRunTimeoutMs(sessions, commentThreadScopeId);
     const commentTimeoutMs = runTimeoutMs !== undefined ? runTimeoutMs : threadTimeoutMs;
@@ -243,7 +243,7 @@ export async function handleCommentMention(deps: CommentDeps): Promise<void> {
           })
         : undefined;
       const sessionId =
-        canResumeAgentSession && capability.agentId === 'claude'
+        canResumeAgentSession && isSessionIdAgent(capability.agentId)
           ? sessions.resumeFor(docSessionScopeId, cwdRealpath) ??
             sessions.resumeFor(legacyDocSessionScopeId, cwdRealpath)
           : undefined;
@@ -328,7 +328,7 @@ export async function handleCommentMention(deps: CommentDeps): Promise<void> {
             policy,
             event: e,
           });
-          if (capability.agentId === 'claude' && e.type === 'system' && e.sessionId) {
+          if (isSessionIdAgent(capability.agentId) && e.type === 'system' && e.sessionId) {
             sessions.set(docSessionScopeId, e.sessionId, policy.cwdRealpath);
           }
           switch (e.type) {

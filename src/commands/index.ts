@@ -3,7 +3,9 @@ import { readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, isAbsolute } from 'node:path';
 import type { LarkChannel, NormalizedMessage } from '@larksuite/channel';
-import { claudeCapability, codexCapability } from '../agent/capability';
+import { capabilityForAgentKind } from '../agent/capability';
+import { isSessionIdAgent } from '../agent/capability';
+import { toQoderPermissionMode } from '../agent/qodercli/adapter';
 import { DEFAULT_MODEL, normalizeModelSelection, supportedModels } from '../agent/models';
 import type { AgentAdapter } from '../agent/types';
 import type { ActiveRuns } from '../bot/active-runs';
@@ -61,7 +63,12 @@ import {
   reduce,
   type RunState,
 } from '../card/run-state';
-import { formatRelTime, listRecentSessions, type SessionSummary } from '../session/history';
+import {
+  formatRelTime,
+  listRecentSessions,
+  type SessionHistoryRoot,
+  type SessionSummary,
+} from '../session/history';
 import {
   listCodexThreadHistory,
   type CodexThreadHistoryEntry,
@@ -140,7 +147,11 @@ export interface CommandContext {
   codexHistoryProvider?: (
     options: ListCodexThreadHistoryOptions,
   ) => Promise<CodexThreadHistoryEntry[]>;
-  claudeHistoryProvider?: (cwd: string, limit: number) => Promise<SessionSummary[]>;
+  claudeHistoryProvider?: (
+    cwd: string,
+    limit: number,
+    root?: SessionHistoryRoot,
+  ) => Promise<SessionSummary[]>;
   /** Set when invoked from a CardKit 2.0 form submit. Keys are input `name`s. */
   formValue?: Record<string, unknown>;
   /** True when this invocation came from a card button click rather than a
@@ -153,7 +164,7 @@ type Handler = (args: string, ctx: CommandContext) => Promise<void>;
 
 interface ResumeCandidate {
   scopeId: string;
-  agentId: 'claude' | 'codex';
+  agentId: 'claude' | 'codex' | 'qodercli';
   cwdRealpath: string;
   policyFingerprint: string;
   sessionId?: string;
@@ -592,7 +603,12 @@ async function handleResume(args: string, ctx: CommandContext): Promise<void> {
     return;
   }
 
-  const sessions = await listClaudeResumeHistory(ctx, cwd, limit);
+  // qodercli persists headless session transcripts under ~/.qoder/projects
+  // with the same jsonl layout Claude Code uses, so history listing only
+  // needs a different root dir.
+  const historyRoot: SessionHistoryRoot =
+    ctx.controls.profileConfig.agentKind === 'qodercli' ? '.qoder' : '.claude';
+  const sessions = await listClaudeResumeHistory(ctx, cwd, limit, historyRoot);
   const currentSession = ctx.sessions.getRaw(ctx.scope);
   const identity = ctx.sessionCatalogIdentity;
   const entries = sessions.map((s) => ({
@@ -626,7 +642,7 @@ async function applyResume(sessionId: string, ctx: CommandContext): Promise<void
       } else {
         ctx.sessionCatalog.upsertActive({
           scopeId: ctx.sessionCatalogIdentity.scopeId,
-          agentId: 'claude',
+          agentId: ctx.sessionCatalogIdentity.agentId,
           cwdRealpath: ctx.sessionCatalogIdentity.cwdRealpath,
           policyFingerprint: ctx.sessionCatalogIdentity.policyFingerprint,
           sessionId: resolved.sessionId!,
@@ -646,9 +662,7 @@ async function applyResume(sessionId: string, ctx: CommandContext): Promise<void
       return;
     }
     ctx.activeRuns.interrupt(ctx.scope);
-    if (ctx.sessionCatalogIdentity.agentId === 'claude') {
-      ctx.sessions.set(ctx.scope, sessionId, ctx.sessionCatalogIdentity.cwdRealpath);
-    }
+    ctx.sessions.set(ctx.scope, sessionId, ctx.sessionCatalogIdentity.cwdRealpath);
     await reply(ctx, RESUME_APPLIED_REPLY);
     return;
   }
@@ -699,7 +713,7 @@ function consumeResumeCandidate(
     candidate.agentId !== identity.agentId ||
     candidate.cwdRealpath !== identity.cwdRealpath ||
     candidate.policyFingerprint !== identity.policyFingerprint ||
-    (identity.agentId === 'claude' && !candidate.sessionId) ||
+    (isSessionIdAgent(identity.agentId) && !candidate.sessionId) ||
     (identity.agentId === 'codex' && !candidate.threadId)
   ) {
     return undefined;
@@ -717,9 +731,10 @@ async function listClaudeResumeHistory(
   ctx: CommandContext,
   cwd: string,
   limit: number,
+  root: SessionHistoryRoot = '.claude',
 ): Promise<SessionSummary[]> {
   const provider = ctx.claudeHistoryProvider ?? listRecentSessions;
-  return provider(cwd, limit);
+  return provider(cwd, limit, root);
 }
 
 async function listCodexResumeHistory(
@@ -768,6 +783,17 @@ function runtimeAccessStatus(
       value: accessToClaudePermissionMode(
         profileConfig.permissions.defaultAccess,
         profileConfig.permissions,
+      ),
+    };
+  }
+  if (profileConfig.agentKind === 'qodercli') {
+    return {
+      label: 'permission',
+      value: toQoderPermissionMode(
+        accessToClaudePermissionMode(
+          profileConfig.permissions.defaultAccess,
+          profileConfig.permissions,
+        ),
       ),
     };
   }
@@ -1127,10 +1153,10 @@ async function handleDoctor(args: string, ctx: CommandContext): Promise<void> {
   }
   doctorLastByOperator.set(rateKey, now);
 
-  const capability =
-    ctx.controls.profileConfig.agentKind === 'codex'
-      ? codexCapability(ctx.controls.profileConfig)
-      : claudeCapability(ctx.controls.profileConfig);
+  const capability = capabilityForAgentKind(
+    ctx.controls.profileConfig.agentKind,
+    ctx.controls.profileConfig,
+  );
   const policy = evaluateRunPolicy({
     scope: {
       source: 'im',

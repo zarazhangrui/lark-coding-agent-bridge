@@ -1,6 +1,7 @@
 import { ClaudeAdapter } from '../agent/claude/adapter';
 import { CodexAdapter } from '../agent/codex/adapter';
 import { AgentPreflightError, type AgentAvailability } from '../agent/preflight';
+import { QoderAdapter } from '../agent/qodercli/adapter';
 import type { AgentAdapter } from '../agent/types';
 import type { AppPaths } from '../config/app-paths';
 import type { AgentKind, ProfileConfig } from '../config/profile-schema';
@@ -49,6 +50,9 @@ export function createRuntimeAgent(
       larkChannel,
     });
   }
+  if (profileConfig.agentKind === 'qodercli') {
+    return new QoderAdapter({ larkChannel });
+  }
   return new ClaudeAdapter({ larkChannel });
 }
 
@@ -58,9 +62,14 @@ export async function checkRuntimeAgentAvailability(agent: AgentAdapter): Promis
   if (ok) return { ok: true };
   const diagnostic = {
     code: 'agent-binary-not-found' as const,
-    agentId: agent.id === 'codex' ? ('codex' as const) : ('claude' as const),
+    agentId:
+      agent.id === 'codex'
+        ? ('codex' as const)
+        : agent.id === 'qodercli'
+          ? ('qodercli' as const)
+          : ('claude' as const),
     agentName: agent.displayName,
-    command: agent.id === 'codex' ? 'codex' : 'claude',
+    command: agent.id === 'codex' ? 'codex' : agent.id === 'qodercli' ? 'qodercli' : 'claude',
   };
   return { ok: false, diagnostic, error: new AgentPreflightError(diagnostic) };
 }
