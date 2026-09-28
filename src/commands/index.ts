@@ -552,8 +552,9 @@ async function handleResume(args: string, ctx: CommandContext): Promise<void> {
     return;
   }
 
-  if (ctx.chatMode !== 'p2p') {
-    await reply(ctx, '群聊中不展示历史会话详情。请私聊 bot 使用 `/resume` 查看和选择历史会话。');
+  // In group chats, only admins can list resume candidates (to avoid leaking session details to non-admins).
+  if (ctx.chatMode !== 'p2p' && !canRunAdminCommand(ctx.controls.profileConfig, ctx.controls, ctx.msg.senderId).ok) {
+    await reply(ctx, '群聊中只有管理员可以查看和恢复历史会话。');
     return;
   }
 
@@ -690,6 +691,15 @@ function consumeResumeCandidate(
   nonce: string,
   identity: SessionCatalogIdentity,
 ): ResumeCandidate | undefined {
+  // TODO(future): Previously this also compared `candidate.policyFingerprint` to
+  // `identity.policyFingerprint`, which broke resume whenever the access policy
+  // changed (e.g. /invite group mutated allowedChats — issue #151). We now match
+  // only on scopeId/agentId/cwdRealpath. SECURITY NOTE: resume does NOT bypass
+  // access control — every inbound message still re-runs `evaluateRunPolicy`, so a
+  // user removed from the allowlist between listing and consuming a candidate is
+  // denied on the next message. Do NOT re-add a fingerprint check here without
+  // first re-introducing scope-aware continuity (see `scopeAwareAccessDigest`), or
+  // #151 will regress.
   pruneResumeCandidates();
   const candidate = resumeCandidates.get(nonce);
   if (!candidate) return undefined;
@@ -698,7 +708,6 @@ function consumeResumeCandidate(
     candidate.scopeId !== identity.scopeId ||
     candidate.agentId !== identity.agentId ||
     candidate.cwdRealpath !== identity.cwdRealpath ||
-    candidate.policyFingerprint !== identity.policyFingerprint ||
     (identity.agentId === 'claude' && !candidate.sessionId) ||
     (identity.agentId === 'codex' && !candidate.threadId)
   ) {

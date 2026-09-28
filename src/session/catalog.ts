@@ -48,6 +48,14 @@ const DEFAULT_MAX_ENTRIES_PER_PROFILE = 1000;
 const KEY_SEPARATOR = '\x1f';
 
 export function sessionCatalogKey(input: SessionCatalogIdentity): string {
+  // TODO(future): The key embeds `policyFingerprint`, which changed shape when
+  // `scopeAwareAccessDigest` replaced `accessPolicyDigest` (allowedChats dropped).
+  // Entries written by a previous build therefore carry a different fingerprint
+  // and will NOT be matched by `activeFor` after a deploy — the next message in an
+  // already-active scope starts a fresh session/thread once, then self-heals.
+  // If we ever change the fingerprint shape again, add a one-time migration or a
+  // fingerprint-agnostic fallback lookup so existing active sessions survive the
+  // upgrade instead of being silently split.
   return [
     input.scopeId,
     input.agentId,

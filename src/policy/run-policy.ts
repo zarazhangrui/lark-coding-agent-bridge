@@ -10,10 +10,10 @@ import {
 import type { ProfileConfig } from '../config/profile-schema';
 import type { AccessDecision } from './access';
 import {
-  accessPolicyDigest,
   attachmentPolicyConfigDigest,
   policyFingerprint,
   resourceScopeDigest,
+  scopeAwareAccessDigest,
 } from './fingerprint';
 
 export interface ScopeContext {
@@ -125,7 +125,7 @@ export function evaluateRunPolicy(input: RunPolicyInput): RunPolicyResult {
   const accessDigest =
     input.scope.source === 'comment' && input.access.reason === 'comment-mention'
       ? 'comment-mention'
-      : accessPolicyDigest(input.profileConfig.access);
+      : scopeAwareAccessDigest(input.profileConfig.access);
 
   return {
     ok: true,

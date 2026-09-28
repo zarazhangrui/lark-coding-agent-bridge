@@ -133,6 +133,34 @@ describe('run policy', () => {
     expect(stricterPolicy.policyFingerprint).not.toBe(noAttachment.policyFingerprint);
   });
 
+  it('keeps the policy fingerprint stable when allowedChats changes (session continuity)', () => {
+    const withTwo = evaluateRunPolicy(baseInput({ profileConfig: profileWithAccess({ allowedChats: ['oc_a', 'oc_b'] }) }));
+    const withThree = evaluateRunPolicy(baseInput({ profileConfig: profileWithAccess({ allowedChats: ['oc_a', 'oc_b', 'oc_c'] }) }));
+
+    expect(withTwo.ok).toBe(true);
+    expect(withThree.ok).toBe(true);
+    if (!withTwo.ok || !withThree.ok) throw new Error('expected run policy to allow');
+    expect(withThree.policyFingerprint).toBe(withTwo.policyFingerprint);
+  });
+
+  it('changes the policy fingerprint when admins, allowedUsers, or requireMentionInGroup change', () => {
+    const base = evaluateRunPolicy(baseInput({ profileConfig: profileWithAccess({}) }));
+    const moreAdmins = evaluateRunPolicy(baseInput({ profileConfig: profileWithAccess({ admins: ['ou_admin', 'ou_admin2'] }) }));
+    const moreUsers = evaluateRunPolicy(baseInput({ profileConfig: profileWithAccess({ allowedUsers: ['ou_a', 'ou_b'] }) }));
+    const mentionOff = evaluateRunPolicy(baseInput({ profileConfig: profileWithAccess({ requireMentionInGroup: false }) }));
+
+    expect(base.ok).toBe(true);
+    expect(moreAdmins.ok).toBe(true);
+    expect(moreUsers.ok).toBe(true);
+    expect(mentionOff.ok).toBe(true);
+    if (!base.ok || !moreAdmins.ok || !moreUsers.ok || !mentionOff.ok) {
+      throw new Error('expected run policy to allow');
+    }
+    expect(moreAdmins.policyFingerprint).not.toBe(base.policyFingerprint);
+    expect(moreUsers.policyFingerprint).not.toBe(base.policyFingerprint);
+    expect(mentionOff.policyFingerprint).not.toBe(base.policyFingerprint);
+  });
+
   it('fails closed for unverified folder resource bindings', () => {
     const result = evaluateRunPolicy({
       ...baseInput(),
@@ -213,4 +241,19 @@ function scope(overrides: Partial<ScopeContext> = {}): ScopeContext {
     actorId: 'ou_user',
     ...overrides,
   };
+}
+
+function profileWithAccess(access: Partial<ProfileConfig['access']>) {
+  return createDefaultProfileConfig({
+    agentKind: 'claude',
+    accounts: { app: { id: 'cli_test', secret: '${APP_SECRET}', tenant: 'feishu' } },
+    access: {
+      allowedUsers: [],
+      allowedChats: [],
+      admins: [],
+      requireMentionInGroup: true,
+      ...access,
+    },
+    permissions: { defaultAccess: 'read-only', maxAccess: 'read-only' },
+  });
 }

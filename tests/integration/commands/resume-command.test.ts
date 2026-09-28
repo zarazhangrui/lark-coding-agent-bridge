@@ -226,16 +226,32 @@ describe('agent-aware resume commands', () => {
     expect(lastMarkdown(h.channel)).toContain('已完成');
   });
 
-  it('keeps Codex resume history details out of group chats like Claude', async () => {
+  it('keeps Codex resume history details out of group chats for non-admins like Claude', async () => {
     const h = await createHarness('codex');
     h.codexHistory.push(codexThread('thread-alpha-secret', 'alpha prompt', 1_700_000_100_000));
+
+    // The default harness sender (ou-user) is both the bot owner and in access.admins.
+    // Strip both so the group-chat admin gate blocks history instead of showing it.
+    h.controls.botOwnerId = 'ou-other-owner';
+    h.controls.profileConfig.access.admins = [];
 
     await expect(h.run('/resume', { chatMode: 'group' })).resolves.toBe(true);
 
     const rendered = lastContentString(h.channel);
-    expect(rendered).toContain('私聊');
+    expect(rendered).toContain('群聊中只有管理员可以查看和恢复历史会话');
     expect(rendered).not.toContain('alpha prompt');
     expect(rendered).not.toContain('thread-alpha-secret');
+  });
+
+  it('lets an admin list Codex resume history in a group chat', async () => {
+    const h = await createHarness('codex');
+    h.codexHistory.push(codexThread('thread-alpha-secret', 'alpha prompt', 1_700_000_100_000));
+
+    // The default harness sender is the bot owner, i.e. an admin: history is shown.
+    await expect(h.run('/resume', { chatMode: 'group' })).resolves.toBe(true);
+
+    const rendered = lastContentString(h.channel);
+    expect(rendered).toContain('alpha prompt');
   });
 
   it('labels Codex status as session while reading the recorded thread id', async () => {

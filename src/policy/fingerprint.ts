@@ -53,6 +53,27 @@ export function accessPolicyDigest(access: ProfileConfig['access']): string {
   });
 }
 
+/**
+ * Scope-aware access digest for session catalog continuity.
+ * Unlike `accessPolicyDigest`, this excludes `allowedChats` so that
+ * adding/removing other unrelated groups does not break existing sessions.
+ *
+ * TODO(future): This digest deliberately diverges from `accessPolicyDigest`
+ * (which still hashes the full `allowedChats` list and is used for one-way
+ * callback identity fingerprints — see PR #214). If a new field is added to
+ * `ProfileConfig['access']`, decide explicitly whether it belongs in the
+ * session-continuity digest (this function) or only in the security/callback
+ * digest. Forgetting to update one of them silently splits or over-couples
+ * session continuity. Keep the two in sync by intent, not by accident.
+ */
+export function scopeAwareAccessDigest(access: ProfileConfig['access']): string {
+  return digestCanonical({
+    admins: [...access.admins].sort(),
+    allowedUsers: [...access.allowedUsers].sort(),
+    requireMentionInGroup: access.requireMentionInGroup,
+  });
+}
+
 export function resourceScopeDigest(input: ResourceScopeDigestInput): string {
   return digestCanonical({
     source: input.source,

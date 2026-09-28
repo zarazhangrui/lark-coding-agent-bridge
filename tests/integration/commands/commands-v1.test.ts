@@ -209,12 +209,13 @@ describe('Bridge command contracts', () => {
     expect(lastMarkdown(h.channel)).not.toContain(target);
   });
 
-  it('keeps Claude resume history details out of group chats', async () => {
+  it('keeps Claude resume history details out of group chats for non-admins', async () => {
     const h = await createHarness();
 
-    await expect(h.run('/resume', { chatMode: 'group' })).resolves.toBe(true);
+    // A non-admin sender in a group chat must not see resume history; only admins can.
+    await expect(h.run('/resume', { chatMode: 'group', senderId: 'ou-stranger' })).resolves.toBe(true);
 
-    expect(lastMarkdown(h.channel)).toContain('私聊');
+    expect(lastMarkdown(h.channel)).toContain('群聊中只有管理员可以查看和恢复历史会话');
     expect(lastMarkdown(h.channel)).not.toContain(h.tmp.workspace);
   });
 

@@ -1,10 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { createDefaultProfileConfig } from '../../../src/config/profile-schema';
+import { createDefaultProfileConfig, type ProfileConfig } from '../../../src/config/profile-schema';
 import {
   accessPolicyDigest,
   attachmentPolicyShapeDigest,
   policyFingerprint,
   resourceScopeDigest,
+  scopeAwareAccessDigest,
   type FingerprintInputV2,
 } from '../../../src/policy/fingerprint';
 import { canonicalizeJcs } from '../../../src/session/jcs';
@@ -129,6 +130,58 @@ describe('policy fingerprint', () => {
         resourceBindings: ['doc_a', 'doc_b'],
       }),
     );
+  });
+});
+
+describe('scopeAwareAccessDigest', () => {
+  function accessProfile(access: Partial<ProfileConfig['access']> = {}) {
+    return createDefaultProfileConfig({
+      agentKind: 'claude',
+      accounts: { app: { id: 'cli_test', secret: '${APP_SECRET}', tenant: 'feishu' } },
+      access: {
+        allowedUsers: ['ou_a'],
+        allowedChats: ['oc_a', 'oc_b'],
+        admins: ['ou_admin'],
+        requireMentionInGroup: true,
+        ...access,
+      },
+    });
+  }
+
+  it('excludes allowedChats so unrelated group changes preserve session continuity', () => {
+    const base = accessProfile();
+    const changed = accessProfile({ allowedChats: ['oc_a', 'oc_b', 'oc_c'] });
+
+    expect(scopeAwareAccessDigest(changed.access)).toBe(scopeAwareAccessDigest(base.access));
+  });
+
+  it('still changes when admins, allowedUsers, or requireMentionInGroup change', () => {
+    const base = accessProfile();
+
+    expect(scopeAwareAccessDigest(accessProfile({ admins: ['ou_admin', 'ou_admin2'] }).access)).not.toBe(
+      scopeAwareAccessDigest(base.access),
+    );
+    expect(scopeAwareAccessDigest(accessProfile({ allowedUsers: ['ou_a', 'ou_b'] }).access)).not.toBe(
+      scopeAwareAccessDigest(base.access),
+    );
+    expect(scopeAwareAccessDigest(accessProfile({ requireMentionInGroup: false }).access)).not.toBe(
+      scopeAwareAccessDigest(base.access),
+    );
+  });
+
+  it('sorts admins and allowedUsers so ordering does not change the digest', () => {
+    const a = accessProfile({ admins: ['ou_admin_b', 'ou_admin_a'], allowedUsers: ['ou_b', 'ou_a'] });
+    const b = accessProfile({ admins: ['ou_admin_a', 'ou_admin_b'], allowedUsers: ['ou_a', 'ou_b'] });
+
+    expect(scopeAwareAccessDigest(a.access)).toBe(scopeAwareAccessDigest(b.access));
+  });
+
+  it('diverges from accessPolicyDigest which still includes allowedChats', () => {
+    const a = accessProfile();
+    const b = accessProfile({ allowedChats: ['oc_a', 'oc_b', 'oc_c'] });
+
+    expect(accessPolicyDigest(a.access)).not.toBe(accessPolicyDigest(b.access));
+    expect(scopeAwareAccessDigest(a.access)).toBe(scopeAwareAccessDigest(b.access));
   });
 });
 
