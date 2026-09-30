@@ -6,6 +6,10 @@
 
 关于能实现的效果，详情可以阅读[飞书文档](https://larkcommunity.feishu.cn/docx/OaRIdFIRFoLM3xxTmKwcetHqn5e)
 
+## Manus 配套 Bridge
+
+如需在飞书 / Lark 中使用 Manus API v2，可安装独立项目 [lark-manus-bridge](https://github.com/Ivor-NCUT/lark-manus-bridge)。它基于 `@larksuite/channel`，参考了本项目的聊天与话题路由方式，支持私聊、指定群、持久化任务关联、多轮追问、文件和 Manus 签名 Webhook。它需要独立的机器人应用和 Manus API Key；本项目的命令行目前没有 `--agent manus` 选项。配置步骤和能力边界见配套项目 README。
+
 ## 主要功能
 
 - 在飞书私聊直接发消息，或在群里 `@bot`，把任务转给本机 Claude Code / Codex CLI。

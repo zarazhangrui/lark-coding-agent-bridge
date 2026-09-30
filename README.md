@@ -6,6 +6,10 @@ A lightweight bot that bridges Feishu / Lark messenger with your local Claude Co
 
 For a product walkthrough, see the [Feishu document](https://larkcommunity.feishu.cn/docx/OaRIdFIRFoLM3xxTmKwcetHqn5e).
 
+## Manus companion bridge
+
+To use Manus API v2 from Feishu / Lark, see [lark-manus-bridge](https://github.com/Ivor-NCUT/lark-manus-bridge). It is an independent companion built with `@larksuite/channel` and inspired by this project's chat and topic routing. It supports private chats and approved groups, persistent task bindings, multi-turn questions, files, and signed Manus webhooks. It uses a separate bot app and Manus API key; `lark-channel-bridge --agent manus` is not a command in this package. Follow the companion README for setup and limits.
+
 ## What it does
 
 - Forwards Feishu / Lark messages to local Claude Code or Codex CLI. Send a DM directly, or `@bot` in a group.
