@@ -9,7 +9,7 @@ import {
   resolveBootstrapWorkspace,
 } from '../cli/profile-bootstrap';
 import { promptPassword } from '../cli/prompt';
-import { setSecret } from '../config/keystore';
+import { setSecret, type KeystorePaths } from '../config/keystore';
 import { resolveAppPaths, type AppPaths } from '../config/app-paths';
 import {
   ActiveBridgeMigrationConflictError,
@@ -619,7 +619,7 @@ function displayAgentKind(kind: AgentKind): string {
 async function maybeMigrateRootPlaintextSecret(
   rootConfig: RootConfig,
   profile: string,
-  appPaths: Pick<AppPaths, 'secretsGetterScript' | 'secretsFile' | 'keystoreSaltFile'>,
+  appPaths: KeystorePaths & Pick<AppPaths, 'secretsGetterScript'>,
   configPath: string,
 ): Promise<AppConfig & { agentKind?: AgentKind }> {
   const cfg = runtimeProfileConfig(rootConfig, profile);
@@ -642,7 +642,7 @@ async function maybeMigrateRootPlaintextSecret(
 
 async function encryptedConfigForProfile(
   cfg: AppConfig,
-  appPaths: Pick<AppPaths, 'secretsGetterScript' | 'secretsFile' | 'keystoreSaltFile'>,
+  appPaths: KeystorePaths & Pick<AppPaths, 'secretsGetterScript'>,
 ): Promise<AppConfig> {
   const secret = cfg.accounts.app.secret;
   if (typeof secret !== 'string') return cfg;
@@ -659,7 +659,7 @@ async function encryptedConfigForProfile(
 async function encryptedConfigForResolvedSecret(
   cfg: AppConfig,
   plaintext: string,
-  appPaths: Pick<AppPaths, 'secretsGetterScript' | 'secretsFile' | 'keystoreSaltFile'>,
+  appPaths: KeystorePaths & Pick<AppPaths, 'secretsGetterScript'>,
 ): Promise<AppConfig> {
   const next = await buildEncryptedAccountConfig(
     cfg.accounts.app.id,
@@ -679,7 +679,7 @@ function isEnvBackedSecret(secret: SecretInput): boolean {
 async function maybeMigratePlaintextSecret(
   cfg: AppConfig,
   configPath: string,
-  appPaths: Pick<AppPaths, 'secretsGetterScript' | 'secretsFile' | 'keystoreSaltFile'>,
+  appPaths: KeystorePaths & Pick<AppPaths, 'secretsGetterScript'>,
 ): Promise<AppConfig> {
   const s = cfg.accounts.app.secret;
   if (typeof s === 'string' && !/^\$\{[A-Z][A-Z0-9_]*\}$/.test(s)) {

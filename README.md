@@ -228,6 +228,7 @@ The legacy `sandbox` field is still readable for old configs. After the bridge s
 | `~/.lark-channel/profiles/<profile>/sessions.json.catalog.json` | Agent-aware session catalog |
 | `~/.lark-channel/profiles/<profile>/workspaces.json` | Current and named workspace bindings |
 | `~/.lark-channel/profiles/<profile>/secrets.enc` | Profile-local encrypted secrets |
+| `~/.lark-channel/profiles/<profile>/.keystore.key` | Machine-local key that encrypts `secrets.enc` |
 | `~/.lark-channel/profiles/<profile>/lark-cli/` | Profile-local lark-cli directory |
 | `~/.lark-channel/profiles/<profile>/media/` | Attachment cache |
 | `~/.lark-channel/profiles/<profile>/logs/` | Structured run logs |
@@ -235,6 +236,8 @@ The legacy `sandbox` field is still readable for old configs. After the bridge s
 | `~/.lark-channel/registry/locks/` | Profile and app locks |
 
 Set `LARK_CHANNEL_HOME=/path/to/state` to move all local bridge state. `LARK_CHANNEL_LOG_DAYS` overrides log retention.
+
+`.keystore.key` stays on the machine that created it, so a profile copied to another host needs its secrets re-added with `lark-channel-bridge secrets set`. Entries written before that file existed were keyed off the machine hostname instead; they are re-keyed automatically the first time they are read. If one of them outlived a hostname change (an mDNS `.local` collision bump, or a fleet rename) it can no longer be opened — start once with `LARK_CHANNEL_KEYSTORE_LEGACY_HOSTNAME="<previous hostname>"` to recover it, or re-add the secret.
 
 ## Access control
 

@@ -228,6 +228,7 @@ bridge 会检查所选目录存在、是目录，并且不是 `/`、Home 根、�
 | `~/.lark-channel/profiles/<profile>/sessions.json.catalog.json` | agent-aware 会话索引 |
 | `~/.lark-channel/profiles/<profile>/workspaces.json` | 当前和命名工作空间绑定 |
 | `~/.lark-channel/profiles/<profile>/secrets.enc` | profile 本地加密 secret |
+| `~/.lark-channel/profiles/<profile>/.keystore.key` | 加密 `secrets.enc` 的本机密钥 |
 | `~/.lark-channel/profiles/<profile>/lark-cli/` | 当前 profile 的 lark-cli 目录 |
 | `~/.lark-channel/profiles/<profile>/media/` | 附件缓存 |
 | `~/.lark-channel/profiles/<profile>/logs/` | 结构化运行日志 |
@@ -235,6 +236,8 @@ bridge 会检查所选目录存在、是目录，并且不是 `/`、Home 根、�
 | `~/.lark-channel/registry/locks/` | profile lock 和 app lock |
 
 设置 `LARK_CHANNEL_HOME=/path/to/state` 可以迁移整棵本地状态目录。`LARK_CHANNEL_LOG_DAYS` 可以调整日志保留天数。
+
+`.keystore.key` 只留在生成它的机器上，把 profile 拷到别的机器需要用 `lark-channel-bridge secrets set` 重新录入 secret。这个文件出现之前写入的条目是用主机名派生密钥的，首次读取时会自动换成新密钥。如果某个旧条目经历过主机名变化（mDNS `.local` 重名自动加后缀，或者机器被批量改名）就打不开了，带上 `LARK_CHANNEL_KEYSTORE_LEGACY_HOSTNAME="<原主机名>"` 启动一次即可恢复，也可以直接重新录入 secret。
 
 ## 访问控制
 

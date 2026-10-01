@@ -45,6 +45,7 @@ describe('resolveAppPaths', () => {
     expect(paths.workspacesFile).toBe(join(profileDir, 'workspaces.json'));
     expect(paths.secretsFile).toBe(join(profileDir, 'secrets.enc'));
     expect(paths.keystoreSaltFile).toBe(join(profileDir, '.keystore.salt'));
+    expect(paths.keystoreKeyFile).toBe(join(profileDir, '.keystore.key'));
     expect(paths.larkCliConfigDir).toBe(join(profileDir, 'lark-cli'));
     expect(paths.larkCliSourceDir).toBe(join(profileDir, 'lark-cli-source'));
     expect(paths.larkCliSourceConfigFile).toBe(join(profileDir, 'lark-cli-source', 'config.json'));
