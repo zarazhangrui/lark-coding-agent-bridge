@@ -51,6 +51,30 @@ describe('secrets getter wrapper platform output', () => {
     expect(content).toContain('"C:\\Program Files\\nodejs\\node.exe"');
     expect(content).toContain('"C:\\bridge\\bin\\bridge.mjs" secrets get %*');
   });
+
+  it('marks the win32 wrapper read-only so the lark-cli audit passes, and can still rewrite it', async () => {
+    const root = await tmpRoot();
+    const script = join(root, 'secrets-getter');
+    const opts = {
+      platform: 'win32' as const,
+      nodePath: 'C:\\nodejs\\node.exe',
+      bridgeEntry: 'C:\\bridge\\bin\\bridge.mjs',
+    };
+
+    const result = await ensureSecretsGetterWrapper({ rootDir: root, secretsGetterScript: script }, opts);
+    // No write bits: on NTFS a writable file stats as 0666 and lark-cli's
+    // AssertSecurePath rejects it as world-writable.
+    expect((await stat(result)).mode & 0o222).toBe(0);
+
+    // Rewrite must succeed despite the read-only bit (node path can move
+    // between bridge runs) and must leave the file read-only again.
+    const rewritten = await ensureSecretsGetterWrapper(
+      { rootDir: root, secretsGetterScript: script },
+      { ...opts, nodePath: 'D:\\other\\node.exe' },
+    );
+    expect(await readFile(rewritten, 'utf8')).toContain('"D:\\other\\node.exe"');
+    expect((await stat(rewritten)).mode & 0o222).toBe(0);
+  });
 });
 
 async function tmpRoot(): Promise<string> {
