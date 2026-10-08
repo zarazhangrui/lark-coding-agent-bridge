@@ -1,5 +1,6 @@
 import { maskEmails } from './mask-email';
 import type { Block, RunState, ToolEntry } from './run-state';
+import { sanitizeThinkingText } from './thinking-text-filter';
 import { toolHeaderText } from './tool-render';
 
 /**
@@ -39,7 +40,7 @@ export function renderText(state: RunState): string {
 
 function renderBlock(block: Block): string {
   if (block.kind === 'text') {
-    return block.content.trim();
+    return sanitizeThinkingText(block.content).trim();
   }
   return toolLine(block.tool);
 }
