@@ -42,6 +42,8 @@ export interface SupervisorOptions {
   startChannelFn?: StartChannelFn;
   /** Run lark-cli preflight per profile (default true; tests pass false). */
   runPreflight?: boolean;
+  /** Skip only lark-cli setup while keeping agent availability checks enabled. */
+  skipCheckLarkCli?: boolean;
 }
 
 export interface ManagedStatus {
@@ -318,6 +320,7 @@ export class Supervisor {
 
     if (this.opts.runPreflight !== false) {
       await preFlightChecks({
+        skipCheckLarkCli: this.opts.skipCheckLarkCli,
         bridgeConfig: cfg,
         profileConfig,
         appPaths,

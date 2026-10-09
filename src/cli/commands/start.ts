@@ -144,7 +144,11 @@ async function runClassic(opts: StartOptions): Promise<void> {
   });
   await gcOldLogs();
 
-  const supervisor = new Supervisor({ configPath, rootDir: appPaths.rootDir });
+  const supervisor = new Supervisor({
+    configPath,
+    rootDir: appPaths.rootDir,
+    skipCheckLarkCli: opts.skipCheckLarkCli,
+  });
 
   // Retry loop: on a profile/app runtime-lock conflict, offer to stop the
   // holder and try again (same UX as older single-profile `run`).
@@ -203,7 +207,11 @@ async function runSupervisorConsole(opts: StartOptions): Promise<void> {
   });
   await gcOldLogs();
 
-  const supervisor = new Supervisor({ configPath, rootDir: appPaths.rootDir });
+  const supervisor = new Supervisor({
+    configPath,
+    rootDir: appPaths.rootDir,
+    skipCheckLarkCli: opts.skipCheckLarkCli,
+  });
 
   // Single web console (host sidecar), backed by the supervisor.
   let uiServer: UiServerHandle | undefined;

@@ -100,6 +100,14 @@ describe('start runtime agent factory', () => {
     expect(sup).toContain('releaseRuntimeLocks(this.locks)');
   });
 
+  it('passes skip-check-lark-cli through the supervisor preflight', async () => {
+    const start = await readFile(join(process.cwd(), 'src/cli/commands/start.ts'), 'utf8');
+    const supervisor = await readFile(join(process.cwd(), 'src/runtime/supervisor.ts'), 'utf8');
+
+    expect(start.match(/skipCheckLarkCli: opts\.skipCheckLarkCli/g)).toHaveLength(2);
+    expect(supervisor).toContain('skipCheckLarkCli: this.opts.skipCheckLarkCli');
+  });
+
   it('rejects reconnect when a profile changes agent kind in place', () => {
     expect(() => assertReconnectAgentKindUnchanged('claude', 'codex')).toThrow(/agent kind/i);
     expect(() => assertReconnectAgentKindUnchanged('codex', 'codex')).not.toThrow();
