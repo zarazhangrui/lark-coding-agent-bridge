@@ -87,6 +87,7 @@ export async function saveAccessConfig(
             allowedUsers: access.allowedUsers,
             allowedChats: access.allowedChats,
             admins: access.admins,
+            agentUsers: access.agentUsers,
             ...(access.chatRequireMention && Object.keys(access.chatRequireMention).length > 0
               ? { chatRequireMention: access.chatRequireMention }
               : {}),
@@ -111,6 +112,7 @@ export async function saveAccessConfig(
         allowedUsers: access.allowedUsers.length,
         allowedChats: access.allowedChats.length,
         admins: access.admins.length,
+        agentUsers: access.agentUsers.length,
       });
       return access;
     });

@@ -86,6 +86,15 @@ export type RunPolicyResult = RunPolicyAllow | RunPolicyReject;
 
 const DEFAULT_TTL_MS = 5 * 60 * 1000;
 
+export function requestedAccessForActor(
+  profileConfig: Pick<ProfileConfig, 'access' | 'permissions'>,
+  actorId: string,
+): AccessMode {
+  return profileConfig.access.agentUsers.includes(actorId)
+    ? profileConfig.permissions.maxAccess
+    : profileConfig.permissions.defaultAccess;
+}
+
 export function evaluateRunPolicy(input: RunPolicyInput): RunPolicyResult {
   if (!input.access.ok) {
     return reject('access-denied', '当前用户无权发起运行。');
@@ -105,7 +114,7 @@ export function evaluateRunPolicy(input: RunPolicyInput): RunPolicyResult {
   }
 
   const accessMode = clampAccess(
-    input.profileConfig.permissions.defaultAccess,
+    requestedAccessForActor(input.profileConfig, input.scope.actorId),
     input.profileConfig.permissions.maxAccess,
     input.capability.permissions.maxAccess,
   );

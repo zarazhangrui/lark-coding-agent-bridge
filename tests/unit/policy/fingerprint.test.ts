@@ -103,6 +103,7 @@ describe('policy fingerprint', () => {
         allowedUsers: ['ou_b', 'ou_a'],
         allowedChats: ['oc_b', 'oc_a'],
         admins: ['ou_admin_b', 'ou_admin_a'],
+        agentUsers: ['ou_agent_b', 'ou_agent_a'],
       },
     });
 
@@ -112,6 +113,7 @@ describe('policy fingerprint', () => {
         allowedUsers: ['ou_a', 'ou_b'],
         allowedChats: ['oc_a', 'oc_b'],
         admins: ['ou_admin_a', 'ou_admin_b'],
+        agentUsers: ['ou_agent_a', 'ou_agent_b'],
       }),
     );
     expect(

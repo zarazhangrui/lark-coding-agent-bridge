@@ -84,6 +84,11 @@ export interface AppAccess {
    * (/account, /config, /exit, /reconnect, /doctor, /cd, /ws, /doc,
    * /invite, /remove). */
   admins?: string[];
+  /**
+   * open_id list whose runs use permissions.maxAccess. Allowed actors not in
+   * this list use permissions.defaultAccess.
+   */
+  agentUsers?: string[];
   /** Per-chat @-mention override (chat_id → bool); overrides the global
    * requireMentionInGroup for the listed chats. */
   chatRequireMention?: Record<string, boolean>;

@@ -85,6 +85,38 @@ describe('run policy', () => {
     expect(result.permissionMode).toBe('plan');
   });
 
+  it('uses maxAccess for allowlisted agent users and defaultAccess for other actors', () => {
+    const profileConfig = profile({
+      permissions: { defaultAccess: 'read-only', maxAccess: 'full' },
+      agentUsers: ['ou_agent'],
+    });
+    const agentResult = evaluateRunPolicy(
+      baseInput({
+        profileConfig,
+        scope: scope({ actorId: 'ou_agent' }),
+      }),
+    );
+    const readerResult = evaluateRunPolicy(
+      baseInput({
+        profileConfig,
+        scope: scope({ actorId: 'ou_reader' }),
+      }),
+    );
+
+    expect(agentResult).toMatchObject({
+      ok: true,
+      accessMode: 'full',
+      sandbox: 'danger-full-access',
+      permissionMode: 'bypassPermissions',
+    });
+    expect(readerResult).toMatchObject({
+      ok: true,
+      accessMode: 'read-only',
+      sandbox: 'read-only',
+      permissionMode: 'plan',
+    });
+  });
+
   it('returns an expiry and a stable policy fingerprint for accepted runs', () => {
     const input = baseInput({ now: 1000 });
     const result = evaluateRunPolicy(input);
@@ -181,6 +213,7 @@ function profile(options: {
     maxAccess: AccessMode;
   };
   attachments?: Partial<ProfileConfig['attachments']>;
+  agentUsers?: string[];
 } = {}) {
   const cfg = createDefaultProfileConfig({
     agentKind: options.agentKind ?? 'claude',
@@ -195,6 +228,9 @@ function profile(options: {
       ? { codex: { binaryPath: '/usr/local/bin/codex' } }
       : {}),
     permissions: options.permissions,
+    access: {
+      agentUsers: options.agentUsers,
+    },
   });
   return {
     ...cfg,

@@ -56,6 +56,18 @@ describe('/status and /doctor diagnostics', () => {
     expect(status).not.toContain('bypassPermissions');
   });
 
+  it('shows and uses maximum runtime access for an allowlisted agent user', async () => {
+    const h = await createHarness({ configuredWorkspace: true });
+    h.controls.profileConfig.permissions.maxAccess = 'full';
+    h.controls.profileConfig.access.agentUsers = ['ou-admin'];
+
+    await expect(h.run('/status')).resolves.toBe(true);
+    expect(JSON.stringify(lastContent(h.channel))).toContain('bypassPermissions');
+
+    await expect(h.run('/doctor')).resolves.toBe(true);
+    expect(h.agent.runOptions.at(-1)?.permissionMode).toBe('bypassPermissions');
+  });
+
   it('runs only self-checks when no cwd is selected', async () => {
     const h = await createHarness({ configuredWorkspace: false, bindWorkspace: false });
 
