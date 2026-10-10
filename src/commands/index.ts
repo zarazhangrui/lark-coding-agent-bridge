@@ -352,6 +352,7 @@ async function handleNewChat(rawName: string, ctx: CommandContext): Promise<void
       channel: ctx.channel,
       name,
       inviteOpenId: ctx.msg.senderId,
+      description: ctx.controls.cfg.preferences?.newChatDescription,
     });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
