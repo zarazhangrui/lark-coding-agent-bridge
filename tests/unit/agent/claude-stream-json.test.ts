@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { ClaudeAdapter } from '../../../src/agent/claude/adapter.js';
-import { translateEvent } from '../../../src/agent/claude/stream-json.js';
+import { createTranslateEvent, translateEvent } from '../../../src/agent/claude/stream-json.js';
 import type { AgentEvent } from '../../../src/agent/types.js';
 
 describe('Claude stream-json translator', () => {
@@ -23,6 +23,8 @@ describe('Claude stream-json translator', () => {
   });
 
   it('translates assistant text, thinking, and tool_use blocks in order', () => {
+    // Text is buffered; a tool_use in the same message flushes it as progress
+    // before the tool call, so order is thinking → text → tool_use.
     expect([
       ...translateEvent({
         type: 'assistant',
@@ -35,9 +37,24 @@ describe('Claude stream-json translator', () => {
         },
       }),
     ]).toEqual([
-      { type: 'text', delta: 'hello' },
       { type: 'thinking', delta: 'checking' },
+      { type: 'text', delta: 'hello' },
       { type: 'tool_use', id: 'tool-1', name: 'Bash', input: { command: 'pwd' } },
+    ]);
+  });
+
+  it('emits the last buffered text as final_text on result', () => {
+    const translate = createTranslateEvent();
+    expect(translate.translate({
+      type: 'assistant',
+      message: { content: [{ type: 'text', text: 'final answer' }] },
+    })).toEqual([]);
+    expect(translate.translate({
+      type: 'result',
+      session_id: 'sess-final',
+    })).toEqual([
+      { type: 'final_text', content: 'final answer' },
+      { type: 'done', sessionId: 'sess-final', terminationReason: 'normal' },
     ]);
   });
 
@@ -81,6 +98,81 @@ describe('Claude stream-json translator', () => {
       { type: 'done', sessionId: 'sess-2', terminationReason: 'normal' },
     ]);
     expect([...translateEvent({ type: 'result', session_id: 'sess-2' })][0]).not.toHaveProperty('threadId');
+  });
+
+  it('streams token-level text_delta deltas live, then buffers the full block as final_text', () => {
+    // --include-partial-messages emits content_block_delta (text_delta) tokens
+    // before the full assistant block. Deltas must stream as `text` events
+    // immediately; the full block must not be re-emitted (it would duplicate).
+    const translate = createTranslateEvent();
+    const deltas = [
+      translate.translate({
+        type: 'stream_event',
+        event: { type: 'content_block_delta', index: 1, delta: { type: 'text_delta', text: '你好' } },
+      }),
+      translate.translate({
+        type: 'stream_event',
+        event: { type: 'content_block_delta', index: 1, delta: { type: 'text_delta', text: '世界' } },
+      }),
+    ];
+    expect(deltas).toEqual([
+      [{ type: 'text', delta: '你好' }],
+      [{ type: 'text', delta: '世界' }],
+    ]);
+
+    // Full assistant block arrives after deltas: buffer it for final_text,
+    // do not stream it again.
+    const full = translate.translate({
+      type: 'assistant',
+      message: { content: [{ type: 'text', text: '你好世界' }] },
+    });
+    expect(full).toEqual([]);
+
+    const final = translate.translate({ type: 'result', session_id: 'sess-stream' });
+    expect(final).toEqual([
+      { type: 'final_text', content: '你好世界' },
+      { type: 'done', sessionId: 'sess-stream', terminationReason: 'normal' },
+    ]);
+  });
+
+  it('does not re-emit streamed text when tool calls split turns (regression: duplicate replies)', () => {
+    // Real long runs emit delta-text → full assistant block → tool_use →
+    // delta-text → full assistant block → … The full blocks whose content was
+    // already streamed as deltas must not be re-emitted as progress text, and
+    // tool_use must not flush them either (that posted every sentence twice).
+    const translate = createTranslateEvent();
+    const all: Array<{ type: string; delta?: string; content?: string }> = [];
+    const feed = (raw: unknown): void => {
+      all.push(...(translate.translate(raw) as Array<{ type: string; delta?: string; content?: string }>));
+    };
+
+    feed({ type: 'stream_event', event: { type: 'content_block_delta', index: 1, delta: { type: 'text_delta', text: '需求明确' } } });
+    feed({ type: 'assistant', message: { content: [{ type: 'text', text: '需求明确' }] } });
+    feed({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 't1', name: 'Bash', input: {} }] } });
+    feed({ type: 'stream_event', event: { type: 'content_block_delta', index: 1, delta: { type: 'text_delta', text: '检查环境' } } });
+    feed({ type: 'assistant', message: { content: [{ type: 'text', text: '检查环境' }] } });
+    feed({ type: 'result', session_id: 'sess-dup' });
+
+    const texts = all.filter((e) => e.type === 'text').map((e) => e.delta ?? '');
+    expect(texts).toEqual(['需求明确', '检查环境']);
+
+    const finals = all.filter((e) => e.type === 'final_text').map((e) => e.content ?? '');
+    expect(finals).toEqual(['检查环境']);
+
+    // No duplicated sentence.
+    const counts = new Map<string, number>();
+    for (const t of texts) counts.set(t, (counts.get(t) ?? 0) + 1);
+    expect([...counts.values()].every((c) => c === 1)).toBe(true);
+  });
+
+  it('streams thinking_delta deltas live', () => {
+    const translate = createTranslateEvent();
+    expect(
+      translate.translate({
+        type: 'stream_event',
+        event: { type: 'content_block_delta', index: 0, delta: { type: 'thinking_delta', thinking: '想' } },
+      }),
+    ).toEqual([{ type: 'thinking', delta: '想' }]);
   });
 
   it('ignores unknown, empty, and incomplete raw events', () => {

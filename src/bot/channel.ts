@@ -5,7 +5,7 @@ import type {
 } from '@larksuite/channel';
 import { createLarkChannel } from '@larksuite/channel';
 import { dirname, join } from 'node:path';
-import { claudeCapability, codexCapability } from '../agent/capability';
+import { claudeCapability, codexCapability, mimoCapability } from '../agent/capability';
 import { modelLabel, normalizeModelSelection, resolveModelArg } from '../agent/models';
 import {
   buildAgentPrompt,
@@ -958,7 +958,9 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
   const capability =
     controls.profileConfig.agentKind === 'codex'
       ? codexCapability(controls.profileConfig)
-      : claudeCapability(controls.profileConfig);
+      : controls.profileConfig.agentKind === 'mimo'
+        ? mimoCapability(controls.profileConfig)
+        : claudeCapability(controls.profileConfig);
   const flow = await startRunFlow({
     scopeId: scope,
     scope: scopeContext,
@@ -994,7 +996,16 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
   const { execution, cwdRealpath: cwd } = flow;
   activePolicyFingerprints.set(scope, flow.policy.policyFingerprint);
   const handle = execution.handle;
-  const eventStream = execution.subscribe();
+  // Post an instant "thinking…" placeholder reply so the Feishu side gets
+  // immediate feedback while the model produces its first token (long resumed
+  // sessions can sit quiet for 30-50s). It is recalled as soon as the first
+  // visible agent event (tool call / text / final answer) arrives, so the real
+  // output takes its place. Failures are non-fatal and never block the run.
+  const ackPlaceholder = postAckPlaceholder(channel, chatId, sendOpts);
+  let eventStream = execution.subscribe();
+  if (ackPlaceholder) {
+    eventStream = wrapWithAckRecall(eventStream, ackPlaceholder, scope);
+  }
   if (flow.resumeFrom) {
     log.info('session', 'resume', { sessionId: flow.resumeFrom, cwd });
   } else {
@@ -1179,10 +1190,16 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
           },
         });
       } catch (err) {
-        if (controls.profileConfig.agentKind !== 'codex') throw err;
+        // Stream failure must not skip the dedicated final reply (claude/mimo
+        // fall back to it; codex logs and continues too). Rethrowing here would
+        // drop the conclusion for claude/mimo.
         log.fail('stream', err, { mode: replyMode, step: 'progress-stream' });
       }
       await recallIfEmptyStreamedReply(channel, progress, filterForPrefs(latestState), scope);
+      // The final reply must reach the user even if the stream's last update
+      // failed. codex holds it in final_text (finalReplyState); claude/mimo
+      // fall back to the full state as a standalone card, but only when the
+      // stream actually opened and wasn't abandoned (else fallback sent it).
       if (controls.profileConfig.agentKind === 'codex') {
         await sendFinalReply({
           channel,
@@ -1193,10 +1210,27 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
           sendOpts,
           cardRenderOptions,
         });
+      } else if (progress.opened() && !progress.abandoned()) {
+        await sendFinalReply({
+          channel,
+          chatId,
+          scope,
+          state: finalAnswerOnlyState(filterForPrefs(latestState)),
+          replyMode,
+          sendOpts,
+          cardRenderOptions,
+        });
       }
     } else if (replyMode === 'markdown') {
+      // All agents stream their process text (and tool lines) into the
+      // progress message, and hold the answer in `final_text` — claude's
+      // adapter now produces final_text like codex/mimo. The dedicated final
+      // reply is the only copy of the conclusion, so it must always go out: a
+      // stream update failure must never swallow it ("stuck on 正在调用工具").
+      const progressRender = renderText;
       let latestState: RunState = initialState;
       let producerStarted = false;
+      let lastStreamedText = '';
       let markdownCtrl: { setContent(markdown: string): Promise<void> } | undefined;
       const progress = createLazyProgressStream(scope, replyMode, () =>
         channel.stream(
@@ -1206,7 +1240,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
               producerStarted = true;
               if (progress.abandoned()) return;
               markdownCtrl = ctrl;
-              await ctrl.setContent(renderText(filterForPrefs(latestState)));
+              await ctrl.setContent(progressRender(filterForPrefs(latestState)));
               await renderDone;
             },
           },
@@ -1221,9 +1255,22 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
         recordSession,
         async (state) => {
           latestState = state;
-          if (shouldOpenProgressStream(filterForPrefs(state))) progress.ensureOpen();
+          if (shouldOpenProgressStream(filterForPrefs(state), progressRender)) progress.ensureOpen();
           if (markdownCtrl) {
-            await markdownCtrl.setContent(renderText(filterForPrefs(state)));
+            // Record the streamed text-only view (text blocks joined, tool
+            // lines excluded) so the dedup below can tell whether the
+            // conclusion already streamed: tool lines interleaved between
+            // text blocks would otherwise break the substring match. Note:
+            // use the raw blocks, NOT finalAnswerOnlyState (which collapses
+            // to finalText when present).
+            lastStreamedText = renderText({
+              ...filterForPrefs(state),
+              blocks: filterForPrefs(state).blocks.filter((b) => b.kind === 'text'),
+              reasoning: { content: '', active: false },
+              footer: null,
+              terminal: 'done',
+            });
+            await markdownCtrl.setContent(progressRender(filterForPrefs(state)));
           }
         },
       );
@@ -1234,24 +1281,50 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
           renderDone,
           producerStarted: () => producerStarted,
           fallback: async (state) => {
-            if (controls.profileConfig.agentKind === 'codex') return;
-            const body = renderText(filterForPrefs(state));
-            if (body.trim()) {
-              await channel.send(chatId, { markdown: body }, sendOpts);
-            }
+            // Fallback only matters for agents without final_text; all agents
+            // here have it, so the dedicated final reply below is the path.
           },
         });
       } catch (err) {
-        if (controls.profileConfig.agentKind !== 'codex') throw err;
-        log.fail('stream', err, { mode: replyMode, step: 'progress-stream' });
+        // Stream failure must not skip the dedicated final reply. Log and
+        // continue so sendFinalReply still runs.
+        if (controls.profileConfig.agentKind === 'codex') {
+          log.fail('stream', err, { mode: replyMode, step: 'progress-stream' });
+        } else {
+          log.warn('stream', 'final-reply-after-stream-error', { mode: replyMode });
+        }
       }
       await recallIfEmptyStreamedReply(channel, progress, filterForPrefs(latestState), scope);
-      if (controls.profileConfig.agentKind === 'codex') {
+      // The final answer goes out as its own message — unless the progress
+      // stream already carried it. For mimo (and codex) the adapter accumulates
+      // every text block, so the final_text duplicates what the stream just
+      // rendered; skip the standalone reply in that case to avoid posting the
+      // same conclusion twice. If the stream never showed the text (it failed
+      // or was abandoned), lastStreamedText won't contain it and we still send.
+      //
+      // Whitespace-normalized comparison: stream blocks are joined with \n\n
+      // while final_text joins raw parts, so strip all whitespace before the
+      // substring check — the text itself is what must not be duplicated.
+      const finalState = filterForPrefs(latestState);
+      const finalReply = finalReplyState(progress, finalState);
+      const finalReplyText = renderText(finalReply).trim();
+      const normalize = (s: string): string => s.replace(/\s+/g, '');
+      if (
+        finalReplyText &&
+        lastStreamedText &&
+        normalize(lastStreamedText).includes(normalize(finalReplyText))
+      ) {
+        log.info('outbound', 'final-reply-skipped', {
+          scope,
+          reason: 'already-streamed',
+          mode: replyMode,
+        });
+      } else {
         await sendFinalReply({
           channel,
           chatId,
           scope,
-          state: finalReplyState(progress, filterForPrefs(latestState)),
+          state: finalReply,
           replyMode,
           sendOpts,
           cardRenderOptions,
@@ -1286,6 +1359,10 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
     log.fail('stream', err);
   } finally {
     activePolicyFingerprints.delete(scope);
+    // Always recall the ack placeholder at run end: if no visible event ever
+    // fired (empty/failed run) it would otherwise linger as a stuck
+    // "正在思考…". recall is idempotent, so a first-event recall is safe here.
+    if (ackPlaceholder) void ackPlaceholder.recall();
     scheduleWorkingReactionCleanup(channel, lastMsg.messageId, reactionPromise);
   }
 }
@@ -1361,9 +1438,12 @@ function createLazyProgressStream(
  * with `renderText` in both reply modes so it matches the rule
  * `recallIfEmptyStreamedReply` applies: a stream we open is one that survives.
  */
-function shouldOpenProgressStream(state: RunState): boolean {
+function shouldOpenProgressStream(
+  state: RunState,
+  render: (s: RunState) => string = renderText,
+): boolean {
   if (state.terminal !== 'running') return false;
-  return renderText({ ...state, footer: null }).trim() !== '';
+  return render({ ...state, footer: null }).trim() !== '';
 }
 
 /**
@@ -1972,4 +2052,76 @@ function parseJsonOrRaw(input: string): unknown {
 
 function isDefined<T>(value: T | undefined): value is T {
   return value !== undefined;
+}
+
+/**
+ * Instant "thinking…" placeholder reply, recalled as soon as the agent emits
+ * its first visible event (tool call / text / final answer). Gives the Feishu
+ * side immediate feedback while the model is still producing its first token
+ * (long resumed sessions can sit quiet for 30-50s). All failures are
+ * non-fatal: a leftover placeholder is harmless and never blocks the run.
+ */
+function postAckPlaceholder(
+  channel: LarkChannel,
+  chatId: string,
+  sendOpts: { replyTo: string; replyInThread?: boolean },
+): { recall: () => Promise<void> } | undefined {
+  // recall awaits the send so a fast first event still recalls the placeholder
+  // even if the send hadn't completed yet. Idempotent: only recalls once.
+  let recalled = false;
+  let resolveSettled!: (v: { messageId?: string }) => void;
+  const sent = new Promise<{ messageId?: string }>((resolve) => {
+    resolveSettled = resolve;
+  });
+  void channel
+    .send(chatId, { markdown: '_⏳ 正在思考… 请稍候_' }, sendOpts)
+    .then((result) => resolveSettled({ messageId: result.messageId }))
+    .catch((err) => {
+      log.warn('outbound', 'ack-placeholder-failed', {
+        err: err instanceof Error ? err.message : String(err),
+      });
+      resolveSettled({});
+    });
+  const recall = async (): Promise<void> => {
+    const { messageId } = await sent;
+    if (!messageId || recalled) return;
+    recalled = true;
+    try {
+      await channel.recallMessage(messageId);
+      log.info('outbound', 'ack-recall', { messageId });
+    } catch (err) {
+      log.warn('outbound', 'ack-recall-failed', {
+        messageId,
+        err: err instanceof Error ? err.message : String(err),
+      });
+    }
+  };
+  return { recall };
+}
+
+/**
+ * Wrap the agent event stream so the placeholder is recalled on the first
+ * visible event. The wrapper is transparent: events pass through unchanged.
+ */
+function wrapWithAckRecall(
+  events: AsyncIterable<AgentEvent>,
+  ack: { recall: () => Promise<void> },
+  scope: string,
+): AsyncIterable<AgentEvent> {
+  let recalled = false;
+  return {
+    async *[Symbol.asyncIterator](): AsyncIterator<AgentEvent> {
+      for await (const evt of events) {
+        if (
+          !recalled &&
+          (evt.type === 'tool_use' || evt.type === 'text' || evt.type === 'final_text')
+        ) {
+          recalled = true;
+          log.info('outbound', 'ack-recalled-on', { scope, event: evt.type });
+          void ack.recall();
+        }
+        yield evt;
+      }
+    },
+  };
 }

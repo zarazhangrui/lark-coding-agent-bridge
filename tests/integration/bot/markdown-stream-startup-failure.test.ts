@@ -36,7 +36,8 @@ interface MessageHandlerMap {
 interface FakeLarkChannel {
   botIdentity: { openId: string; name: string };
   handlers: MessageHandlerMap;
-  sent: Array<{ chatId: string; content: unknown; options?: unknown }>;
+  sent: Array<{ chatId: string; content: unknown; options?: unknown; messageId?: string }>;
+  recallMessage: ReturnType<typeof vi.fn>;
   rawClient: {
     request: ReturnType<typeof vi.fn>;
     application: {
@@ -97,7 +98,7 @@ describe('markdown stream startup failures', () => {
         path: { message_id: 'om_first', reaction_id: 'reaction_1' },
       }),
     );
-    expect(lastMarkdown(h.channel)).toContain('agent 失败');
+    expect(lastMarkdown(h.channel)).toContain("agent 失败");
     expect(lastMarkdown(h.channel)).toContain('codex exited with code 1');
   });
 
@@ -114,7 +115,7 @@ describe('markdown stream startup failures', () => {
     await h.channel.handlers.message?.(message('om_second', 'second'));
     await waitFor(() => h.agent.runOptions.length === 2, 1000);
 
-    expect(lastMarkdown(h.channel)).toContain('agent 失败');
+    expect(lastMarkdown(h.channel)).toContain("agent 失败");
 
     reaction.resolve({ data: { reaction_id: 'reaction_1' } });
     await waitFor(() => h.channel.rawClient.im.v1.messageReaction.delete.mock.calls.length > 0);
@@ -262,15 +263,15 @@ describe('markdown stream startup failures', () => {
     expect(h.channel.sent).toHaveLength(0);
   });
 
-  it('waits for a slow-opening progress stream instead of replying alongside it', async () => {
-    // Opening a streaming card costs two API round trips. When the run finishes
-    // first, replying right away duplicates the answer verbatim — once as text,
-    // once as the card that lands a moment later.
+  it('does not open a progress stream for a text-only claude reply, sending it directly', async () => {
+    // Claude's adapter now emits `final_text` (like codex/mimo): a text-only
+    // round produces no process text, never opens a stream, and the answer
+    // goes out as a plain message — same shape as the codex final-only round.
     const visibleProgress: string[] = [];
     const h = await createHarness({
       agentKind: 'claude',
       events: [
-        { type: 'text', delta: 'ANSWER_ONCE' },
+        { type: 'final_text', content: 'ANSWER_ONCE' },
         { type: 'done', terminationReason: 'normal' },
       ],
       stream: async (_chatId, input) => {
@@ -288,10 +289,10 @@ describe('markdown stream startup failures', () => {
     await startTestBridge(h);
 
     await h.channel.handlers.message?.(message('om_slow_stream', 'run'));
-    await waitFor(() => visibleProgress.some((markdown) => markdown.includes('ANSWER_ONCE')));
-    await new Promise((resolve) => setTimeout(resolve, 80));
+    await waitFor(() => h.channel.sent.length === 1, 4000);
 
-    expect(h.channel.sent).toHaveLength(0);
+    expect(visibleProgress).toHaveLength(0);
+    expect(lastMarkdown(h.channel)).toContain('ANSWER_ONCE');
   });
 
   it('renders nothing in a progress stream it already gave up on', async () => {
@@ -427,6 +428,165 @@ describe('markdown stream startup failures', () => {
     expect(finalJson).not.toContain('progress update');
     expect(h.channel.sent[0]?.options).toMatchObject({ replyTo: 'om_card_final' });
   });
+
+  it('claude: streams tool progress and still delivers the final reply when the stream update fails', async () => {
+    // The regression this guards: a claude run with many tool calls streams
+    // progress text + tool lines into a markdown message, and the conclusion
+    // (final_text) is delivered as a standalone reply — independent of stream
+    // update health. If the SDK's updateCardElementContent silently fails
+    // (e.g. DNS errors), the conclusion must still arrive.
+    const visibleProgress: string[] = [];
+    const h = await createHarness({
+      agentKind: 'claude',
+      events: [
+        { type: 'text', delta: '开始处理' },
+        { type: 'tool_use', id: 't1', name: 'Bash', input: { command: 'git status' } },
+        { type: 'tool_result', id: 't1', output: 'ok', isError: false },
+        { type: 'tool_use', id: 't2', name: 'Read', input: { path: 'src/x.ts' } },
+        { type: 'tool_result', id: 't2', output: 'file', isError: false },
+        { type: 'final_text', content: '结论：这就是答案' },
+        { type: 'done', terminationReason: 'normal' },
+      ],
+      stream: async (_chatId, input) => {
+        const producer = (input as {
+          markdown?: (ctrl: { setContent(markdown: string): Promise<void> }) => Promise<void>;
+        }).markdown;
+        await producer?.({
+          setContent: vi.fn(async (markdown: string) => {
+            visibleProgress.push(markdown);
+          }),
+        });
+      },
+    });
+    await startTestBridge(h);
+
+    await h.channel.handlers.message?.(message('om_claude_tools', 'run'));
+    await waitFor(() => h.channel.sent.length === 1);
+
+    // Stream carries tool activity and progress text, but never the final
+    // answer.
+    expect(visibleProgress.some((markdown) => markdown.includes('Bash'))).toBe(true);
+    expect(visibleProgress.some((markdown) => markdown.includes('开始处理'))).toBe(true);
+    expect(visibleProgress.some((markdown) => markdown.includes('结论'))).toBe(false);
+    // The conclusion arrives as its own message.
+    expect(h.channel.sent).toHaveLength(1);
+    expect(lastMarkdown(h.channel)).toContain('结论：这就是答案');
+  });
+
+  it('mimo: delivers the final_text answer as a standalone reply even when the stream fails', async () => {
+    // mimo (like codex) holds its answer in `final_text`; before the fix its
+    // dedicated final reply was gated on `agentKind === 'codex'`, so a mimo
+    // stream failure froze the message on tool progress with no conclusion.
+    const fail = vi.spyOn(log, 'fail').mockImplementation(() => {});
+    const warn = vi.spyOn(log, 'warn').mockImplementation(() => {});
+    const h = await createHarness({
+      agentKind: 'mimo',
+      events: [
+        { type: 'tool_use', id: 'm1', name: 'Bash', input: { command: 'ls' } },
+        { type: 'tool_result', id: 'm1', output: 'ok', isError: false },
+        { type: 'text', delta: '过程文本' },
+        { type: 'final_text', content: 'MIMO_FINAL' },
+        { type: 'done', terminationReason: 'normal' },
+      ],
+      stream: async (_chatId, input) => {
+        const producer = (input as {
+          markdown?: (ctrl: { setContent(markdown: string): Promise<void> }) => Promise<void>;
+        }).markdown;
+        await producer?.({ setContent: vi.fn(async () => {}) });
+        throw new Error('mimo stream failed');
+      },
+    });
+    await startTestBridge(h);
+
+    await h.channel.handlers.message?.(message('om_mimo_final', 'run'));
+    await waitFor(() => h.channel.sent.length === 1);
+
+    expect(lastMarkdown(h.channel)).toContain('MIMO_FINAL');
+    // The stream error is surfaced (fail for codex, warn for claude/mimo),
+    // never silently swallowed — but the conclusion must still reach the user.
+    expect(
+      warn.mock.calls.some(
+        (call) => call[0] === 'stream' && call[1] === 'final-reply-after-stream-error',
+      ),
+    ).toBe(true);
+  });
+
+  it('mimo: skips the standalone reply when the stream already showed the final text', async () => {
+    // mimo accumulates every text block into final_text (textParts.join);
+    // the progress stream renders the same accumulated text. Sending it again
+    // as a standalone reply would duplicate it — dedup must skip the second
+    // copy while keeping the single streamed message.
+    const visibleProgress: string[] = [];
+    const h = await createHarness({
+      agentKind: 'mimo',
+      events: [
+        { type: 'text', delta: '过程文本' },
+        { type: 'text', delta: '最终答案' },
+        // Real mimo emits final_text = join of all text parts.
+        { type: 'final_text', content: '过程文本最终答案' },
+        { type: 'done', terminationReason: 'normal' },
+      ],
+      stream: async (_chatId, input) => {
+        const producer = (input as {
+          markdown?: (ctrl: { setContent(markdown: string): Promise<void> }) => Promise<void>;
+        }).markdown;
+        await producer?.({
+          setContent: vi.fn(async (markdown: string) => {
+            visibleProgress.push(markdown);
+          }),
+        });
+      },
+    });
+    await startTestBridge(h);
+
+    await h.channel.handlers.message?.(message('om_mimo_dedup', 'run'));
+    // The progress stream rendered the full accumulated text, so no standalone
+    // reply is posted (dedup).
+    await waitFor(() => visibleProgress.some((m) => m.includes('最终答案')));
+    await new Promise((resolve) => setTimeout(resolve, 80));
+
+    expect(visibleProgress.some((m) => m.includes('过程文本最终答案'))).toBe(true);
+    expect(h.channel.sent).toHaveLength(0);
+  });
+
+  it('mimo: dedupes even when tool calls split the text into separate stream blocks', async () => {
+    // Real mimo runs emit text before and after a tool call (e.g. image
+    // analysis): the stream renders two blocks joined with "\n\n", while
+    // final_text joins the raw parts without a separator. The dedup must
+    // compare whitespace-normalized text so the conclusion is not posted twice.
+    const visibleProgress: string[] = [];
+    const h = await createHarness({
+      agentKind: 'mimo',
+      events: [
+        { type: 'text', delta: '开始分析图片' },
+        { type: 'tool_use', id: 'v1', name: 'vision_analyze_local', input: {} },
+        { type: 'tool_result', id: 'v1', output: 'ok', isError: false },
+        { type: 'text', delta: '结论：图片显示完整' },
+        // mimo final_text = join('') of all text parts, no separator.
+        { type: 'final_text', content: '开始分析图片结论：图片显示完整' },
+        { type: 'done', terminationReason: 'normal' },
+      ],
+      stream: async (_chatId, input) => {
+        const producer = (input as {
+          markdown?: (ctrl: { setContent(markdown: string): Promise<void> }) => Promise<void>;
+        }).markdown;
+        await producer?.({
+          setContent: vi.fn(async (markdown: string) => {
+            visibleProgress.push(markdown);
+          }),
+        });
+      },
+    });
+    await startTestBridge(h);
+
+    await h.channel.handlers.message?.(message('om_mimo_tool_dedup', 'run'));
+    // Stream renders both blocks (joined with \n\n); final_text joins raw.
+    await waitFor(() => visibleProgress.some((m) => m.includes('结论：图片显示完整')));
+    await new Promise((resolve) => setTimeout(resolve, 80));
+
+    // Whitespace-normalized dedup means no standalone reply.
+    expect(h.channel.sent).toHaveLength(0);
+  });
 });
 
 async function createHarness(options: {
@@ -437,7 +597,7 @@ async function createHarness(options: {
   events?: FakeAgentEvents;
   messageReply?: 'card' | 'markdown' | 'text';
   /** Codex holds its answer back for a dedicated final reply; Claude streams it. */
-  agentKind?: 'claude' | 'codex';
+  agentKind?: 'claude' | 'codex' | 'mimo';
 } = {}): Promise<{
   tmp: TmpProfile;
   channel: FakeLarkChannel;
@@ -464,6 +624,7 @@ async function createHarness(options: {
     codex: {
       binaryPath: '/usr/local/bin/codex',
     },
+    ...(options.agentKind === 'mimo' ? { mimo: { binaryPath: '/usr/local/bin/mimo' } } : {}),
     ...(options.messageReply ? { preferences: { messageReply: options.messageReply } } : {}),
   });
   const profileConfig = {
@@ -531,6 +692,7 @@ function createFakeLarkChannel(harnessOptions: {
 } = {}): FakeLarkChannel {
   const handlers: MessageHandlerMap = {};
   const sent: FakeLarkChannel['sent'] = [];
+  let sentSeq = 0;
   const channel: FakeLarkChannel = {
     handlers,
     sent,
@@ -570,10 +732,18 @@ function createFakeLarkChannel(harnessOptions: {
       return { state: 'connected', reconnectAttempts: 0 };
     },
     async send(chatId, content, options) {
-      sent.push({ chatId, content, options });
+      const messageId = `sent_${++sentSeq}`;
+      sent.push({ chatId, content, options, messageId });
       if (harnessOptions.send) return harnessOptions.send(chatId, content, options);
-      return { messageId: `sent_${sent.length}` };
+      return { messageId };
     },
+    // Mimic the real SDK: recall removes the message, so assertions on sent
+    // see only surviving messages (ack placeholders get recalled on the first
+    // visible agent event or at run end).
+    recallMessage: vi.fn(async (messageId: string) => {
+      const idx = sent.findIndex((s) => s.messageId === messageId);
+      if (idx !== -1) sent.splice(idx, 1);
+    }),
     stream: harnessOptions.stream ?? (async () => {
       await new Promise<void>(() => {});
     }),
@@ -637,7 +807,11 @@ function message(messageId: string, content: string): NormalizedMessage {
 }
 
 function lastMarkdown(channel: FakeLarkChannel): string {
-  const content = channel.sent.at(-1)?.content as { markdown?: string } | undefined;
+  // Skip the ack placeholder ("正在思考…") — tests assert on real replies.
+  const content = [...channel.sent]
+    .reverse()
+    .map((s) => s.content as { markdown?: string } | undefined)
+    .find((c) => c?.markdown && !c.markdown.includes('正在思考… 请稍候'));
   expect(content?.markdown).toBeTypeOf('string');
   return content?.markdown ?? '';
 }

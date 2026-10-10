@@ -32,7 +32,7 @@ interface MessageHandlerMap {
 }
 
 interface FakeLarkChannel {
-  sent: Array<{ chatId: string; content: unknown; options: unknown }>;
+  sent: Array<{ chatId: string; content: unknown; options: unknown; messageId?: string }>;
   streams: Array<{ chatId: string; options: unknown }>;
   botIdentity: { openId: string; name: string };
   rawClient: {
@@ -102,7 +102,7 @@ describe('topic message quote handling', () => {
     const h = await createHarness({
       chatMode: 'group',
       agentEvents: [
-        { type: 'text', delta: '好的' },
+        { type: 'final_text', content: '好的' },
         { type: 'done', terminationReason: 'normal' },
       ],
     });
@@ -124,8 +124,10 @@ describe('topic message quote handling', () => {
     expect(prompt).toContain('"threadId":"omt_converted_topic"');
     expect(prompt).not.toContain('<quoted_messages>');
     expect(h.channel.fetchRawMessage).not.toHaveBeenCalled();
-    await waitFor(() => h.channel.streams.length === 1);
-    expect(h.channel.streams[0]?.options).toMatchObject({
+    // Claude's markdown stream renders tool progress only; a text-only reply
+    // goes out directly, so the thread options land on the sent message.
+    await waitFor(() => h.channel.sent.length === 1);
+    expect(h.channel.sent[0]?.options).toMatchObject({
       replyTo: 'om_converted_topic',
       replyInThread: true,
     });
@@ -140,7 +142,7 @@ describe('topic message quote handling', () => {
       chatMode: 'topic',
       rawThreadIds: { om_topic_start: 'omt_backfilled' },
       agentEvents: [
-        { type: 'text', delta: '好的' },
+        { type: 'final_text', content: '好的' },
         { type: 'done', terminationReason: 'normal' },
       ],
     });
@@ -162,8 +164,8 @@ describe('topic message quote handling', () => {
     const prompt = h.agent.runOptions[0]?.prompt ?? '';
     expect(prompt).toContain('"threadId":"omt_backfilled"');
 
-    await waitFor(() => h.channel.streams.length === 1);
-    expect(h.channel.streams[0]?.options).toMatchObject({
+    await waitFor(() => h.channel.sent.length === 1);
+    expect(h.channel.sent[0]?.options).toMatchObject({
       replyTo: 'om_topic_start',
       replyInThread: true,
     });
@@ -175,7 +177,7 @@ describe('topic message quote handling', () => {
     const h = await createHarness({
       chatMode: 'topic',
       agentEvents: [
-        { type: 'text', delta: '好的' },
+        { type: 'final_text', content: '好的' },
         { type: 'done', terminationReason: 'normal' },
       ],
     });
@@ -193,8 +195,8 @@ describe('topic message quote handling', () => {
     await waitFor(() => h.agent.runOptions.length === 1);
 
     expect(h.channel.fetchRawMessage).toHaveBeenCalledWith('om_no_thread');
-    await waitFor(() => h.channel.streams.length === 1);
-    expect(h.channel.streams[0]?.options).not.toMatchObject({ replyInThread: true });
+    await waitFor(() => h.channel.sent.length === 1);
+    expect(h.channel.sent[0]?.options).not.toMatchObject({ replyInThread: true });
   });
 
   it('pulls in the topic upstream messages when first engaged in a topic', async () => {
@@ -291,10 +293,10 @@ describe('topic message quote handling', () => {
     expect(prompt).not.toContain('<topic_context>');
   });
 
-  it('does not open a progress stream when the agent produces no content', async () => {
-    // The SDK starts a stream eagerly and finishes an empty one with its
-    // "(no content)" placeholder, so a content-less run used to post a card and
-    // recall it seconds later. Nothing durable to show → no message at all.
+  it('recalls the ack placeholder when the agent produces no content', async () => {
+    // The ack placeholder ("正在思考…") is posted for instant feedback and
+    // recalled at run end when no visible event fires. Nothing durable to
+    // show → no message remains.
     const h = await createHarness({
       chatMode: 'group',
       agentEvents: [{ type: 'done', terminationReason: 'normal' }],
@@ -306,19 +308,19 @@ describe('topic message quote handling', () => {
       message({ messageId: 'om_empty', rootId: 'om_empty', parentId: 'om_empty', content: '@Bridge ping' }),
     );
     await waitFor(() => h.agent.runOptions.length === 1);
-    // give the (absent) stream and its recall a chance to fire before asserting
     await new Promise((resolve) => setTimeout(resolve, 80));
 
     expect(h.channel.streams).toHaveLength(0);
+    // Ack placeholder was posted then recalled: no surviving message.
     expect(h.channel.sent).toHaveLength(0);
-    expect(h.channel.recallMessage).not.toHaveBeenCalled();
+    expect(h.channel.recallMessage).toHaveBeenCalled();
   });
 
-  it('does not recall when the agent produced real content', async () => {
+  it('recalls the ack placeholder once real content arrives', async () => {
     const h = await createHarness({
       chatMode: 'group',
       agentEvents: [
-        { type: 'text', delta: '这是真正的回答' },
+        { type: 'final_text', content: '这是真正的回答' },
         { type: 'done', terminationReason: 'normal' },
       ],
     });
@@ -328,11 +330,15 @@ describe('topic message quote handling', () => {
     await h.channel.handlers.message?.(
       message({ messageId: 'om_real', rootId: 'om_real', parentId: 'om_real', content: '@Bridge 问题' }),
     );
-    await waitFor(() => h.channel.streams.length === 1);
-    // give any (erroneous) recall a chance to fire before asserting it didn't
+    // The ack placeholder is recalled on the first visible event (final_text);
+    // the real answer is delivered.
+    await waitFor(() => h.channel.sent.length === 1);
     await new Promise((resolve) => setTimeout(resolve, 60));
 
-    expect(h.channel.recallMessage).not.toHaveBeenCalled();
+    expect(h.channel.recallMessage).toHaveBeenCalled();
+    expect(
+      h.channel.sent.some((s) => JSON.stringify(s.content).includes('这是真正的回答')),
+    ).toBe(true);
   });
 
   it('skips a group message that does not mention the bot (requireMention default)', async () => {
@@ -549,7 +555,8 @@ function createFakeLarkChannel(options: {
   threadMessages?: Array<Record<string, unknown>>;
 } = {}):FakeLarkChannel & { handlers: MessageHandlerMap } {
   const handlers: MessageHandlerMap = {};
-  const sent: Array<{ chatId: string; content: unknown; options: unknown }> = [];
+  const sent: Array<{ chatId: string; content: unknown; options: unknown; messageId?: string }> = [];
+  let sentSeq = 0;
   const streams: Array<{ chatId: string; options: unknown }> = [];
   const chatMode = options.chatMode ?? 'topic';
   const quotedMessages = options.quotedMessages ?? {
@@ -604,9 +611,16 @@ function createFakeLarkChannel(options: {
       return { state: 'connected', reconnectAttempts: 0 };
     },
     async send(chatId, content, options) {
-      sent.push({ chatId, content, options });
-      return { messageId: `om_sent_${sent.length}` };
+      const messageId = `om_sent_${++sentSeq}`;
+      sent.push({ chatId, content, options, messageId });
+      return { messageId };
     },
+    // Mimic the real SDK: recall removes the message so assertions on sent see
+    // only surviving messages (ack placeholders get recalled on first event).
+    recallMessage: vi.fn(async (messageId: string) => {
+      const idx = sent.findIndex((s) => s.messageId === messageId);
+      if (idx !== -1) sent.splice(idx, 1);
+    }),
     async stream(chatId, input, options) {
       streams.push({ chatId, options });
       if (isMarkdownStreamInput(input)) {
@@ -614,7 +628,6 @@ function createFakeLarkChannel(options: {
       }
       return { messageId: `om_stream_${streams.length}` };
     },
-    recallMessage: vi.fn(async () => {}),
   };
 }
 

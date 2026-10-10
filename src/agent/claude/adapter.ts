@@ -16,7 +16,7 @@ import {
   type AgentRun,
   type AgentRunOptions,
 } from '../types';
-import { translateEvent } from './stream-json';
+import { createTranslateEvent } from './stream-json';
 
 export interface ClaudeAdapterOptions {
   binary?: string;
@@ -75,6 +75,9 @@ export class ClaudeAdapter implements AgentAdapter {
       '--output-format',
       'stream-json',
       '--verbose',
+      // Real-time token deltas (stream_event/content_block_delta) so the reply
+      // can type out live instead of arriving as one big block at the end.
+      '--include-partial-messages',
       '--permission-mode',
       opts.permissionMode ?? CLAUDE_DEFAULT_PERMISSION_MODE,
       '--append-system-prompt-file',
@@ -212,6 +215,9 @@ async function* createEventStream(
     }, 50);
   };
   child.once('exit', closeSilentStdout);
+  // One stateful translator per run so text buffering for `final_text`
+  // spans the whole event stream.
+  const translate = createTranslateEvent();
   try {
     for await (const line of rl) {
       sawStdout = true;
@@ -223,13 +229,17 @@ async function* createEventStream(
       } catch {
         continue;
       }
-      yield* translateEvent(parsed);
+      for (const event of translate.translate(parsed)) yield event;
     }
   } finally {
     if (silentExitTimer) clearTimeout(silentExitTimer);
     child.removeListener('exit', closeSilentStdout);
     rl.close();
   }
+
+  // If the process ended without a `result` event, buffered text is
+  // commentary (the answer never came) — surface it as progress.
+  for (const event of translate.flushAsText()) yield event;
 
   const earlyRuntimeError = getError();
   if (earlyRuntimeError && child.exitCode === null && child.signalCode === null) {

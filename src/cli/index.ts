@@ -41,7 +41,7 @@ program
   .option('-c, --config <path>', 'path to config file')
   .option('--profile <name>', 'profile name to run')
   .option('--web-ui', 'run the machine-wide supervisor + local web console (hosts all profiles); default is a single-profile headless run')
-  .option('--agent <kind>', 'agent kind for a new profile (claude or codex)')
+  .option('--agent <kind>', 'agent kind for a new profile (claude, codex, or mimo)')
   .option('--workspace <path>', 'initial working directory for first-run profile bootstrap')
   .option('--app-id <id>', 'use an existing Lark/Feishu app instead of QR app creation')
   .option('--app-secret <secret>', 'App Secret for --app-id; prefer interactive input on shared machines')
@@ -66,7 +66,7 @@ program
   .description('Migrate legacy bridge config/state into the current profile layout')
   .option('-c, --config <path>', 'path to config file')
   .option('--profile <name>', 'target profile name for legacy v1 config migration')
-  .option('--agent <kind>', 'agent kind for legacy v1 profile migration (claude or codex)')
+  .option('--agent <kind>', 'agent kind for legacy v1 profile migration (claude, codex, or mimo)')
   .action(async (opts: { config?: string; profile?: string; agent?: string }) => {
     await runMigrate(opts);
   });
@@ -85,7 +85,7 @@ profile
 profile
   .command('create <name>')
   .description('Create a profile from QR registration or existing app credentials')
-  .option('--agent <kind>', 'agent kind (claude or codex)')
+  .option('--agent <kind>', 'agent kind (claude, codex, or mimo)')
   .option('--workspace <path>', 'initial working directory for this profile')
   .option('--app-id <id>', 'use an existing Lark/Feishu app instead of QR app creation')
   .option('--app-secret <secret>', 'App Secret for --app-id; prefer interactive input on shared machines')
@@ -167,7 +167,7 @@ program
   .description('Install (if needed) and start the bridge as an OS-managed daemon')
   .option('--profile <name>', 'profile name (defaults to active profile)')
   .option('--web-ui', 'run the supervisor + web console as the background service (hosts all profiles) instead of a single profile')
-  .option('--agent <kind>', 'agent kind for first-run profile bootstrap (claude or codex)')
+  .option('--agent <kind>', 'agent kind for first-run profile bootstrap (claude, codex, or mimo)')
   .option('--workspace <path>', 'initial working directory for first-run profile bootstrap')
   .option('--app-id <id>', 'use an existing Lark/Feishu app instead of QR app creation')
   .option('--app-secret <secret>', 'App Secret for --app-id; prefer interactive input on shared machines')
