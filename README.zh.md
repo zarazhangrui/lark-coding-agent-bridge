@@ -299,6 +299,35 @@ grep '"event":"enter"' ~/.lark-channel/profiles/<profile>/logs/bridge-$(date +%Y
 
 每行都带 `chatId`（群 / 私聊 ID）和 `senderId`（用户 `open_id`）。手改完后**重启 bridge**，或在允许的 admin 上下文里发 `/reconnect` 让它生效。日常调整还是 `/invite` / `/config` 更省事，直接改文件主要用于部署脚本预填。
 
+### 实验性：主动跟进观察器
+
+观察器让 bot 在指定内部群里读取非 `@` 文本，用 Jev 做结构化意图判断，并在消息包含明确期限时记录跟进事项。到期后只向原群发送一次提醒；完成、取消或延期会持久化，重启不会重复提醒。它不会把非 `@` 消息交给 Claude、Codex 或 Hermes，也不会操作日历、任务或多维表格。
+
+先在飞书开放平台为应用开通 `im:message.group_msg`，订阅 `im.message.receive_v1`，把 bot 加入目标群，并在服务环境中设置 `TYPESAFE_API_KEY`。然后在对应 profile 添加下面的字段；`allowedChats` 是独立的硬白名单，不能省略。紧急情况下可设置进程级开关 `LARK_PROACTIVE_OBSERVER_DISABLED=1`，它会覆盖所有 profile，重启后生效：
+
+```json
+{
+  "proactiveObserver": {
+    "enabled": true,
+    "mode": "shadow",
+    "timeZone": "Asia/Shanghai",
+    "allowedChats": ["oc_xxxxxxxxxxxxx"],
+    "actionThreshold": 0.85,
+    "lowRiskActionThreshold": 0.6,
+    "shadowThreshold": 0.6,
+    "contextMessages": 20,
+    "contextWindowHours": 24,
+    "pollIntervalMs": 15000
+  }
+}
+```
+
+建议先用 `shadow` 只记录判断，标注真实群消息并核对精确率后再切到 `active`。状态保存在 profile 目录的 `proactive-observer.json`，文件权限为 `0600`。原有 `access.allowedChats` 仍然必须包含目标群，群内 `@ bot` 的既有路径不受观察器影响。
+
+置信度按风险分层，而不是所有动作共用一个阈值。`create`、能确定新期限和唯一目标的所有者 `postpone`，以及同一话题只有一个待办时由所有者发出的 `complete`，都可使用较低的 `lowRiskActionThreshold`；文本 `cancel` 仍受高风险 `actionThreshold` 约束；用户明确点击卡片按钮时不依赖模型分数，但仍只允许事项所有者操作。事项创建后会立即在原消息/原话题发送“已记录”卡片，完成、取消和延期成功后也会在原话题确认结果；识别到意图但因歧义或安全门禁未执行时，会说明原因而不是静默。
+
+提醒发送采用“至多一次”策略。飞书消息发送接口不提供幂等键，因此观察器会先把本次发送占位持久化，再调用发送接口。即使飞书已经收到了消息、进程却丢失响应，重启后也不会重复提醒。代价是：如果进程恰好在“占位成功、尚未发送”的极短窗口崩溃，本次提醒会被抑制；把事项延期一次即可重新触发提醒。
+
 ## 云文档评论
 
 云文档评论不再需要单独绑定工作目录或维护文档白名单。支持的文档评论里 @bot 后，bridge 会在同一个评论线程里回复。评论运行复用文档级 session key；没有记录过文档 cwd 时回退到用户 home 目录。

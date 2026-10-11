@@ -299,6 +299,35 @@ grep '"event":"enter"' ~/.lark-channel/profiles/<profile>/logs/bridge-$(date +%Y
 
 Each line carries `chatId` (group / DM id) and `senderId` (user `open_id`). After a manual edit, **restart the bridge** or send `/reconnect` from an allowed admin context to apply it. For day-to-day tweaks `/invite` / `/config` are easier; direct edits are mainly for deployment scripts that pre-seed access.
 
+### Experimental: proactive follow-up observer
+
+The observer reads non-mention plain-text and text-only rich-post messages in explicitly allowlisted internal chats, uses Jev for structured intent classification, and records follow-ups only when the message contains an explicit due date. A due follow-up is reminded once in its source chat; completion, cancellation, and postponement survive restarts. Non-mention messages never enter Claude, Codex, or Hermes, and the observer does not mutate calendars, tasks, or Base records.
+
+Enable the Feishu/Lark `im:message.group_msg` scope and `im.message.receive_v1` event, add the bot to the target chat, and set `TYPESAFE_API_KEY` in the service environment. Then add this field to the matching profile. `allowedChats` is an independent hard boundary and is required. Set `LARK_PROACTIVE_OBSERVER_DISABLED=1` as the process-wide emergency kill switch; it overrides every profile and takes effect after restart:
+
+```json
+{
+  "proactiveObserver": {
+    "enabled": true,
+    "mode": "shadow",
+    "timeZone": "Asia/Shanghai",
+    "allowedChats": ["oc_xxxxxxxxxxxxx"],
+    "actionThreshold": 0.85,
+    "lowRiskActionThreshold": 0.6,
+    "shadowThreshold": 0.6,
+    "contextMessages": 20,
+    "contextWindowHours": 24,
+    "pollIntervalMs": 15000
+  }
+}
+```
+
+Start in `shadow` mode and label real chat traffic before switching to `active`. State is stored as `proactive-observer.json` in the profile directory with mode `0600`. The target chat must also remain in the existing `access.allowedChats`; the existing mentioned-message path is unchanged.
+
+Confidence is risk-tiered rather than governed by one global cutoff. `create`, deterministic owner-authored `postpone`, and owner-authored `complete` for the only pending item in a thread may use `lowRiskActionThreshold`. When Jev selects `create` but underrates a message, a reversible follow-up may still be created only if code can independently verify both a parseable due time and explicit first-person/reminder intent; an explicit time by itself is insufficient. The same deterministic override applies to an owner postponing the only pending item only when the message contains an explicit adjustment phrase (for example, “改到” or “延期”) and a parseable new time, so repeating a commitment cannot silently move its deadline. Text `cancel` remains behind `actionThreshold`; explicit card clicks do not rely on model confidence but remain owner-only. A created follow-up immediately replies with a recorded card, and successful complete/cancel/postpone actions reply with their result in the source thread. Recognized but unsafe or ambiguous actions receive a short explanation instead of failing silently.
+
+Reminder delivery is deliberately **at most once**. Feishu/Lark message creation does not provide an idempotency key, so the observer persists a delivery claim before sending. If the process loses the response after Feishu accepted the message, a restart will not send a duplicate. The trade-off is that a crash in the narrow claim-before-send window can suppress that reminder; postpone the follow-up to arm a new delivery attempt.
+
 ## Cloud-doc comments
 
 Cloud-doc comments do not need a separate workspace binding or document allowlist. In supported document comments, mention the bot and the bridge replies in the same thread. Comment runs reuse the document session key and fall back to the user home directory when no document cwd was previously recorded.

@@ -7,6 +7,11 @@ import { SessionStore } from '../../../src/session/store.js';
 import { WorkspaceStore } from '../../../src/workspace/store.js';
 import { FakeAgentAdapter } from '../../helpers/fake-agent.js';
 import { createTmpProfile, type TmpProfile } from '../../helpers/tmp-profile.js';
+import type {
+  DecisionInput,
+  DecisionProvider,
+  DecisionResult,
+} from '../../../src/proactive/types.js';
 
 const sdkMock = vi.hoisted(() => ({
   channel: undefined as FakeLarkChannel | undefined,
@@ -77,6 +82,44 @@ describe('bot identity injection into the agent adapter', () => {
     await startTestBridge(h);
 
     expect(h.agent.botIdentity).toEqual({ openId: 'ou_bot', name: 'Bridge' });
+  });
+});
+
+describe('proactive observer intake boundary', () => {
+  it('routes allowlisted non-mentions only to the judge while mentions keep the agent path', async () => {
+    const h = await createHarness({ proactive: true });
+    const provider = new RecordingDecisionProvider();
+    const consoleLog = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    await startTestBridge(h, provider);
+
+    try {
+      await h.channel.handlers.message?.(
+        message({
+          messageId: 'om_non_mention',
+          content: '明天把实习复盘发群里',
+          mentionedBot: false,
+          threadId: 'omt_validation_topic',
+        }),
+      );
+      await waitFor(() => provider.calls.length === 1);
+      expect(provider.calls[0]?.message.threadId).toBe('omt_validation_topic');
+      expect(h.agent.runOptions).toHaveLength(0);
+      const proactiveLogs = consoleLog.mock.calls.flat().map(String).join('\n');
+      expect(proactiveLogs).toContain('[proactive-message-redacted]');
+      expect(proactiveLogs).not.toContain('明天把实习复盘发群里');
+
+      await h.channel.handlers.message?.(
+        message({
+          messageId: 'om_mention',
+          content: '@Bridge 帮我检查复盘',
+          mentionedBot: true,
+        }),
+      );
+      await waitFor(() => h.agent.runOptions.length === 1);
+      expect(provider.calls).toHaveLength(1);
+    } finally {
+      consoleLog.mockRestore();
+    }
   });
 });
 
@@ -226,7 +269,7 @@ describe('sender identity in bridge_context', () => {
   });
 });
 
-async function createHarness(): Promise<{
+async function createHarness(options: { proactive?: boolean } = {}): Promise<{
   tmp: TmpProfile;
   channel: FakeLarkChannel & { handlers: MessageHandlerMap };
   agent: FakeAgentAdapter;
@@ -258,6 +301,20 @@ async function createHarness(): Promise<{
       default: workspace,
     },
   };
+  if (options.proactive) {
+    profileConfig.proactiveObserver = {
+      enabled: true,
+      mode: 'shadow',
+      timeZone: 'Asia/Shanghai',
+      allowedChats: ['oc_chat'],
+      actionThreshold: 0.85,
+      lowRiskActionThreshold: 0.6,
+      shadowThreshold: 0.6,
+      contextMessages: 20,
+      contextWindowHours: 24,
+      pollIntervalMs: 60_000,
+    };
+  }
   const sessions = new SessionStore(join(tmp.profile, 'sessions.json'));
   const workspaces = new WorkspaceStore(join(tmp.profile, 'workspaces.json'));
   const agent = new FakeAgentAdapter({
@@ -282,18 +339,26 @@ async function createHarness(): Promise<{
 }
 
 async function startTestBridge(h: {
+  tmp: TmpProfile;
   profileConfig: ReturnType<typeof createDefaultProfileConfig>;
   agent: FakeAgentAdapter;
   sessions: SessionStore;
   workspaces: WorkspaceStore;
   controls: ReturnType<typeof createControls>;
-}): Promise<void> {
+}, proactiveDecisionProvider?: DecisionProvider): Promise<void> {
   const bridge = await startChannel({
     cfg: h.profileConfig,
     agent: h.agent,
     sessions: h.sessions,
     workspaces: h.workspaces,
     controls: h.controls,
+    appPaths: {
+      secretsFile: join(h.tmp.profile, 'secrets.enc'),
+      keystoreSaltFile: join(h.tmp.profile, '.keystore.salt'),
+      mediaDir: join(h.tmp.profile, 'media'),
+      proactiveObserverFile: join(h.tmp.profile, 'proactive-observer.json'),
+    },
+    ...(proactiveDecisionProvider ? { proactiveDecisionProvider } : {}),
   });
   cleanups.push(() => bridge.disconnect());
 }
@@ -367,6 +432,8 @@ function message(input: {
   senderName?: string;
   rawSenderType?: string;
   mentions?: Array<{ key: string; openId?: string; name?: string; isBot?: boolean }>;
+  mentionedBot?: boolean;
+  threadId?: string;
 }): NormalizedMessage {
   return {
     messageId: input.messageId,
@@ -377,12 +444,15 @@ function message(input: {
     content: input.content,
     rawContentType: 'text',
     resources: [],
-    mentions: input.mentions ?? [
-      { key: '@_user_1', openId: 'ou_bot', name: 'Bridge', isBot: true },
-    ],
+    mentions:
+      input.mentions ??
+      (input.mentionedBot === false
+        ? []
+        : [{ key: '@_user_1', openId: 'ou_bot', name: 'Bridge', isBot: true }]),
     mentionAll: false,
-    mentionedBot: true,
+    mentionedBot: input.mentionedBot ?? true,
     createTime: 1760000001000,
+    ...(input.threadId ? { threadId: input.threadId } : {}),
     ...(input.rawSenderType
       ? {
           raw: {
@@ -414,6 +484,15 @@ async function waitFor(predicate: () => boolean, timeoutMs = 3000): Promise<void
 
 interface MarkdownStreamInput {
   markdown(ctrl: { setContent(markdown: string): Promise<void> }): Promise<void> | void;
+}
+
+class RecordingDecisionProvider implements DecisionProvider {
+  readonly calls: DecisionInput[] = [];
+
+  async decide(input: DecisionInput): Promise<DecisionResult> {
+    this.calls.push(input);
+    return { action: 'create', confidence: 0.9, model: 'fake-jev' };
+  }
 }
 
 function isMarkdownStreamInput(input: unknown): input is MarkdownStreamInput {

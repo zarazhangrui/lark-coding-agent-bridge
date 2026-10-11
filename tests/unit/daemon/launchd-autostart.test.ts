@@ -9,6 +9,18 @@ vi.mock('node:child_process', async (importOriginal) => ({
   spawnSync: mocks.spawnSync,
 }));
 
+// This suite deliberately forces the launchd adapter on every CI platform.
+// Windows reports uid=-1 from os.userInfo(), which is not a valid launchd
+// target and made the macOS simulation depend on the host runner. Keep the
+// simulated macOS identity deterministic instead.
+vi.mock('node:os', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:os')>();
+  return {
+    ...actual,
+    userInfo: () => ({ ...actual.userInfo(), uid: 501 }),
+  };
+});
+
 const { getServiceAdapter } = await import('../../../src/daemon/service-adapter');
 const { launchAgentLabel } = await import('../../../src/daemon/paths');
 
