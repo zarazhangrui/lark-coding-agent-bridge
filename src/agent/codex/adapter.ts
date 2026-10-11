@@ -101,8 +101,9 @@ export class CodexAdapter implements AgentAdapter {
       ignoreUserConfig: this.ignoreUserConfig,
       ignoreRules: this.ignoreRules,
       model: opts.model,
+      restrictedTask: opts.restrictedTask,
     });
-    const envOverrides: NodeJS.ProcessEnv = buildLarkChannelEnv(this.larkChannel);
+    const envOverrides: NodeJS.ProcessEnv = opts.restrictedTask ? {} : buildLarkChannelEnv(this.larkChannel);
     if (this.codexHome) {
       envOverrides.CODEX_HOME = this.codexHome;
     } else if (!this.inheritCodexHome) {
@@ -110,7 +111,7 @@ export class CodexAdapter implements AgentAdapter {
     }
     const child = spawnProcess(this.binary, args, {
       cwd: opts.cwd,
-      env: mergeProcessEnv(process.env, envOverrides),
+      env: mergeProcessEnv(opts.restrictedTask ? restrictedEnvironment() : process.env, envOverrides),
       stdio: ['pipe', 'pipe', 'pipe'],
     }) as CodexChild;
 
@@ -153,7 +154,7 @@ export class CodexAdapter implements AgentAdapter {
     child.stdin.on('error', (err) => {
       log.warn('agent', 'stdin-error', { message: err.message });
     });
-    child.stdin.end(prefixBridgeSystemPrompt(opts.prompt, this.botIdentity), 'utf8');
+    child.stdin.end(opts.restrictedTask ? opts.prompt : prefixBridgeSystemPrompt(opts.prompt, this.botIdentity), 'utf8');
 
     const stopGraceMs = opts.stopGraceMs ?? this.defaultStopGraceMs;
 
@@ -201,6 +202,13 @@ export class CodexAdapter implements AgentAdapter {
       },
     };
   }
+}
+
+function restrictedEnvironment(): NodeJS.ProcessEnv {
+  // Keep runtime, transport and Codex authentication; never hand the worker
+  // Feishu credentials or inherited app/connector configuration.
+  return Object.fromEntries(Object.entries(process.env).filter(([key]) =>
+    /^(PATH|HOME|USER|LOGNAME|TMPDIR|TMP|TEMP|LANG|LC_ALL|SYSTEMROOT|WINDIR|COMSPEC|PATHEXT|CODEX_HOME|OPENAI_API_KEY|OPENAI_BASE_URL|HTTPS_PROXY|HTTP_PROXY|ALL_PROXY|NO_PROXY|NODE_EXTRA_CA_CERTS)$/i.test(key)));
 }
 
 async function* createEventStream(

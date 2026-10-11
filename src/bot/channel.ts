@@ -16,6 +16,7 @@ import {
 } from '../agent/prompt';
 import type { AgentAdapter, AgentEvent } from '../agent/types';
 import { handleCardAction } from '../card/dispatcher';
+import { respondToCardAction } from '../card/feedback';
 import { CallbackAuth } from '../card/callback-auth';
 import { CallbackNonceStore } from '../card/callback-store';
 import { renderCard } from '../card/run-renderer';
@@ -68,6 +69,14 @@ import { lookupMessageThreadId } from './thread-id';
 import { addWorkingReaction, removeReaction } from './reaction';
 import { fetchKnownChats } from './lark-info';
 import type { AppPaths } from '../config/app-paths';
+import { ProactiveController } from '../proactive/controller';
+import { JevDecisionProvider } from '../proactive/decision';
+import { createLarkProactiveHistorySource } from '../proactive/history';
+import { isProactiveObserverGloballyDisabled } from '../proactive/kill-switch';
+import { ProactiveStore } from '../proactive/store';
+import { TaskDocuments, type DocumentClient } from '../proactive/task-documents';
+import { createTaskRuntime } from '../proactive/task-runtime';
+import type { DecisionProvider } from '../proactive/types';
 import {
   consumeCotEvents,
   CotClient,
@@ -178,7 +187,12 @@ export interface StartChannelDeps {
   sessionCatalog?: SessionCatalog;
   workspaces: WorkspaceStore;
   controls: Controls;
-  appPaths?: Pick<AppPaths, 'secretsFile' | 'keystoreSaltFile' | 'mediaDir'>;
+  appPaths?: Pick<
+    AppPaths,
+    'secretsFile' | 'keystoreSaltFile' | 'mediaDir' | 'proactiveObserverFile'
+  >;
+  /** Test/deployment injection point; production defaults to the Jev SDK provider. */
+  proactiveDecisionProvider?: DecisionProvider;
 }
 
 export async function startChannel(deps: StartChannelDeps): Promise<BridgeChannel> {
@@ -262,6 +276,10 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
     // 8s handshake timeout (replaces hardcoded 15s). Fast-fail + fast-retry
     // beats slow-fail in unstable networks.
     handshakeTimeoutMs: 8_000,
+    // Total connect budget. @larksuite/channel 0.7.x closes the pending
+    // client when this expires, preventing a poisoned handshake from leaking
+    // into the next attempt.
+    connectTimeoutMs: 15_000,
     // Per-request REST timeout — without a cap a slow API can hang the
     // event-handling thread.
     httpTimeoutMs: 30_000,
@@ -271,6 +289,53 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
 
   const channel = createLarkChannel(opts);
   const media = new MediaCache(channel, deps.appPaths?.mediaDir);
+  let proactiveObserver: ProactiveController | undefined;
+  if (
+    controls.profileConfig.proactiveObserver.enabled &&
+    !isProactiveObserverGloballyDisabled()
+  ) {
+    if (!deps.appPaths?.proactiveObserverFile) {
+      log.warn('proactive', 'disabled-missing-state-path');
+    } else {
+      try {
+        proactiveObserver = new ProactiveController({
+          config: controls.profileConfig.proactiveObserver,
+          channel,
+          store: new ProactiveStore(deps.appPaths.proactiveObserverFile),
+          decisionProvider: deps.proactiveDecisionProvider ?? new JevDecisionProvider(),
+          historySource: createLarkProactiveHistorySource(channel),
+          resolveTaskThread: (messageId) => lookupMessageThreadId(channel, messageId),
+          taskRuntime: controls.profileConfig.agentKind === 'codex' ? createTaskRuntime({
+            executor,
+            profile: () => controls.profileConfig,
+            profileName: controls.profile,
+            stateDir: dirname(deps.appPaths.proactiveObserverFile),
+            documents: new TaskDocuments(channel.rawClient as DocumentClient, cfg.accounts.app.tenant),
+            access: (task) => canUseGroup(controls.profileConfig, controls, task.chatId, task.ownerId),
+          }) : undefined,
+          // Reconciliation proves the push stream missed at least one event.
+          // Restart after the recovery cycle has persisted the message; the
+          // durable history path prevents the restart itself from losing it.
+          onGapDetected: (recovered) => {
+            if (activeRuns.snapshot().length > 0 || proactiveObserver?.tasks?.hasActiveWork()) {
+              log.info('proactive', 'ws-restart-deferred-active-run', { recovered });
+              return;
+            }
+            log.warn('proactive', 'ws-gap-detected', { recovered });
+            setTimeout(() => {
+              if (activeRuns.snapshot().length > 0 || proactiveObserver?.tasks?.hasActiveWork()) return;
+              void controls.restart().catch((err) =>
+                log.fail('proactive', err, { step: 'restart-after-history-gap' }),
+              );
+            }, 0).unref?.();
+          },
+        });
+        await proactiveObserver.load();
+      } catch (err) {
+        log.warn('proactive', 'disabled-initialization-failed', { err: String(err) });
+      }
+    }
+  }
 
   // Pending → run handoff: while a run is active on a chat, block its pending
   // queue so messages keep accumulating without flushing. When the run ends,
@@ -349,6 +414,7 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
           logThreadModeOverride,
           executor,
           pool,
+          proactiveObserver,
         }),
       ).catch((err) => log.fail('intake', err));
     },
@@ -356,8 +422,9 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
       log.info('intake', 'reject', { chatId: evt.chatId, reason: evt.reason });
     },
     cardAction: async (evt) => {
-      await withTrace({ chatId: evt.chatId, msgId: evt.messageId }, async () => {
-        await handleCardAction({
+      return respondToCardAction(() => withTrace({ chatId: evt.chatId, msgId: evt.messageId }, async () => {
+        log.info('cardAction', 'received', { tag: evt.action.tag, operator: evt.operator.openId.slice(-6) });
+        return handleCardAction({
           channel,
           evt,
           sessions,
@@ -372,8 +439,9 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
           chatModeCache,
           callbackAuth,
           callbackPolicyFingerprintForScope: (scope) => activePolicyFingerprints.get(scope),
+          proactiveObserver,
         });
-      }).catch((err) => log.fail('cardAction', err));
+      }), (err) => log.fail('cardAction', err, { chatId: evt.chatId, msgId: evt.messageId }));
     },
     comment: async (evt) => {
       await withTrace({ chatId: 'comment' }, async () => {
@@ -473,6 +541,7 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
   });
   await ownerRefresh.start();
   const knownChatsRefresh = startKnownChatsRefreshTimer(channel, controls);
+  proactiveObserver?.start();
 
   const identity = channel.botIdentity;
   // Late-bind the bot's own IM identity into the agent adapter so the system
@@ -513,6 +582,7 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
       ownerRefresh.stop();
       knownChatsRefresh.stop();
       keepalive.stop();
+      await proactiveObserver?.stop();
       // Stop meeting timers but stay in the meetings: /reconnect tears the
       // channel down and rebuilds it, and auto-leaving every meeting on a
       // reconnect would be surprising.
@@ -625,6 +695,7 @@ interface IntakeDeps {
   logThreadModeOverride: LogThreadModeOverride;
   executor: RunExecutor;
   pool: ProcessPool;
+  proactiveObserver?: ProactiveController;
 }
 
 type LogThreadModeOverride = (input: {
@@ -648,8 +719,8 @@ async function intakeMessage(deps: IntakeDeps): Promise<void> {
     logThreadModeOverride,
     executor,
     pool,
+    proactiveObserver,
   } = deps;
-  const preview = msg.content.length > 80 ? `${msg.content.slice(0, 80)}…` : msg.content;
   // Resolve scope (and underlying chat mode) once at intake — every
   // downstream consumer keys off these.
   const resolvedMode = await chatModeCache.resolve(channel, msg.chatId);
@@ -675,6 +746,12 @@ async function intakeMessage(deps: IntakeDeps): Promise<void> {
   // flush — which reads `firstMsg.threadId` for reply routing and topic scope —
   // sees it.
   const emsg: NormalizedMessage = threadId === msg.threadId ? msg : { ...msg, threadId };
+  const proactiveCandidate = proactiveObserver?.handles(emsg) ?? false;
+  const preview = proactiveCandidate
+    ? '[proactive-message-redacted]'
+    : msg.content.length > 80
+      ? `${msg.content.slice(0, 80)}…`
+      : msg.content;
   // Some groups are converted into topic groups after creation. In that state
   // getChatMode can lag behind the message event shape, so threadId is the
   // stronger signal for topic-scoped sessions and reply routing.
@@ -717,6 +794,16 @@ async function intakeMessage(deps: IntakeDeps): Promise<void> {
         log.warn('intake', 'non-allowed-hint-failed', { err: String(err) }),
       );
     }
+    return;
+  }
+
+  // The proactive observer is deliberately inserted after access control but
+  // before the mention gate. It sees only allowlisted, non-mention text and
+  // never enters the coding-agent queue. Mentioned messages continue through
+  // the exact pre-existing command/agent path below.
+  if (proactiveCandidate && proactiveObserver) {
+    proactiveObserver.enqueue(emsg);
+    log.info('intake', 'proactive-observed', { scope, msgId: emsg.messageId });
     return;
   }
 
