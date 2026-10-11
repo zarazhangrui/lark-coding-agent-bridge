@@ -74,6 +74,57 @@ describe('profile schema', () => {
     expect(bogus.mode).toBe('personal');
   });
 
+  it('normalizes proactive due dates to an explicit IANA timezone', () => {
+    const defaults = createDefaultProfileConfig({ agentKind: 'claude', accounts: { app } });
+    expect(defaults.proactiveObserver.timeZone).toBe('Asia/Shanghai');
+    expect(defaults.proactiveObserver.lowRiskActionThreshold).toBe(0.6);
+    expect(defaults.proactiveObserver.pollIntervalMs).toBe(15_000);
+    expect(defaults.proactiveObserver.execution?.enabled).toBe(false);
+    expect(defaults.proactiveObserver.conditionalFollowUps).toBe(false);
+
+    const configured = normalizeProfileConfig({
+      schemaVersion: 2,
+      agentKind: 'claude',
+      accounts: { app },
+      proactiveObserver: { timeZone: 'America/New_York' },
+    });
+    expect(configured.proactiveObserver.timeZone).toBe('America/New_York');
+
+    const invalid = normalizeProfileConfig({
+      schemaVersion: 2,
+      agentKind: 'claude',
+      accounts: { app },
+      proactiveObserver: { timeZone: 'not/a-zone' },
+    });
+    expect(invalid.proactiveObserver.timeZone).toBe('Asia/Shanghai');
+  });
+
+  it('keeps the low-risk threshold between shadow observation and high-risk action', () => {
+    const belowShadow = normalizeProfileConfig({
+      schemaVersion: 2,
+      agentKind: 'claude',
+      accounts: { app },
+      proactiveObserver: {
+        shadowThreshold: 0.6,
+        lowRiskActionThreshold: 0.2,
+        actionThreshold: 0.85,
+      },
+    });
+    expect(belowShadow.proactiveObserver.lowRiskActionThreshold).toBe(0.6);
+
+    const aboveAction = normalizeProfileConfig({
+      schemaVersion: 2,
+      agentKind: 'claude',
+      accounts: { app },
+      proactiveObserver: {
+        shadowThreshold: 0.6,
+        lowRiskActionThreshold: 0.95,
+        actionThreshold: 0.85,
+      },
+    });
+    expect(aboveAction.proactiveObserver.lowRiskActionThreshold).toBe(0.85);
+  });
+
   it('effectiveLarkCliIdentity forces bot-only in team mode and passes through otherwise', () => {
     expect(
       effectiveLarkCliIdentity({ mode: 'team', larkCli: { identityPreset: 'user-default' } }),

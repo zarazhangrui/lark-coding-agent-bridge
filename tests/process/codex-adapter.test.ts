@@ -86,6 +86,19 @@ describe('CodexAdapter process contract', () => {
     expect(record.env.APP_SECRET).toBe('inherited-secret');
   });
 
+  it('isolates document tasks from bridge credentials and the bridge system prompt', async () => {
+    process.env.APP_SECRET = 'must-not-reach-worker';
+    const fake = await createFakeCodex({ lines: [{ type: 'turn.completed' }] }); cleanup.push(fake.dir);
+    const run = new CodexAdapter({ binary: fake.path, profileStateDir: fake.dir, ignoreRules: false }).run({
+      runId: 'restricted', prompt: 'document task only', cwd: await realpath(fake.dir), sandbox: 'read-only', restrictedTask: { research: true },
+    });
+    await collect(run.events); const record = await readRecord(fake.recordPath);
+    expect(record.env.APP_SECRET).toBeUndefined(); expect(record.env.LARK_CHANNEL).toBeUndefined();
+    expect(record.stdin).toBe('document task only');
+    expect(record.argv).toContain('--ignore-user-config'); expect(record.argv).toContain('--ignore-rules');
+    expect(record.argv).toContain('features.shell_tool=false');
+  });
+
   it('injects the active bridge profile env while preserving Codex env overrides', async () => {
     process.env.CODEX_HOME = '/outer/codex-home';
     const fake = await createFakeCodex({

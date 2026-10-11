@@ -2,6 +2,7 @@ import type { AgentPreflightDiagnostic, AgentPreflightErrorCode } from '../agent
 
 export type RunRejectedCode =
   | 'pool-full'
+  | 'unsupported-execution-mode'
   | 'policy-expired'
   | 'reconnect-in-progress'
   | 'run-already-active';
