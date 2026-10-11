@@ -38,6 +38,8 @@ export interface AgentRunOptions {
   images?: readonly string[];
   sandbox?: CodexSandboxMode;
   permissionMode?: ClaudePermissionMode;
+  /** Bounded document task: no shell, apps, MCP, hooks, memory or session reuse. Codex only. */
+  restrictedTask?: { research: boolean };
   /**
    * Grace period (ms) between SIGTERM and SIGKILL when stop() is called on
    * the returned run. Lets the agent (and any subprocess it spawned, e.g.

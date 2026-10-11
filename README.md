@@ -299,6 +299,45 @@ grep '"event":"enter"' ~/.lark-channel/profiles/<profile>/logs/bridge-$(date +%Y
 
 Each line carries `chatId` (group / DM id) and `senderId` (user `open_id`). After a manual edit, **restart the bridge** or send `/reconnect` from an allowed admin context to apply it. For day-to-day tweaks `/invite` / `/config` are easier; direct edits are mainly for deployment scripts that pre-seed access.
 
+### Experimental: proactive follow-up observer
+
+The observer reads non-mention plain-text and text-only rich-post messages in explicitly allowlisted internal chats and uses Jev for structured intent classification. Explicit deadlines create follow-ups immediately; clear commitments without a deadline create a confirmation card in the source topic. A topic may own multiple independently addressable items. Follow-ups support due reminders, bounded overdue chases, completion, cancellation, and postponement across restarts. `@`-assignments remain proposed until the mentioned owner accepts them. Non-mention messages never enter Claude, Codex, or Hermes, and the observer does not mutate calendars, tasks, or Base records.
+
+Enable the Feishu/Lark `im:message.group_msg` scope and `im.message.receive_v1` event, add the bot to the target chat, and set `TYPESAFE_API_KEY` in the service environment. Then add this field to the matching profile. `allowedChats` is an independent hard boundary and is required. Set `LARK_PROACTIVE_OBSERVER_DISABLED=1` as the process-wide emergency kill switch; it overrides every profile and takes effect after restart:
+
+```json
+{
+  "proactiveObserver": {
+    "enabled": true,
+    "mode": "shadow",
+    "timeZone": "Asia/Shanghai",
+    "allowedChats": ["oc_xxxxxxxxxxxxx"],
+    "actionThreshold": 0.85,
+    "lowRiskActionThreshold": 0.6,
+    "shadowThreshold": 0.6,
+    "contextMessages": 20,
+    "contextWindowHours": 24,
+    "pollIntervalMs": 15000,
+    "dueSoonMinutes": 60,
+    "overdueReminderIntervalMinutes": 1440,
+    "overdueReminderMaxCount": 2,
+    "defaultDailyReminderLimit": 5
+  }
+}
+```
+
+Start in `shadow` mode and label real chat traffic before switching to `active`. State is stored as `proactive-observer.json` in the profile directory with mode `0600`; V1 ledgers migrate in place. The target chat must also remain in the existing `access.allowedChats`; the existing bot-mention path is unchanged. Users can say “查看我的主动跟进”, “暂停主动跟进”, “免打扰 22:00-08:00”, “关闭逾期提醒”, or “每天最多提醒 3 次” in an observed topic to manage their own panel and preferences.
+
+Confidence is risk-tiered rather than governed by one global cutoff. Reversible creation and an owner action with one uniquely identifiable target may use `lowRiskActionThreshold`. Code can independently admit explicit first-person/reminder commitments with a parseable due time, or create a reversible deadline-confirmation proposal when the commitment is clear but the due time is missing. An explicit time by itself is insufficient. Postponement also requires an explicit adjustment phrase (for example, “改到” or “延期”) and a parseable new time, so repeating a commitment cannot silently move its deadline. Text `cancel` remains behind `actionThreshold`; explicit card clicks do not rely on model confidence but remain owner-only. Recognized but unsafe or ambiguous actions receive a short explanation instead of failing silently.
+
+Each scheduled delivery is deliberately **at most once**. Feishu/Lark message creation does not provide an idempotency key, so the observer persists a delivery claim before sending. A successful delivery may schedule the next bounded overdue chase; an ambiguous transport failure is never retried. Quiet hours, per-user daily limits, pause state, and the overdue-reminder switch are evaluated before every scheduled send.
+
+#### V3: confirmed document execution (off by default)
+
+A Codex profile may opt in with `"execution": { "enabled": true, "maxRuntimeMs": 600000, "dailyProposalLimit": 3, "proposalCooldownMinutes": 10 }` inside `proactiveObserver`. Summary, public research and drafting proposals execute only after their author confirms in Active mode. The default observer behavior above remains unchanged. A fresh read-only Codex run generates content; the host creates a new Feishu/Lark document, grants the requester access and reads the content back before marking it delivered. Progress edits one card in the original topic. No existing-document edits, shell execution, external messaging by the worker or Hermes integration are enabled.
+
+Commands include `开始 pt_<id>`, `补充 pt_<id>：requirements`, `取消任务 pt_<id>`, `验收完成 pt_<id>` and `我的主动任务`. Changes revoke old confirmation. State version 3 migrates V1/V2 ledgers; interrupted work is marked failed, never replayed. Ambiguous publication retains the draft and any known document ID without automatic recreation. See [design, permissions, runtime-policy probe and acceptance](docs/proactive-execution-v3.md) before enabling.
+
 ## Cloud-doc comments
 
 Cloud-doc comments do not need a separate workspace binding or document allowlist. In supported document comments, mention the bot and the bridge replies in the same thread. Comment runs reuse the document session key and fall back to the user home directory when no document cwd was previously recorded.
