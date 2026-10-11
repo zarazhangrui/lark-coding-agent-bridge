@@ -299,6 +299,39 @@ grep '"event":"enter"' ~/.lark-channel/profiles/<profile>/logs/bridge-$(date +%Y
 
 每行都带 `chatId`（群 / 私聊 ID）和 `senderId`（用户 `open_id`）。手改完后**重启 bridge**，或在允许的 admin 上下文里发 `/reconnect` 让它生效。日常调整还是 `/invite` / `/config` 更省事，直接改文件主要用于部署脚本预填。
 
+### 实验性：主动跟进观察器
+
+观察器让 bot 在指定内部群里读取非 `@bot` 的文本，用 Jev 做结构化意图判断。带明确期限的承诺会直接记录；没有期限但意图明确的承诺会在原话题发确认卡。同一话题可拥有多条可独立管理的事项；支持到期提醒、有限次数的逾期追问、完成、取消和延期。`@` 他人的分配会先进入待确认，只有被提及的负责人接受后才生效。它不会把这些消息交给 Claude、Codex 或 Hermes，也不会操作日历、任务或多维表格。
+
+先在飞书开放平台为应用开通 `im:message.group_msg`，订阅 `im.message.receive_v1`，把 bot 加入目标群，并在服务环境中设置 `TYPESAFE_API_KEY`。然后在对应 profile 添加下面的字段；`allowedChats` 是独立的硬白名单，不能省略。紧急情况下可设置进程级开关 `LARK_PROACTIVE_OBSERVER_DISABLED=1`，它会覆盖所有 profile，重启后生效：
+
+```json
+{
+  "proactiveObserver": {
+    "enabled": true,
+    "mode": "shadow",
+    "timeZone": "Asia/Shanghai",
+    "allowedChats": ["oc_xxxxxxxxxxxxx"],
+    "actionThreshold": 0.85,
+    "lowRiskActionThreshold": 0.6,
+    "shadowThreshold": 0.6,
+    "contextMessages": 20,
+    "contextWindowHours": 24,
+    "pollIntervalMs": 15000,
+    "dueSoonMinutes": 60,
+    "overdueReminderIntervalMinutes": 1440,
+    "overdueReminderMaxCount": 2,
+    "defaultDailyReminderLimit": 5
+  }
+}
+```
+
+建议先用 `shadow` 只记录判断，标注真实群消息并核对精确率后再切到 `active`。状态保存在 profile 目录的 `proactive-observer.json`，文件权限为 `0600`；V1 台账会原地迁移。原有 `access.allowedChats` 仍然必须包含目标群，群内 `@ bot` 的既有路径不受观察器影响。用户可在被观察的话题中说“查看我的主动跟进”“暂停主动跟进”“免打扰 22:00-08:00”“关闭逾期提醒”或“每天最多提醒 3 次”，管理自己的面板和提醒偏好。
+
+置信度按风险分层，而不是所有动作共用一个阈值。可撤销的创建，以及负责人对唯一可识别目标的完成或延期，可使用较低的 `lowRiskActionThreshold`。代码可独立放行“明确第一人称/提醒意图 + 可解析时间”的承诺；承诺明确但缺时间时只创建可撤销的待确认卡，单独出现时间不会触发。延期还必须包含“改到”“延期”等明确调整词和新时间，重复原承诺不能静默移动期限。文本取消仍受高风险阈值约束；卡片点击不依赖模型分数，但仍受负责人校验。识别到意图但因歧义或安全门禁未执行时，会说明原因而不是静默。
+
+每一次计划发送都采用“至多一次”策略。飞书消息发送接口不提供幂等键，因此观察器会先把本次发送占位持久化，再调用发送接口。成功发送后才会安排下一次有限的逾期追问；网络结果不确定时不会自动重试。每次发送前都会检查个人暂停状态、免打扰时段、每日提醒上限和逾期提醒开关。
+
 ## 云文档评论
 
 云文档评论不再需要单独绑定工作目录或维护文档白名单。支持的文档评论里 @bot 后，bridge 会在同一个评论线程里回复。评论运行复用文档级 session key；没有记录过文档 cwd 时回退到用户 home 目录。

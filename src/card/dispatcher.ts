@@ -14,6 +14,7 @@ import type { SessionStore } from '../session/store';
 import type { WorkspaceStore } from '../workspace/store';
 import { commandSessionCatalogIdentity } from '../bot/session-catalog-identity';
 import { lookupMessageThreadId } from '../bot/thread-id';
+import type { ProactiveController } from '../proactive/controller';
 
 /** Marker key on a button's value object that flags the cardAction as
  * a callback that should be forwarded back to the agent instead
@@ -40,6 +41,7 @@ export interface CardDispatchDeps {
   callbackAuth?: CallbackAuth;
   callbackPolicyFingerprint?: string;
   callbackPolicyFingerprintForScope?: (scope: string) => string | undefined;
+  proactiveObserver?: ProactiveController;
 }
 
 export async function handleCardAction(deps: CardDispatchDeps): Promise<void> {
@@ -74,6 +76,18 @@ export async function handleCardAction(deps: CardDispatchDeps): Promise<void> {
       operator: operatorId.slice(-6),
       reason: accessDecision.reason,
     });
+    return;
+  }
+
+  if (
+    deps.proactiveObserver &&
+    (await deps.proactiveObserver.handleCardAction(
+      payload,
+      chatId,
+      operatorId,
+      deps.evt.messageId,
+    ))
+  ) {
     return;
   }
 
