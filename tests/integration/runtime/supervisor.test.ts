@@ -1,7 +1,9 @@
 import { mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import * as agentRuntime from '../../../src/runtime/agent-runtime';
+import type { Controls } from '../../../src/commands';
 import { createDefaultProfileConfig } from '../../../src/config/profile-schema';
 import {
   createRootConfig,
@@ -15,6 +17,7 @@ const started: string[] = [];
 const disconnected: string[] = [];
 let root: string;
 let sup: Supervisor;
+const controls: Controls[] = [];
 
 function app(id: string) {
   return { id, secret: '${APP_SECRET}', tenant: 'feishu' as const };
@@ -24,6 +27,7 @@ function app(id: string) {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const stubStartChannel: any = async (deps: any) => {
   started.push(deps.appPaths.profile);
+  controls.push(deps.controls);
   return {
     channel: { botIdentity: { name: `bot-${deps.appPaths.profile}` } },
     disconnect: async () => {
@@ -35,6 +39,8 @@ const stubStartChannel: any = async (deps: any) => {
 beforeEach(async () => {
   started.length = 0;
   disconnected.length = 0;
+  controls.length = 0;
+  vi.spyOn(agentRuntime, 'checkRuntimeAgentAvailability').mockResolvedValue({ ok: true });
   root = await mkdtemp(join(tmpdir(), 'bridge-sup-'));
   roots.push(root);
   const configPath = join(root, 'config.json');
@@ -57,10 +63,33 @@ beforeEach(async () => {
 
 afterEach(async () => {
   await sup.shutdown();
+  vi.restoreAllMocks();
   await Promise.all(roots.splice(0).map((r) => rm(r, { recursive: true, force: true })));
 });
 
 describe('Supervisor', () => {
+  it('bounds history-triggered reconnects across replaced channels without blocking manual restart', async () => {
+    const now = vi.spyOn(Date, 'now').mockReturnValue(1_800_000_000_000);
+    await sup.startProfile('claude');
+    await controls.at(-1)!.restart({ reason: 'history-gap' });
+    expect(started).toHaveLength(2);
+    await controls.at(-1)!.restart({ reason: 'history-gap' });
+    expect(started).toHaveLength(2);
+    await sup.restartProfile('claude');
+    expect(started).toHaveLength(3);
+    now.mockReturnValue(1_800_000_300_000);
+    await controls.at(-1)!.restart({ reason: 'history-gap' });
+    expect(started).toHaveLength(4);
+  });
+
+  it('also bounds a failed history reconnect and keeps the existing bridge', async () => {
+    await sup.startProfile('claude');
+    vi.spyOn(agentRuntime, 'checkRuntimeAgentAvailability').mockRejectedValueOnce(new Error('probe failed'));
+    await expect(controls.at(-1)!.restart({ reason: 'history-gap' })).rejects.toThrow('probe failed');
+    await controls.at(-1)!.restart({ reason: 'history-gap' });
+    expect(started).toHaveLength(1);
+    expect(disconnected).toHaveLength(0);
+  });
   it('starts a profile in-process and lists it online', async () => {
     await sup.startProfile('claude');
     expect(sup.isOnline('claude')).toBe(true);

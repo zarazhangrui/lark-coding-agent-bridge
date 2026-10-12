@@ -1,0 +1,492 @@
+import { createHash } from 'node:crypto';
+import { setTimeout as delay } from 'node:timers/promises';
+import type { CardActionResponse, LarkChannel } from '@larksuite/channel';
+import { cardFeedback } from '../card/feedback';
+import type { ProactiveObserverConfig } from '../config/profile-schema';
+import { log } from '../core/logger';
+import { RunRejected } from '../runtime/errors';
+import { DAY_MS } from './due';
+import { localDayBounds, nextAllowedByQuietHours } from './schedule';
+import { ProactiveStore } from './store';
+import { taskCard, taskNextStep, taskOverviewCard, taskSourceUrl, TASK_STATUS_LABELS, TASK_CARD_MARKER } from './task-cards';
+import { parseTaskCommand, taskAcceptsAction } from './task-commands';
+import { detectTaskUpdate, pendingUpdates, updateCandidates, updateToken, UPDATE_LABELS } from './task-continuity';
+import type { DecisionResult, ObserverMessage, ProactiveTask, ProactiveTaskKind, TaskDraft } from './types';
+
+export interface TaskRuntime {
+  run(task: ProactiveTask, signal: AbortSignal, progress: (text: string) => Promise<void>): Promise<
+    { status: 'ready'; draft: TaskDraft } | { status: 'needs_input'; question: string }
+  >;
+  publish(task: ProactiveTask, signal: AbortSignal, created: (id: string, url: string) => Promise<void>): Promise<string>;
+}
+
+interface TaskControllerDeps {
+  config: ProactiveObserverConfig;
+  store: ProactiveStore;
+  channel: Pick<LarkChannel, 'send' | 'updateCard'>;
+  runtime: TaskRuntime;
+  canAct: () => boolean;
+  now?: () => number;
+  resolveThread?: (messageId: string) => Promise<string | undefined>;
+}
+
+/** Task mutation is serialized; expensive execution never blocks inbound observation. */
+export class ProactiveTaskController {
+  private queue = Promise.resolve();
+  private readonly workers = new Map<string, { abort: AbortController; done: Promise<void> }>();
+  private readonly now: () => number;
+  private readonly cardQueues = new Map<string, Promise<void>>();
+  private dashboardQueue = Promise.resolve();
+  private recovered = false;
+
+  constructor(private readonly deps: TaskControllerDeps) { this.now = deps.now ?? Date.now; }
+
+  enabled(): boolean { return this.deps.config.execution?.enabled === true; }
+  hasActiveWork(): boolean { return this.workers.size > 0 || this.deps.store.snapshot().tasks.some((task) => task.status === 'running' || task.status === 'publishing'); }
+  private canAct(): boolean { return this.enabled() && this.deps.canAct(); }
+
+  continuityContext(message: ObserverMessage): Array<Pick<ProactiveTask, 'id' | 'request' | 'status'>> {
+    if (!this.enabled() || !this.deps.config.taskContinuity || !this.deps.config.allowedChats.includes(message.chatId)) return [];
+    return this.continuityCandidates(message)
+      .slice(0, 5).map(t => ({ id: t.id, request: t.request.slice(0, 1500), status: t.status }));
+  }
+
+  private continuityCandidates(message: ObserverMessage): ProactiveTask[] {
+    const candidates = updateCandidates(this.deps.store.tasksFor(message.chatId, message.senderId, message.threadId), message);
+    // A topic can contain a reminder and a document task. A generic date update
+    // must not steal the reminder's command just because there is one document.
+    const reminders = this.deps.store.openFollowUps(message.chatId, message.threadId).some(f => f.ownerId === message.senderId);
+    if (!reminders || /pt_[a-f0-9]{12}/.test(message.text)) return candidates;
+    return candidates.filter(t => message.replyToMessageId !== undefined &&
+      [t.sourceMessageId, t.cardMessageId, ...(t.updates ?? []).map(u => u.message.messageId)].includes(message.replyToMessageId));
+  }
+
+  async observeUpdate(message: ObserverMessage, result?: DecisionResult): Promise<boolean> {
+    if (!this.enabled() || !this.deps.config.taskContinuity || !this.deps.config.allowedChats.includes(message.chatId)) return false;
+    const kind = detectTaskUpdate(message, result);
+    if (!kind) return false;
+    return this.mutate(async () => {
+      const candidates = this.continuityCandidates(message);
+      if (!candidates.length) return false;
+      const prefs = this.deps.store.preferencesFor(message.senderId);
+      if (!this.canAct() || !prefs.enabled || nextAllowedByQuietHours(this.now(), prefs, this.deps.config.timeZone) > this.now()) return true;
+      if (candidates.length !== 1) {
+        await this.reply(message, `有多个任务，未自动关联。请带上编号重发这条动态：${candidates.map(t => t.id).join('、')}。`);
+        return true;
+      }
+      const task = candidates[0]!;
+      if (task.updates?.some(u => u.message.messageId === message.messageId)) return true;
+      if (message.createTime < (task.approvalRequestedAt ?? task.createdAt)) return true;
+      if (message.text.length > 2000 || pendingUpdates(task).length >= 3) {
+        await this.reply(message, `未关联这条动态：每条最多 2000 字，同时最多 3 条待确认。请先处理 ${task.id} 的待确认动态，长材料请提供文档链接。`);
+        return true;
+      }
+      const updates = [...(task.updates ?? []).filter(u => u.status !== 'pending').slice(-17), ...pendingUpdates(task),
+        { kind, message: structuredClone(message), status: 'pending' as const, recordedAt: this.now() }];
+      this.deps.store.updateTask(task.id, { updates, updatedAt: this.now() });
+      await this.deps.store.flush();
+      // Update the existing card/dashboard, never produce another proposal card.
+      await this.render(task);
+      if (task.cardSyncError) await this.reply(message, `已为 ${task.id} 记录待确认动态，但原卡同步失败。请回复“我的主动任务”查看；尚未修改要求或执行。`);
+      return true;
+    });
+  }
+
+  async recover(): Promise<void> {
+    if (this.recovered || !this.canAct()) return;
+    this.recovered = true;
+    for (const task of this.deps.store.snapshot().tasks) {
+      if (!this.deps.config.allowedChats.includes(task.chatId)) continue;
+      if (task.status !== 'running' && task.status !== 'publishing') continue;
+      const updated = this.deps.store.updateTask(task.id, {
+        status: 'failed', updatedAt: this.now(), progress: undefined,
+        error: task.status === 'publishing'
+          ? '服务在交付期间重启。为避免重复创建文档，已停止自动重试；请调整要求后重新确认。'
+          : '服务重启中断了执行。请点击重试，或调整要求后重新确认。',
+      })!;
+      await this.deps.store.flush();
+      await this.render(updated);
+    }
+  }
+
+  async offer(message: ObserverMessage, result: DecisionResult): Promise<boolean> {
+    if (!this.enabled() || !this.deps.config.allowedChats.includes(message.chatId)) return false;
+    const structuredKind = result.action === 'possible-complex-task' ? result.taskKind : undefined;
+    const kind = structuredKind ?? inferTaskKind(message.text);
+    // A high model score alone is not an invitation to interrupt. Require
+    // a request for help, not a remark that work is unfinished.
+    if (!kind || isExcludedTask(message.text)) return false;
+    if (!hasExplicitHelpIntent(message.text)) return false;
+    if (!this.canAct()) return true;
+    const now = this.now();
+    const prefs = this.deps.store.preferencesFor(message.senderId);
+    if (!prefs.enabled || nextAllowedByQuietHours(now, prefs, this.deps.config.timeZone) > now) return true;
+    const fingerprint = taskFingerprint(message.text, kind);
+    const existing = this.deps.store.tasksFor(message.chatId, message.senderId, message.threadId);
+    const duplicate = existing.find((task) => task.fingerprint === fingerprint && now - task.createdAt < DAY_MS);
+    if (duplicate) {
+      if (hasExplicitHelpIntent(message.text)) await this.reply(message, `这条需求已有任务 ${duplicate.id}，不会重复创建。可发送“我的主动任务”查看状态。`);
+      return true;
+    }
+    const open = existing.find((task) => ['proposed', 'needs_input', 'running', 'publishing'].includes(task.status) && task.kind === kind);
+    if (open) {
+      if (hasExplicitHelpIntent(message.text)) await this.reply(message, `本话题已有同类任务 ${open.id} 待处理。可先完成它，或回复“补充 ${open.id}：你的要求”后重新确认。`);
+      return true;
+    }
+    const day = localDayBounds(now, this.deps.config.timeZone);
+    const all = this.deps.store.snapshot().tasks.filter((task) => task.ownerId === message.senderId);
+    if (all.filter((task) => task.createdAt >= day.start).length >= this.deps.config.execution!.dailyProposalLimit) {
+      if (hasExplicitHelpIntent(message.text)) await this.reply(message, `今天的主动任务建议已达到 ${this.deps.config.execution!.dailyProposalLimit} 条上限，本次没有新建任务。已有任务仍可确认、修改或验收。`);
+      return true;
+    }
+    if (existing.some((task) => now - task.createdAt < this.deps.config.execution!.proposalCooldownMinutes * 60_000)) {
+      if (hasExplicitHelpIntent(message.text)) await this.reply(message, `为减少打扰，同一话题的任务建议间隔为 ${this.deps.config.execution!.proposalCooldownMinutes} 分钟。本次没有新建，请稍后再发；已有任务仍可操作。`);
+      return true;
+    }
+    const context = this.deps.store.recentMessages(message.chatId, now - DAY_MS, 20, message.threadId);
+    const task: ProactiveTask = {
+      id: `pt_${createHash('sha256').update(`${message.chatId}:${message.messageId}`).digest('hex').slice(0, 12)}`,
+      chatId: message.chatId, threadId: message.threadId, sourceMessageId: message.messageId,
+      ownerId: message.senderId, kind, request: message.text.slice(0, 4000), context,
+      fingerprint, revision: 1, status: 'proposed', artifacts: [], createdAt: now, updatedAt: now, approvalRequestedAt: now,
+    };
+    if (!this.deps.store.createTask(task)) return true;
+    await this.deps.store.flush();
+    await this.render(task);
+    return true;
+  }
+
+  async handleCard(payload: Record<string, unknown>, chatId: string, operatorId: string, messageId: string): Promise<false | CardActionResponse> {
+    if (!(TASK_CARD_MARKER in payload)) return false;
+    return this.mutate(async () => {
+      const deny = (reason: string, content: string): CardActionResponse => {
+        log.warn('proactive-task', 'card-denied', { reason, messageId });
+        return cardFeedback(content, 'warning');
+      };
+      if (!this.canAct()) return deny('disabled', '主动执行当前已暂停，未启动任务。');
+      const task = this.deps.store.getTask(String(payload.taskId ?? ''));
+      if (!task || task.chatId !== chatId || task.cardMessageId !== messageId ||
+          !this.deps.config.allowedChats.includes(chatId)) return deny('binding', '这张卡片已失效或不在允许范围内，请查看原话题的最新卡片。');
+      if (task.ownerId !== operatorId) return deny('owner', '只有这条需求的发起人可以操作。');
+      if (task.revision !== payload.revision) return deny('revision', '要求已更新，请使用最新版本的卡片重新确认。');
+      if (['adopt', 'dismiss'].includes(String(payload.action)) && payload.updateToken !== updateToken(task)) {
+        return deny('update-token', '待确认动态已变化，请查看最新卡片后重新选择。');
+      }
+      const before = task.status;
+      const result = await this.act(task, String(payload.action));
+      log.info('proactive-task', 'card-handled', { taskId: task.id, revision: task.revision, before, after: task.status });
+      // Return the authoritative view with the click response as well. A REST
+      // patch during the pending interaction alone did not reliably refresh the
+      // live card. This also repairs a stale view on an authorized repeat click.
+      return { ...result, card: { type: 'raw', data: taskCard(task) } };
+    });
+  }
+
+  async handleMessage(message: ObserverMessage): Promise<boolean> {
+    if (!this.enabled() || !this.deps.config.allowedChats.includes(message.chatId)) return false;
+    const overview = message.text.trim().match(/^(?:我的主动任务|任务进度|任务总览)(?:\s*第?(\d+)页)?[？?！!。\s]*$/);
+    if (overview) {
+      if (this.canAct()) await this.refreshOverview(message, Number(overview[1] ?? 1), true);
+      return true;
+    }
+    const command = parseTaskCommand(message.text);
+    if (!command) return false;
+    let handled = true;
+    await this.mutate(async () => {
+      if (!this.canAct()) return;
+      const tasks = this.deps.store.tasksFor(message.chatId, message.senderId, message.threadId);
+      const candidates = command.id ? tasks.filter((task) => task.id === command.id) :
+        tasks.filter((task) => taskAcceptsAction(task, command.action));
+      // V2 owns ordinary reminders. A vague reply must not silently act on a
+      // document task when a reminder in the same topic could be its target.
+      if (command.contextual && !candidates.length) {
+        const unfinished = tasks.filter(task => !['accepted', 'cancelled'].includes(task.status));
+        if (command.action === 'start' && unfinished.length) {
+          await this.reply(message, `目前没有待确认执行的任务。\n${unfinished.slice(-3).map(task => `${task.id} · ${TASK_STATUS_LABELS[task.status]}\n${taskNextStep(task)}`).join('\n')}`);
+        } else handled = false;
+        return;
+      }
+      const reviewIds = new Set(tasks.map(task => task.reviewFollowUpId));
+      const reminders = this.deps.store.openFollowUps(message.chatId, message.threadId)
+        .filter(item => item.ownerId === message.senderId && !reviewIds.has(item.id));
+      if (command.contextual && command.action !== 'start' && reminders.length) {
+        await this.reply(message, `本话题同时有你的任务和提醒，无法确定你指哪一个。操作任务请带编号（如“验收完成 ${candidates[0]!.id}”）；操作提醒请带上事项名称。`);
+        return;
+      }
+      const task = candidates.length === 1 ? candidates[0] : undefined;
+      if (!task) {
+        if (candidates.length > 1) await this.reply(message, `有多个可操作任务，请带上任务编号，避免改错：\n${candidates.map(t => `${t.id} · ${TASK_STATUS_LABELS[t.status]} · ${t.request.slice(0, 60)}`).join('\n')}\n例如“开始 ${candidates[0]!.id}”。`);
+        else if (tasks.length || command.id) await this.reply(message, '没有找到本次可操作的任务。只能操作你在本话题发起的任务；回复“我的主动任务”查看状态和下一步。');
+        return;
+      }
+      if (!taskAcceptsAction(task, command.action, !!command.id)) {
+        await this.reply(message, `${task.id} 当前为“${TASK_STATUS_LABELS[task.status]}”。${taskNextStep(task)}`);
+        return;
+      }
+      if (message.createTime < (task.approvalRequestedAt ?? task.createdAt)) {
+        await this.reply(message, '这条操作早于当前版本的确认请求，未修改任务。请查看最新要求后重新确认。');
+        return;
+      }
+      if (['adopt', 'dismiss'].includes(command.action) && pendingUpdates(task).some(u => u.message.createTime > message.createTime)) {
+        await this.reply(message, '这条操作早于新动态，未修改任务。请看完最新动态后重新选择。');
+        return;
+      }
+      if (command.action !== 'cancel' && !this.deps.store.preferencesFor(task.ownerId).enabled) {
+        await this.reply(message, '你已暂停主动助手，未修改或启动任务。请恢复后再操作。');
+        return;
+      }
+      if (command.action === 'supplement') {
+        if (!command.text) { await this.reply(message, `请回复“补充 ${task.id}：具体要求或材料”。`); return; }
+        if (!this.revise(task, `补充要求：${command.text}`, [message])) {
+          await this.reply(message, '累计要求过长，未修改任务。请整理为一份文档后提供链接。'); return;
+        }
+        await this.deps.store.flush();
+        await this.render(task);
+        await this.reply(message, `已更新 ${task.id} 第 ${task.revision} 版，尚未执行。请查看新要求，再回复“开始 ${task.id}”。${task.cardSyncError ? '\n原卡同步失败，可回复“我的主动任务”核查状态。' : ''}`);
+      } else {
+        const feedback = await this.act(task, command.action);
+        await this.reply(message, `${feedback.toast?.content ?? '已处理，请查看任务状态。'}${task.cardSyncError ? '\n原卡同步失败，可回复“我的主动任务”核查状态。' : ''}`);
+      }
+    });
+    return handled;
+  }
+
+  private async act(task: ProactiveTask, action: string): Promise<ReturnType<typeof cardFeedback>> {
+    const prefs = this.deps.store.preferencesFor(task.ownerId);
+    if (action !== 'cancel' && !prefs.enabled) return cardFeedback('你已暂停主动助手，请恢复后再操作。', 'warning');
+    const pending = pendingUpdates(task);
+    if (['adopt', 'dismiss'].includes(action)) {
+      if (!pending.length || ['accepted', 'cancelled'].includes(task.status)) return cardFeedback('没有可处理的待确认动态。');
+      if (action === 'adopt') {
+        if (this.workers.has(task.id) || ['running', 'publishing'].includes(task.status)) return cardFeedback('本次正在按已确认版本执行。结束后可采用新材料，再单独确认下一版。', 'warning');
+        if (!this.revise(task, pending.map(u => `${UPDATE_LABELS[u.kind]}（用户原文）：${u.message.text}`).join('\n'), pending.map(u => u.message))) {
+          return cardFeedback('累计要求过长，未采用。请整理为文档链接后补充。', 'warning');
+        }
+      }
+      this.deps.store.updateTask(task.id, { updates: (task.updates ?? []).map(u => u.status === 'pending'
+        ? { ...u, status: action === 'adopt' ? 'adopted' : 'dismissed', resolvedAt: this.now(), adoptedRevision: action === 'adopt' ? task.revision : undefined } : u), updatedAt: this.now() });
+      await this.deps.store.flush(); await this.render(task);
+      return cardFeedback(action === 'adopt' ? `已采用补充，第 ${task.revision} 版尚未执行。请查看要求后单独确认开始。` : '已忽略这批动态，原要求与交付物不变。', 'success');
+    }
+    if (pending.length && ['start', 'retry', 'accept'].includes(action)) return cardFeedback('有待确认动态，请先采用或忽略，再确认执行或验收。', 'warning');
+    if (action === 'cancel' && !['accepted', 'cancelled', 'delivered'].includes(task.status)) {
+      this.deps.store.updateTask(task.id, { status: 'cancelled', progress: '任务已停止。', question: undefined, error: undefined, updatedAt: this.now() });
+      this.workers.get(task.id)?.abort.abort();
+    } else if ((action === 'adjust' || action === 'revise') && ['proposed', 'delivered', 'failed'].includes(task.status)) {
+      this.deps.store.updateTask(task.id, { status: 'needs_input', question: '请补充希望使用的材料、交付内容或修改要求。', error: undefined, updatedAt: this.now() });
+    } else if (action === 'accept' && task.status === 'delivered') {
+      this.deps.store.updateTask(task.id, { status: 'accepted', progress: '你已确认验收完成。', updatedAt: this.now() });
+      if (task.reviewFollowUpId) this.deps.store.updateFollowUp(task.reviewFollowUpId, { status: 'completed', updatedAt: this.now() });
+    } else if (action === 'review' && task.status === 'delivered') {
+      const now = this.now();
+      if (task.reviewFollowUpId) {
+        this.deps.store.updateFollowUp(task.reviewFollowUpId, { status: 'pending', dueAt: now + DAY_MS, nextReminderAt: now + DAY_MS, updatedAt: now,
+          reminderAttemptedAt: undefined, reminderSentAt: undefined, overdueReminderCount: 0,
+          summary: `检查交付成果：${task.draft?.title ?? task.request.slice(0, 80)} ${task.documentUrl ?? ''}` });
+      } else {
+        const id = `review_${task.id}_${task.revision}`;
+        this.deps.store.createFollowUp({ id, chatId: task.chatId, threadId: task.threadId,
+          sourceMessageId: task.cardMessageId ?? task.sourceMessageId, ownerId: task.ownerId, createdById: task.ownerId,
+          summary: `检查交付成果：${task.draft?.title ?? task.request.slice(0, 80)} ${task.documentUrl ?? ''}`,
+          dueAt: now + DAY_MS, nextReminderAt: now + DAY_MS, status: 'pending', createdAt: now, updatedAt: now,
+        });
+        this.deps.store.updateTask(task.id, { reviewFollowUpId: id, updatedAt: now });
+      }
+      this.deps.store.updateTask(task.id, { reviewReminderAt: now + DAY_MS });
+    } else if ((action === 'start' && task.status === 'proposed') ||
+               (action === 'retry' && task.status === 'failed' && !task.publicationAttemptedAt)) {
+      if (this.workers.has(task.id)) return cardFeedback('任务正在执行，不会重复启动。');
+      if (this.workers.size >= 1) {
+        this.deps.store.updateTask(task.id, { progress: '已有主动任务在执行；本任务尚未启动，也未排队，请稍后再确认。', updatedAt: this.now() });
+        await this.deps.store.flush(); await this.render(task);
+        return cardFeedback('已有主动任务在执行；本任务未启动，请稍后再确认。', 'warning');
+      }
+      this.deps.store.updateTask(task.id, { status: 'running', confirmedAt: this.now(), confirmedBy: task.ownerId,
+        progress: '正在读取已确认的材料。', question: undefined, error: undefined, updatedAt: this.now() });
+      // Durable claim BEFORE any model or external publication. Duplicate clicks see running.
+      await this.deps.store.flush();
+      await this.render(task);
+      const abort = new AbortController();
+      const done = this.execute(task, abort).catch(() => {
+        log.warn('proactive-task', 'state-persist-failed', { taskId: task.id });
+      }).finally(() => this.workers.delete(task.id));
+      this.workers.set(task.id, { abort, done });
+      return cardFeedback('已开始整理，请查看原卡片进度。', 'success');
+    } else return cardFeedback('任务状态已变化，本次没有重复执行。请查看原卡片。');
+    await this.deps.store.flush();
+    await this.render(task);
+    const receipts: Record<string, string> = {
+      accept: '已验收完成，不再催办。', cancel: '已取消任务，不会继续执行。',
+      review: '已设置明天的成果检查提醒。', adjust: '请补充具体要求，补充后需重新确认。', revise: '请补充修改要求，补充后需重新确认。',
+    };
+    return cardFeedback(receipts[action] ?? '操作已完成，请查看原卡片。', 'success');
+  }
+
+  /** Scope changes are durable but never executable until a new explicit start. */
+  private revise(task: ProactiveTask, addition: string, messages: ObserverMessage[]): boolean {
+    const request = `${task.request}\n${addition}`;
+    if (request.length > 24000) return false;
+    if (task.reviewFollowUpId) this.deps.store.updateFollowUp(task.reviewFollowUpId, { status: 'cancelled', updatedAt: this.now() });
+    this.deps.store.updateTask(task.id, {
+      request, context: [...task.context, ...messages].slice(-20), revision: task.revision + 1,
+      status: 'proposed', question: undefined, error: undefined, progress: undefined,
+      confirmedAt: undefined, confirmedBy: undefined, publicationAttemptedAt: undefined,
+      documentId: undefined, documentUrl: undefined, draft: undefined, reviewReminderAt: undefined,
+      updatedAt: this.now(), approvalRequestedAt: this.now(),
+    });
+    return true;
+  }
+
+  private async execute(task: ProactiveTask, abort: AbortController): Promise<void> {
+    const timeout = setTimeout(() => abort.abort(new Error('执行超时，请缩小范围后重试。')), this.deps.config.execution!.maxRuntimeMs);
+    const enabledWatch = setInterval(() => { if (!this.canAct() || !this.deps.store.preferencesFor(task.ownerId).enabled) abort.abort(); }, 1000);
+    let lastProgress = 0;
+    try {
+      const result = await this.deps.runtime.run(structuredClone(task), abort.signal, async (text) => {
+        if (abort.signal.aborted || task.status !== 'running' || this.now() - lastProgress < 4000) return;
+        lastProgress = this.now();
+        this.deps.store.updateTask(task.id, { progress: text.slice(0, 500), updatedAt: this.now() });
+        await this.render(task);
+      });
+      abort.signal.throwIfAborted();
+      if (result.status === 'needs_input') {
+        this.deps.store.updateTask(task.id, { status: 'needs_input', question: result.question, progress: undefined, updatedAt: this.now() });
+      } else {
+        this.deps.store.updateTask(task.id, { status: 'publishing', draft: result.draft,
+          progress: '内容已生成，正在创建文档并校验正文和阅读权限。', publicationAttemptedAt: this.now(), updatedAt: this.now() });
+        await this.deps.store.flush();
+        await this.render(task);
+        abort.signal.throwIfAborted();
+        const url = await this.deps.runtime.publish(structuredClone(task), abort.signal, async (id, documentUrl) => {
+          this.deps.store.updateTask(task.id, { documentId: id, documentUrl, updatedAt: this.now() });
+          await this.deps.store.flush();
+        });
+        abort.signal.throwIfAborted();
+        this.deps.store.updateTask(task.id, { status: 'delivered', documentUrl: url, progress: '成果已生成并校验。请打开文档检查，需要调整可继续修改。',
+          artifacts: [...task.artifacts, { revision: task.revision, url, title: result.draft.title }], updatedAt: this.now() });
+      }
+    } catch (error) {
+      if (task.status !== 'cancelled') {
+        const stopped = abort.signal.aborted;
+        this.deps.store.updateTask(task.id, { status: 'failed', progress: undefined,
+          error: stopped ? '执行已停止或超时。请稍后重试，或缩小范围后重新确认。' :
+            `本次未完成：${safeError(error)}${task.publicationAttemptedAt ? ' 草稿已保存；请调整要求后重新确认交付。' : ''}`,
+          updatedAt: this.now() });
+      }
+      log.warn('proactive-task', 'failed', { taskId: task.id, stage: task.publicationAttemptedAt ? 'publish' : 'run' });
+    } finally {
+      clearTimeout(timeout); clearInterval(enabledWatch);
+      await this.deps.store.flush();
+      if (this.canAct()) await this.render(task);
+    }
+  }
+
+  private render(task: ProactiveTask): Promise<void> {
+    const previous = this.cardQueues.get(task.id) ?? Promise.resolve();
+    const next = previous.then(async () => {
+      if (!this.canAct()) return;
+      const card = taskCard(task);
+      try {
+        if (task.cardMessageId) {
+          // Editing the same card is idempotent, unlike creating a new message.
+          for (let attempt = 0; ; attempt++) {
+            try { await this.deps.channel.updateCard(task.cardMessageId, card); break; }
+            catch (error) { if (attempt >= 2) throw error; await delay(250 * (attempt + 1)); }
+          }
+        }
+        else if (!task.cardAttemptedAt) {
+          this.deps.store.updateTask(task.id, { cardAttemptedAt: this.now() });
+          await this.deps.store.flush();
+          const receipt = await this.deps.channel.send(task.chatId, { card }, { replyTo: task.sourceMessageId, replyInThread: true });
+          if (!receipt.messageId) throw new Error('missing card receipt');
+          this.deps.store.updateTask(task.id, { cardMessageId: receipt.messageId });
+          if (!task.threadId && this.deps.resolveThread) {
+            const threadId = await this.deps.resolveThread(receipt.messageId);
+            if (threadId) this.deps.store.updateTask(task.id, { threadId });
+          }
+          await this.deps.store.flush();
+        }
+        else throw new Error('card receipt unavailable');
+        this.deps.store.updateTask(task.id, { cardSyncError: undefined });
+      } catch {
+        this.deps.store.updateTask(task.id, { cardSyncError: '原任务卡同步失败，请通过“我的主动任务”核查真实状态。' });
+        log.warn('proactive-task', 'card-delivery-failed', { taskId: task.id });
+      }
+      await this.deps.store.flush();
+      await this.refreshOverview({ messageId: task.sourceMessageId, chatId: task.chatId, threadId: task.threadId,
+        senderId: task.ownerId, text: '', createTime: this.now() });
+    });
+    this.cardQueues.set(task.id, next);
+    return next;
+  }
+
+  refreshOverview(message: ObserverMessage, page?: number, requested = false): Promise<void> {
+    const next = this.dashboardQueue.then(async () => {
+      if (!this.canAct()) return;
+      let dashboard = this.deps.store.taskDashboard(message.chatId, message.senderId, message.threadId);
+      if (!dashboard && !requested) return;
+      const tasks = this.deps.store.tasksFor(message.chatId, message.senderId, message.threadId);
+      const collaboration = this.deps.store.snapshot().followUps.filter(i => i.condition &&
+        i.chatId === message.chatId && i.threadId === message.threadId && (i.ownerId === message.senderId || i.createdById === message.senderId));
+      const currentPage = Math.min(Math.max(1, page ?? dashboard?.page ?? 1), Math.max(1, Math.ceil((tasks.length + collaboration.length) / 3)));
+      const card = taskOverviewCard(tasks, currentPage, this.now(), this.deps.config.timeZone,
+        !this.deps.store.preferencesFor(message.senderId).enabled, collaboration);
+      try {
+        if (dashboard?.messageId) {
+          await this.deps.channel.updateCard(dashboard.messageId, card);
+          this.deps.store.saveTaskDashboard({ ...dashboard, page: currentPage });
+          if (requested) await this.reply(message, `任务总览已刷新：[查看总览](${taskSourceUrl({ chatId: dashboard.chatId, sourceMessageId: dashboard.messageId })})。`);
+        } else if (!dashboard) {
+          // Persist BEFORE creation. Unknown results are not retried as a new card.
+          dashboard = { chatId: message.chatId, threadId: message.threadId, ownerId: message.senderId,
+            sourceMessageId: message.messageId, attemptedAt: this.now(), page: currentPage };
+          this.deps.store.saveTaskDashboard(dashboard); await this.deps.store.flush();
+          const receipt = await this.deps.channel.send(message.chatId, { card }, { replyTo: message.messageId, replyInThread: true });
+          if (!receipt.messageId) throw new Error('missing overview receipt');
+          this.deps.store.saveTaskDashboard({ ...dashboard, messageId: receipt.messageId });
+        } else throw new Error('overview receipt unavailable');
+        await this.deps.store.flush();
+      } catch {
+        log.warn('proactive-task', 'overview-sync-failed', { chatId: message.chatId });
+        if (requested) await this.reply(message, `总览卡同步未确认；为避免重复刷屏，未新建卡片。当前台账：\n${tasks.slice(-3).map(t => `${t.id} · ${TASK_STATUS_LABELS[t.status]}\n${taskNextStep(t)}`).join('\n') || '本话题暂无你的文档任务。'}${collaboration.length ? '\n另有协作事项，请回复“我的协作跟进”查看。' : ''}\n请联系维护者核对原卡。`);
+      }
+    });
+    this.dashboardQueue = next.catch(() => undefined);
+    return next;
+  }
+
+  private reply(message: ObserverMessage, text: string): Promise<unknown> {
+    return this.deps.channel.send(message.chatId, { text }, { replyTo: message.messageId, replyInThread: true });
+  }
+  private mutate<T>(fn: () => Promise<T>): Promise<T> {
+    const run = this.queue.then(fn);
+    this.queue = run.then(() => undefined, () => undefined);
+    return run;
+  }
+  async flush(): Promise<void> { await this.queue; await Promise.all(this.cardQueues.values()); await this.dashboardQueue; await this.deps.store.flush(); }
+  async waitForIdle(): Promise<void> { await this.flush(); await Promise.all([...this.workers.values()].map((worker) => worker.done)); }
+  async stop(): Promise<void> { for (const worker of this.workers.values()) worker.abort.abort(); await this.waitForIdle(); }
+}
+
+export function inferTaskKind(text: string): ProactiveTaskKind | undefined {
+  if (/调研|竞品|对比|调查|research|compar(?:e|ison)/i.test(text)) return 'research';
+  if (/整理|总结|摘要|汇总|summary|summari[sz]e/i.test(text)) return 'summary';
+  if (/起草|初稿|(?:写|生成|制作|做).{0,12}(?:方案|文档|议程|说明|报告|模板|周报)|(?:想要|需要).{0,20}(?:模板|文档|周报)|draft/i.test(text)) return 'draft';
+  return undefined;
+}
+function isExcludedTask(text: string): boolean {
+  return /不用|不需要|不要|已(?:经)?(?:整理|完成)|搞定|取消|只是举例|^(?:如果|假如|假设|比如|例如|示例|引用)/.test(text) ||
+    /部署|删(?:除|掉)|转账|付款|发给客户|群发|修改.{0,8}(?:代码|数据库|生产)/.test(text);
+}
+function hasExplicitHelpIntent(text: string): boolean { return /帮我|帮忙|给我|我想要|请.{0,12}(?:整理|起草|调研|对比|写|生成|做)|(?:我|我们)需要.{0,12}(?:调研|整理|起草|模板|文档|周报)|(?:能否|能不能|可以).{0,12}(?:整理|起草|调研|写|生成)|\b(?:i (?:would like|want|need)|please|help me|(?:could|can) you)\b/i.test(text); }
+function taskFingerprint(text: string, kind: ProactiveTaskKind): string {
+  return createHash('sha256').update(`${kind}:${text.toLowerCase().replace(/[\s\p{P}]/gu, '')}`).digest('hex');
+}
+function safeError(error: unknown): string {
+  if (error instanceof RunRejected) {
+    if (error.code === 'pool-full' || error.code === 'run-already-active') return '执行资源正忙，本次没有启动，也未排队。请稍后重试。';
+    if (error.code === 'reconnect-in-progress') return '执行连接正在恢复，本次没有启动。请稍后重试。';
+  }
+  const message = error instanceof Error ? error.message : '未知错误';
+  return message.replace(/(?:Bearer\s+|(?:token|secret|api[_-]?key)[=:]\s*)\S+/gi, '[已隐藏]').slice(0, 240);
+}

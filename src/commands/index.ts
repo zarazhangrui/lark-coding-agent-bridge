@@ -96,7 +96,7 @@ export interface Controls {
   refreshOwner(channel?: LarkChannel): Promise<void>;
   /** Restart the bridge in-process: disconnect WS, kill claude runs, reload
    * config, reconnect with the new credentials. */
-  restart(opts?: { wait?: boolean }): Promise<void>;
+  restart(opts?: { wait?: boolean; reason?: 'history-gap' }): Promise<void>;
   /** Stop this whole process gracefully (disconnect + exit). Used by /exit
    * when the user targets the receiving process itself. */
   exit(): Promise<void>;

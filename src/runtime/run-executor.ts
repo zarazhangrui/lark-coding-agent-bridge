@@ -24,6 +24,7 @@ export interface SubmitRunInput {
   images?: readonly string[];
   stopGraceMs?: number;
   nowait?: boolean;
+  restrictedTask?: { research: boolean };
   observability?: {
     profile: string;
     agent: string;
@@ -61,6 +62,9 @@ export class RunExecutor {
   }
 
   async submit(input: SubmitRunInput): Promise<RunExecution> {
+    if (input.restrictedTask && this.agent.id !== 'codex') {
+      throw new RunRejected('unsupported-execution-mode', 'restricted document tasks require the Codex adapter');
+    }
     const submittedAt = this.now();
     if (input.policy.expiresAt <= this.now()) {
       throw new RunRejected('policy-expired', 'run policy expired before spawn');
@@ -104,6 +108,7 @@ export class RunExecutor {
       sandbox: input.policy.sandbox,
       permissionMode: input.policy.permissionMode,
       stopGraceMs: input.stopGraceMs,
+      ...(input.restrictedTask ? { restrictedTask: input.restrictedTask } : {}),
     };
     let run: AgentRun;
     try {

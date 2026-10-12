@@ -1,11 +1,11 @@
-import type { CardActionEvent } from '@larksuite/channel';
-import { afterEach, describe, expect, it } from 'vitest';
+import type { CardActionEvent, CardActionResponse } from '@larksuite/channel';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ActiveRuns } from '../../../src/bot/active-runs.js';
 import type { ChatModeCache } from '../../../src/bot/chat-mode-cache.js';
 import { PendingQueue } from '../../../src/bot/pending-queue.js';
 import { CallbackAuth } from '../../../src/card/callback-auth.js';
 import { CallbackNonceStore } from '../../../src/card/callback-store.js';
-import { handleCardAction } from '../../../src/card/dispatcher.js';
+import { handleCardAction, type CardDispatchDeps } from '../../../src/card/dispatcher.js';
 import type { Controls } from '../../../src/commands/index.js';
 import { createDefaultProfileConfig } from '../../../src/config/profile-schema.js';
 import { SessionStore } from '../../../src/session/store.js';
@@ -19,6 +19,29 @@ const cleanups: Array<() => Promise<void>> = [];
 describe('signed card callback dispatch', () => {
   afterEach(async () => {
     await Promise.all(cleanups.splice(0).map((cleanup) => cleanup()));
+  });
+
+  it('returns proactive callback feedback to the SDK, not just a handled boolean', async () => {
+    const response = { toast: { type: 'success', content: '已开始整理' } };
+    const handle = vi.fn(async () => response);
+    const h = await createHarness({ proactiveObserver: { handleCardAction: handle } });
+    const payload = { __proactive_task: true, taskId: 'pt_example', revision: 1, action: 'start' };
+    expect(await h.dispatch(payload)).toEqual(response);
+    expect(handle).toHaveBeenCalledWith(payload, 'oc_group', 'ou_operator', 'om_card');
+  });
+
+  it('explains an unavailable task observer without launching a normal coding run', async () => {
+    const h = await createHarness();
+    expect(await h.dispatch({ __proactive_task: true, action: 'start' })).toMatchObject({ toast: { type: 'warning' } });
+    expect(h.pending.cancel('oc_group')).toHaveLength(0);
+  });
+
+  it('keeps the access check before proactive dispatch and returns a denial receipt', async () => {
+    const handle = vi.fn(async () => true);
+    const h = await createHarness({ proactiveObserver: { handleCardAction: handle } });
+    h.controls.profileConfig.access.allowedChats = ['another-chat'];
+    expect(await h.dispatch({ __proactive_task: true, action: 'start' })).toMatchObject({ toast: { type: 'warning' } });
+    expect(handle).not.toHaveBeenCalled();
   });
 
   it('runs built-in command callbacks only when the bridge token verifies', async () => {
@@ -125,7 +148,7 @@ type Harness = {
   controls: Controls;
   pending: PendingQueue;
   auth: CallbackAuth;
-  dispatch(value: Record<string, unknown>, formValue?: Record<string, unknown>): Promise<void>;
+  dispatch(value: Record<string, unknown>, formValue?: Record<string, unknown>): Promise<void | CardActionResponse>;
   token(
     action: string,
     overrides?: { operatorOpenId?: string; nonce?: string; scope?: string },
@@ -133,7 +156,7 @@ type Harness = {
 };
 
 async function createHarness(
-  opts: { callbackAuth?: boolean; chatMode?: 'p2p' | 'group' | 'topic' } = {},
+  opts: { callbackAuth?: boolean; chatMode?: 'p2p' | 'group' | 'topic'; proactiveObserver?: CardDispatchDeps['proactiveObserver'] } = {},
 ): Promise<Harness> {
   const tmp = await createTmpProfile('callback-dispatch-test-');
   const channel = createFakeChannel();
@@ -214,6 +237,7 @@ async function createHarness(
         chatModeCache,
         ...(opts.callbackAuth === false ? {} : { callbackAuth: auth }),
         callbackPolicyFingerprint: 'fp-1',
+        proactiveObserver: opts.proactiveObserver,
       }),
   };
 }
