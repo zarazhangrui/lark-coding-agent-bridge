@@ -2,6 +2,10 @@ import { describe, expect, it } from 'vitest';
 import { buildCodexArgs } from '../../../src/agent/codex/argv.js';
 
 describe('Codex argv contract', () => {
+  it('rejects writable or resumed document-task runs', () => {
+    expect(() => buildCodexArgs({ cwd: '/repo', sandbox: 'danger-full-access', restrictedTask: { research: false } })).toThrow();
+    expect(() => buildCodexArgs({ cwd: '/repo', sandbox: 'read-only', threadId: 'old', restrictedTask: { research: false } })).toThrow();
+  });
   it('builds the fresh exec argv without putting the prompt in argv', () => {
     expect(buildCodexArgs({ cwd: '/repo', sandbox: 'read-only' })).toEqual([
       'exec',

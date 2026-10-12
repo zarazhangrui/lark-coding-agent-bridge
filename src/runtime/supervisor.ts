@@ -66,6 +66,9 @@ class ManagedProfile {
   entry!: ProcessEntry;
   startedAt = '';
   private restarting = false;
+  // Kept by the supervisor, not the replaced channel: reconnecting must not
+  // reset the limit and create a history-recovery/reconnect feedback loop.
+  private lastHistoryReconnectAt: number | undefined;
 
   constructor(
     readonly profile: string,
@@ -188,16 +191,26 @@ class ManagedProfile {
         // `/exit` from chat stops THIS profile's channel; the supervisor lives on.
         self.onExitCommand(self.profile);
       },
-      async restart() {
-        await self.restart();
+      async restart(opts) {
+        await self.restart(opts?.reason);
       },
     };
     return currentControls;
   }
 
   /** Connect-before-disconnect reconnect for this profile (e.g. after /account). */
-  private async restart(): Promise<void> {
+  private async restart(reason?: 'history-gap'): Promise<void> {
     if (this.restarting) return;
+    if (reason === 'history-gap') {
+      const now = Date.now();
+      if (this.lastHistoryReconnectAt !== undefined && now - this.lastHistoryReconnectAt < 5 * 60_000) {
+        log.warn('supervisor', 'history-reconnect-cooldown', { profile: this.profile });
+        return;
+      }
+      // Failed attempts are limited as well. Explicit /reconnect and the WS
+      // liveness watchdog remain available independently of this heuristic.
+      this.lastHistoryReconnectAt = now;
+    }
     this.restarting = true;
     let nextAppLock: AcquiredRuntimeLock | undefined;
     try {
