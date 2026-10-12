@@ -175,11 +175,17 @@ async function normalizeItemToQuoted(
  * `excludeIds` drops the triggering messages and any explicit reply-quotes so
  * they aren't duplicated. Capped at `maxMessages` (keeps the most recent when
  * the topic is longer). Returns `[]` on any error — context is best-effort.
+ *
+ * TOKEN-001: `afterId` enables incremental injection. When set, only messages
+ * newer than that id are returned. If the anchor isn't inside the fetched
+ * window (topic grew far past it), we fall back to the most recent
+ * `maxMessages` and log a warning — the caller then re-anchors to the newest
+ * message, so the next run is incremental again.
  */
 export async function fetchTopicContext(
   channel: LarkChannel,
   threadId: string,
-  opts: { maxMessages: number; excludeIds?: Set<string> },
+  opts: { maxMessages: number; excludeIds?: Set<string>; afterId?: string },
 ): Promise<QuotedContext[]> {
   const collected: ApiMessageItem[] = [];
   let pageToken: string | undefined;
@@ -210,11 +216,22 @@ export async function fetchTopicContext(
   }
 
   const exclude = opts.excludeIds ?? new Set<string>();
-  const relevant = collected
-    .filter(
-      (m) => m.message_id && !exclude.has(m.message_id) && !(m as { deleted?: boolean }).deleted,
-    )
-    .slice(-opts.maxMessages);
+  let relevant = collected.filter(
+    (m) => m.message_id && !exclude.has(m.message_id) && !(m as { deleted?: boolean }).deleted,
+  );
+  if (opts.afterId) {
+    const anchorIdx = relevant.findIndex((m) => m.message_id === opts.afterId);
+    if (anchorIdx >= 0) {
+      relevant = relevant.slice(anchorIdx + 1);
+    } else {
+      log.warn('topic', 'anchor-not-in-window-refull', {
+        threadId,
+        afterId: opts.afterId,
+        collected: relevant.length,
+      });
+    }
+  }
+  relevant = relevant.slice(-opts.maxMessages);
 
   const out: QuotedContext[] = [];
   for (const item of relevant) {

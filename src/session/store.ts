@@ -14,6 +14,14 @@ export interface SessionEntry {
    * scope, undefined = follow global default. Session resets preserve this
    * scope preference while removing the resumable session id/cwd. */
   idleTimeoutMinutes?: number;
+  /** TOKEN-001: per-thread newest message id already injected as topic
+   * context, keyed by threadId. Lets each subsequent run inject only new
+   * messages instead of the full topic history (codex runs never resume a
+   * session, so without this anchor every run re-fetched everything). */
+  topicAnchors?: Record<string, string>;
+  /** TOKEN-001 (measure 7): number of runs executed for this scope. Drives
+   * the session-round soft alert. Reset when the scope is cleared (/new). */
+  runCount?: number;
 }
 
 type SessionMap = Record<string, SessionEntry>;
@@ -43,13 +51,26 @@ export class SessionStore {
         const cwd = typeof entry.cwd === 'string' ? entry.cwd : undefined;
         const idleTimeoutMinutes =
           typeof entry.idleTimeoutMinutes === 'number' ? entry.idleTimeoutMinutes : undefined;
+        const topicAnchors =
+          entry.topicAnchors && typeof entry.topicAnchors === 'object'
+            ? Object.fromEntries(
+                Object.entries(entry.topicAnchors).filter(
+                  ([, v]) => typeof v === 'string' && v.length > 0,
+                ),
+              )
+            : undefined;
+        const runCount = typeof entry.runCount === 'number' ? entry.runCount : undefined;
         const hasSession = sessionId !== undefined && cwd !== undefined;
-        if (!hasSession && idleTimeoutMinutes === undefined) continue;
+        const hasAnchorState = topicAnchors !== undefined && Object.keys(topicAnchors).length > 0;
+        if (!hasSession && idleTimeoutMinutes === undefined && !hasAnchorState && runCount === undefined)
+          continue;
         this.data[chatId] = {
           ...(sessionId !== undefined ? { sessionId } : {}),
           ...(cwd !== undefined ? { cwd } : {}),
           updatedAt: entry.updatedAt,
           ...(idleTimeoutMinutes !== undefined ? { idleTimeoutMinutes } : {}),
+          ...(hasAnchorState ? { topicAnchors } : {}),
+          ...(runCount !== undefined ? { runCount } : {}),
         };
       }
     } catch (err) {
@@ -85,6 +106,8 @@ export class SessionStore {
       ...(prev?.idleTimeoutMinutes !== undefined
         ? { idleTimeoutMinutes: prev.idleTimeoutMinutes }
         : {}),
+      ...(prev?.topicAnchors ? { topicAnchors: prev.topicAnchors } : {}),
+      ...(prev?.runCount !== undefined ? { runCount: prev.runCount } : {}),
     };
     this.schedulePersist();
   }
@@ -117,6 +140,31 @@ export class SessionStore {
       updatedAt: Date.now(),
     };
     this.schedulePersist();
+  }
+
+  /** TOKEN-001: newest topic message id already injected for this scope. */
+  getTopicAnchor(scope: string, threadId: string): string | undefined {
+    return this.data[scope]?.topicAnchors?.[threadId];
+  }
+
+  /** TOKEN-001: record the newest injected topic message id for this scope. */
+  setTopicAnchor(scope: string, threadId: string, messageId: string): void {
+    const prev = this.data[scope];
+    this.data[scope] = {
+      ...(prev ?? { updatedAt: Date.now() }),
+      topicAnchors: { ...(prev?.topicAnchors ?? {}), [threadId]: messageId },
+      updatedAt: Date.now(),
+    };
+    this.schedulePersist();
+  }
+
+  /** TOKEN-001 (measure 7): bump the per-scope run counter and return it. */
+  incrementRunCount(scope: string): number {
+    const prev = this.data[scope];
+    const next = (prev?.runCount ?? 0) + 1;
+    this.data[scope] = { ...(prev ?? { updatedAt: Date.now() }), runCount: next, updatedAt: Date.now() };
+    this.schedulePersist();
+    return next;
   }
 
   /** Remove the override so this scope falls back to the global default.

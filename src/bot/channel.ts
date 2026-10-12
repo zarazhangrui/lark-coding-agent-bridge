@@ -36,7 +36,9 @@ import {
   getMaxConcurrentRuns,
   getMessageReplyMode,
   getRunIdleTimeoutMs,
+  getSessionRoundAlert,
   getShowToolCalls,
+  getTopicContextCaps,
 } from '../config/schema';
 import { resolveAppSecret } from '../config/secret-resolver';
 import { log, reportMetric, withTrace } from '../core/logger';
@@ -129,6 +131,24 @@ function isSuppressedSdkMessage(msg: unknown): boolean {
     (rule) => code === rule.code && url?.includes(rule.urlPart),
   );
 }
+
+// TOKEN-001 measure 7 (exported for tests): decide whether this run emits
+// the session-round advisory. First fire lands on the round right after the
+// threshold (threshold + 1), then every `every` rounds. The
+// `runCount > threshold` guard must stay: JS %-0 === 0 would otherwise make
+// the modulo fire rounds below the threshold.
+export function shouldAlertRound(
+  runCount: number,
+  threshold: number,
+  every: number,
+): boolean {
+  return (
+    threshold > 0 &&
+    runCount > threshold &&
+    (runCount - threshold - 1) % every === 0
+  );
+}
+
 
 export function shouldSuppressSdkErrorLog(args: unknown[]): boolean {
   return args.some(isSuppressedSdkMessage);
@@ -871,24 +891,74 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
     }
   }
 
-  // Topic upstream context. When the bot is pulled into a topic for the FIRST
-  // time (no session yet for this scope), the topic's earlier messages — the
-  // root question that may never have @-mentioned the bot, plus prior replies —
-  // live nowhere the agent can see them. Fetch them so it isn't blind to what
-  // the user is pointing at. An already-engaged topic keeps that history in its
-  // resumed session, so we skip the fetch there.
+  // Topic upstream context, injected INCREMENTALLY (TOKEN-001 measure 1).
+  // The original code fetched the topic history only on the bot's FIRST
+  // engagement (no session yet), assuming an engaged topic keeps its history
+  // in the resumed session. That assumption fails for agent kinds without
+  // session resume (codex runs are one-shot `codex exec` processes): every
+  // run looked like a "first engagement" and re-injected the ENTIRE topic,
+  // so each message's prompt grew linearly with the topic length and every
+  // reader bot paid it too.
+  //
+  // Now: the newest message id we last injected is persisted per
+  // scope+thread (SessionStore.topicAnchors). First engagement (no anchor)
+  // injects the full 40-message history as before. Subsequent runs inject
+  // only messages newer than the anchor, capped by preferences
+  // (topicContextMaxMessages / topicContextMaxChars, defaults 20 / 8000);
+  // overflow is folded into a pointer marker telling the agent to pull the
+  // rest on demand — which the bots' own discipline already does.
   let topicContext: QuotedContext[] = [];
-  if (mode === 'topic' && threadId && !sessions.getRaw(scope)) {
+  if (mode === 'topic' && threadId) {
     const exclude = new Set([...batchIds, ...quoteTargets]);
-    topicContext = await fetchTopicContext(channel, threadId, {
-      maxMessages: 40,
+    const anchor = sessions.getTopicAnchor(scope, threadId);
+    const caps = getTopicContextCaps(controls.cfg);
+    const fetched = await fetchTopicContext(channel, threadId, {
+      maxMessages: anchor ? Math.max(caps.maxMessages * 2, 40) : 40,
       excludeIds: exclude,
+      afterId: anchor,
     });
-    if (topicContext.length > 0) {
+    const newest = fetched.length > 0 ? fetched[fetched.length - 1]?.messageId : undefined;
+    if (fetched.length > 0) {
+      let kept = fetched;
+      let foldedCount = 0;
+      if (anchor) {
+        let chars = 0;
+        let cutIdx = 0;
+        for (let i = kept.length - 1; i >= 0; i--) {
+          chars += kept[i]?.content.length ?? 0;
+          if (chars > caps.maxChars || kept.length - i >= caps.maxMessages) {
+            cutIdx = i + 1;
+            break;
+          }
+        }
+        // Never fold away everything: at least the newest message stays,
+        // so the agent always sees the latest beat (degenerate configs like
+        // topicContextMaxMessages: 1 would otherwise inject only the marker).
+        cutIdx = Math.min(cutIdx, kept.length - 1);
+        foldedCount = cutIdx;
+        kept = kept.slice(cutIdx);
+      }
+      if (foldedCount > 0) {
+        kept.unshift({
+          messageId: `fold:${threadId}`,
+          senderId: 'bridge',
+          senderName: 'bridge',
+          createdAt: '',
+          rawContentType: 'text',
+          content:
+            `前文已折叠：本拍话题新增 ${fetched.length} 条，超出上限（${caps.maxMessages} 条或 ${caps.maxChars} 字符），仅注入最新 ${kept.length} 条。` +
+            `细节用 lark-cli im +threads-messages-list --thread-id ${threadId} 自取。`,
+        });
+      }
+      topicContext = kept;
+      if (newest) sessions.setTopicAnchor(scope, threadId, newest);
       log.info('topic', 'context-fetched', {
         scope,
         threadId,
-        count: topicContext.length,
+        anchor: anchor ?? null,
+        fetched: fetched.length,
+        injected: kept.length,
+        folded: foldedCount,
       });
     }
   }
@@ -907,12 +977,31 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
   const prevModel = lastRunModelByScope.get(scope);
   const modelSwitched = prevModel !== undefined && prevModel !== modelSelection;
   lastRunModelByScope.set(scope, modelSelection);
-  const extraInstructions = modelSwitched
-    ? [
-        `用户刚把本会话使用的模型切换为「${modelLabel(agentKind, modelPref)}」。` +
-          '之前的对话里可能提到别的模型,请以当前模型为准;若被问到你用的是什么模型,据此回答。',
-      ]
-    : undefined;
+  // TOKEN-001 measure 7: per-scope run counter for the session-round soft
+  // alert. Cost grows roughly with rounds^2 (the prompt accumulates), so
+  // past a threshold we nudge the agent to wrap the ticket and start a
+  // fresh session. Purely advisory — never blocks or kills the run.
+  const roundAlert = getSessionRoundAlert(controls.cfg);
+  const runCount = sessions.incrementRunCount(scope);
+  const advisoryNotes: string[] = [];
+  if (shouldAlertRound(runCount, roundAlert.threshold, roundAlert.every)) {
+    advisoryNotes.push(
+      `本会话已执行 ${runCount} 轮，成本随轮数平方增长。` +
+        '若无未决请示，请收尾本工单（结单或交回），下一拍另起新会话。',
+    );
+  }
+  const extraInstructions =
+    modelSwitched || advisoryNotes.length > 0
+      ? [
+          ...(modelSwitched
+            ? [
+                `用户刚把本会话使用的模型切换为「${modelLabel(agentKind, modelPref)}」。` +
+                  '之前的对话里可能提到别的模型,请以当前模型为准;若被问到你用的是什么模型,据此回答。',
+              ]
+            : []),
+          ...advisoryNotes,
+        ]
+      : undefined;
 
   const prompt = buildPrompt(
     batch,

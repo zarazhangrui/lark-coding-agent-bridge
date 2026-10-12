@@ -108,6 +108,31 @@ export interface AppPreferences {
    */
   showToolCalls?: boolean;
   /**
+   * TOKEN-001: cap on incremental topic_context injection — max new messages
+   * injected per run once a topic anchor exists. First engagement always
+   * injects the full (40-message capped) history. Default 20.
+   */
+  topicContextMaxMessages?: number;
+  /**
+   * TOKEN-001: char cap on incremental topic_context injection. When the new
+   * messages exceed it, older ones are folded into a pointer marker. Default
+   * 8000. Values below 500 are treated as unset (silently fall back to the
+   * default) to guard against typo-level configs effectively hiding context.
+   */
+  topicContextMaxChars?: number;
+  /**
+   * TOKEN-001 (measure 7): session-round soft alert. When a scope's run count
+   * exceeds this threshold, a reminder to wrap up is injected into the next
+   * prompt (re-fires every `sessionRoundAlertEvery` rounds). 0/undefined =
+   * off. Advisory only.
+   */
+  sessionRoundAlertThreshold?: number;
+  /**
+   * TOKEN-001 (measure 7): reminder re-fire interval once over threshold.
+   * Default 10.
+   */
+  sessionRoundAlertEvery?: number;
+  /**
    * Model the underlying agent runs with, forwarded as `--model`. The catalog
    * of valid values is agent-kind specific — see `agent/models.ts`. `undefined`
    * or the `'default'` sentinel means "don't pass `--model`" so the agent
@@ -217,6 +242,26 @@ export function getMessageReplyMode(cfg: AppConfig): MessageReplyMode {
 /** Resolve the show-tool-calls preference with default fallback. */
 export function getShowToolCalls(cfg: AppConfig): boolean {
   return cfg.preferences?.showToolCalls !== false;
+}
+
+/** TOKEN-001: resolved caps for incremental topic_context injection. */
+export function getTopicContextCaps(cfg: AppConfig): { maxMessages: number; maxChars: number } {
+  const m = cfg.preferences?.topicContextMaxMessages;
+  const c = cfg.preferences?.topicContextMaxChars;
+  return {
+    maxMessages: typeof m === 'number' && Number.isFinite(m) && m >= 1 ? Math.floor(m) : 20,
+    maxChars: typeof c === 'number' && Number.isFinite(c) && c >= 500 ? Math.floor(c) : 8000,
+  };
+}
+
+/** TOKEN-001 (measure 7): resolved session-round alert config. threshold 0 = off. */
+export function getSessionRoundAlert(cfg: AppConfig): { threshold: number; every: number } {
+  const t = cfg.preferences?.sessionRoundAlertThreshold;
+  const e = cfg.preferences?.sessionRoundAlertEvery;
+  return {
+    threshold: typeof t === 'number' && Number.isFinite(t) && t >= 1 ? Math.floor(t) : 0,
+    every: typeof e === 'number' && Number.isFinite(e) && e >= 1 ? Math.floor(e) : 10,
+  };
 }
 
 export function getCotMessages(cfg: AppConfig): CotMessagesMode {
