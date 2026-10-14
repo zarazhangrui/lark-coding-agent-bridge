@@ -89,6 +89,7 @@ describe('ClaudeAdapter process contract', () => {
       runId: 'run-profile-env',
       prompt: 'profile',
       cwd: fake.dir,
+      callbackToken: 'opaque-run-grant',
     });
 
     await collect(run.events);
@@ -100,6 +101,7 @@ describe('ClaudeAdapter process contract', () => {
       LARK_CHANNEL_HOME: rootDir,
       LARK_CHANNEL_CONFIG: larkCliSourceConfigFile,
       LARKSUITE_CLI_CONFIG_DIR: larkCliConfigDir,
+      LARK_CHANNEL_CALLBACK_TOKEN: 'opaque-run-grant',
     });
   });
 
@@ -246,6 +248,7 @@ async function createFakeClaude(options: {
       '    env: {',
       '      LARK_CHANNEL: process.env.LARK_CHANNEL,',
       '      LARK_CHANNEL_PROFILE: process.env.LARK_CHANNEL_PROFILE,',
+      '      LARK_CHANNEL_CALLBACK_TOKEN: process.env.LARK_CHANNEL_CALLBACK_TOKEN,',
       '      LARK_CHANNEL_HOME: process.env.LARK_CHANNEL_HOME,',
       '      LARK_CHANNEL_CONFIG: process.env.LARK_CHANNEL_CONFIG,',
       '      LARKSUITE_CLI_CONFIG_DIR: process.env.LARKSUITE_CLI_CONFIG_DIR,',

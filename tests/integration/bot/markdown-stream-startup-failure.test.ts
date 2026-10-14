@@ -1,14 +1,16 @@
-import type { NormalizedMessage } from '@larksuite/channel';
+import type { CardActionEvent, NormalizedMessage } from '@larksuite/channel';
 import { realpath } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { AgentEvent } from '../../../src/agent/types.js';
+import type { AgentAdapter, AgentEvent } from '../../../src/agent/types.js';
 import type { FakeAgentEvents } from '../../helpers/fake-agent.js';
 import { createDefaultProfileConfig } from '../../../src/config/profile-schema.js';
 import { log } from '../../../src/core/logger.js';
 import { SessionStore } from '../../../src/session/store.js';
 import { WorkspaceStore } from '../../../src/workspace/store.js';
 import { FakeAgentAdapter } from '../../helpers/fake-agent.js';
+import { CallbackRegistryStore } from '../../../src/card/callback-registry.js';
+import { SessionCatalog } from '../../../src/session/catalog.js';
 import { createTmpProfile, type TmpProfile } from '../../helpers/tmp-profile.js';
 
 const sdkMock = vi.hoisted(() => ({
@@ -31,6 +33,7 @@ import { startChannel } from '../../../src/bot/channel.js';
 
 interface MessageHandlerMap {
   message?: (msg: NormalizedMessage) => Promise<void> | void;
+  cardAction?: (evt: CardActionEvent) => Promise<void> | void;
 }
 
 interface FakeLarkChannel {
@@ -78,7 +81,84 @@ afterEach(async () => {
   vi.restoreAllMocks();
   sdkMock.channel = undefined;
   sdkMock.createLarkChannel.mockClear();
-  await Promise.all(cleanups.splice(0).map((cleanup) => cleanup()));
+  for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
+});
+
+describe('CardKit 会话续接', () => {
+  it.each([
+    { kind: 'claude', resetQueued: false }, { kind: 'codex', resetQueued: false },
+    { kind: 'claude', resetQueued: true }, { kind: 'codex', resetQueued: true },
+  ] as const)('登记卡片续接或拒绝排队期间的会话重置：$kind reset=$resetQueued', async ({ kind, resetQueued }) => {
+    const h = await createHarness({ messageReply: 'text', agentKind: kind });
+    h.profileConfig.access.allowedChats.push('oc_dm');
+    const finish = deferred<void>();
+    const runOptions: Parameters<AgentAdapter['run']>[0][] = [];
+    const agent: AgentAdapter = {
+      id: kind, displayName: kind, isAvailable: async () => true,
+      run(opts) {
+        runOptions.push(opts);
+        const first = runOptions.length === 1;
+        return {
+          runId: opts.runId, stop: async () => { finish.resolve(); }, waitForExit: async () => true,
+          events: (async function* (): AsyncIterable<AgentEvent> {
+            yield { type: 'system', sessionId: 'callback-session', threadId: 'callback-thread' };
+            if (first) await finish.promise;
+            yield { type: 'done', terminationReason: 'normal' };
+          })(),
+        };
+      },
+    };
+    await startTestBridge(h, agent, true);
+    await h.channel.handlers.message?.(message('om_source', '给我一张选择卡'));
+    await waitFor(() => runOptions.length === 1);
+    const token = runOptions[0]!.callbackToken!;
+    const registry = new CallbackRegistryStore(join(h.tmp.profile, 'callback-registry.json'));
+    const registration = await registry.register(token, {
+      schema: { type: 'object', properties: { choice: { type: 'string', enum: ['a'] } }, required: ['choice'] },
+    });
+    await registry.bind(token, registration.id, 'om_choice_card');
+    finish.resolve();
+    await waitFor(async () => {
+      try { await registry.register(token, { schema: { type: 'object', properties: {} } }); return false; }
+      catch { return true; }
+    });
+
+    const evt = {
+      messageId: 'om_choice_card', chatId: 'oc_dm', operator: { openId: 'ou_user' },
+      action: { value: { __bridge_cb: true, callback_id: registration.id, choice: 'a' }, tag: 'button' },
+      raw: { header: { event_id: 'event-choice' } },
+    } satisfies CardActionEvent;
+    const previousAccess = h.profileConfig.permissions.defaultAccess;
+    h.profileConfig.permissions.defaultAccess = 'read-only';
+    await h.channel.handlers.cardAction?.(evt);
+    expect(runOptions).toHaveLength(1);
+    h.profileConfig.permissions.defaultAccess = previousAccess;
+    await h.channel.handlers.cardAction?.(evt);
+    if (resetQueued) {
+      await h.channel.handlers.message?.(message('om_reset', '/new'));
+      await h.channel.handlers.message?.(message('om_fresh', '新问题'));
+      await waitFor(() => runOptions.length === 2);
+      expect(runOptions[1]?.sessionId).toBeUndefined();
+      expect(runOptions[1]?.threadId).toBeUndefined();
+      expect(runOptions[1]?.prompt).toContain('新问题');
+      expect(runOptions[1]?.prompt).not.toContain('[card-click]');
+      await waitForRunEnd();
+      return;
+    }
+    await waitFor(() => runOptions.length === 2);
+    expect(runOptions[1]).toMatchObject(kind === 'claude' ? { sessionId: 'callback-session' } : { threadId: 'callback-thread' });
+    const userInput = runOptions[1]!.prompt.match(/<user_input>\s*([\s\S]*?)\s*<\/user_input>/)![1]!;
+    expect(JSON.parse(userInput).text).toBe('[card-click] {"choice":"a"}');
+    expect(runOptions[1]!.prompt).not.toContain(registration.id);
+    await waitForRunEnd();
+
+    async function waitForRunEnd(): Promise<void> {
+      await waitFor(async () => {
+        try { await registry.register(runOptions[1]!.callbackToken!, { schema: { type: 'object', properties: {} } }); return false; }
+        catch { return true; }
+      });
+    }
+  });
 });
 
 describe('markdown stream startup failures', () => {
@@ -507,19 +587,31 @@ async function createHarness(options: {
   };
 }
 
-async function startTestBridge(h: {
-  profileConfig: ReturnType<typeof createDefaultProfileConfig>;
-  agent: FakeAgentAdapter;
-  sessions: SessionStore;
-  workspaces: WorkspaceStore;
-  controls: ReturnType<typeof createControls>;
-}): Promise<void> {
+async function startTestBridge(
+  h: {
+    profileConfig: ReturnType<typeof createDefaultProfileConfig>;
+    agent: FakeAgentAdapter;
+    sessions: SessionStore;
+    workspaces: WorkspaceStore;
+    controls: ReturnType<typeof createControls>;
+    tmp?: TmpProfile;
+  },
+  agent: AgentAdapter = h.agent,
+  callbacks = false,
+): Promise<void> {
+  const sessionCatalog = callbacks && h.tmp ? new SessionCatalog(join(h.tmp.profile, 'session-catalog.json')) : undefined;
   const bridge = await startChannel({
     cfg: h.profileConfig,
-    agent: h.agent,
+    agent,
     sessions: h.sessions,
     workspaces: h.workspaces,
     controls: h.controls,
+    sessionCatalog,
+    ...(callbacks && h.tmp ? { appPaths: {
+      mediaDir: join(h.tmp.profile, 'media'),
+      secretsFile: join(h.tmp.profile, 'secrets.enc'),
+      keystoreSaltFile: join(h.tmp.profile, '.keystore.salt'),
+    } } : {}),
   });
   cleanups.push(() => bridge.disconnect());
 }
@@ -642,10 +734,10 @@ function lastMarkdown(channel: FakeLarkChannel): string {
   return content?.markdown ?? '';
 }
 
-async function waitFor(predicate: () => boolean, timeoutMs = 3000): Promise<void> {
+async function waitFor(predicate: () => boolean | Promise<boolean>, timeoutMs = 3000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    if (predicate()) return;
+    if (await predicate()) return;
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
   throw new Error('timed out waiting for async work');

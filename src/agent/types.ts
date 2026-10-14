@@ -46,6 +46,8 @@ export interface AgentRunOptions {
    * are adapter-specific.
   */
   stopGraceMs?: number;
+  /** Bridge 签发的当前 run 登记授权，不含应用密钥。 */
+  callbackToken?: string;
 }
 
 export interface AgentRun {

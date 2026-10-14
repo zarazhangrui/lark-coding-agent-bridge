@@ -156,6 +156,9 @@ export async function startRunFlow(input: StartRunFlowInput): Promise<StartRunFl
               .filter((path): path is string => Boolean(path))
           : undefined,
       stopGraceMs: input.stopGraceMs,
+      ...((input.scope.source === 'im' || input.scope.source === 'card') && input.scope.chatId ? {
+        callbackContext: { chatId: input.scope.chatId, operatorOpenId: input.scope.actorId, agentId: input.capability.agentId },
+      } : {}),
       observability: input.observability,
     });
   } catch (err) {

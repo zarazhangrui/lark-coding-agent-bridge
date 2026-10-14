@@ -16,6 +16,42 @@
 - **多工作空间**：用 `/cd` 切换当前项目，用 `/ws` 保存和复用常用项目目录。
 - **图片 / 文件**：直接发给 bot，bridge 下载到本地后交给本机 agent 处理。
 - **卡片按钮**：`/help`、`/ws list`、`/status` 返回可点击的交互卡片。
+- **自定义回调卡**：agent 可登记一次性 `callback_id`；用户在 run 结束后点击仍能恢复同一会话的新一轮。
+
+## agent 自定义回调卡
+
+在 Bridge 启动的 agent run 中，先声明允许的选项和表单数据 schema，然后登记回调：
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "choice": { "type": "string", "enum": ["a", "b"] },
+    "form_value": {
+      "type": "object",
+      "properties": { "note": { "type": "string", "maxLength": 500 } }
+    }
+  },
+  "required": ["choice"]
+}
+```
+
+```bash
+lark-channel-bridge callback create --schema callback-schema.json
+# JSON: {"callback_id":"...","action":"agent_callback","expires_at":"..."}
+```
+
+在 CardKit 2.0 按钮的 callback value 中放入 `{"__bridge_cb":true,"callback_id":"登记返回的 id","choice":"a"}`，用当前 profile 的 `lark-cli` 发卡并读取消息回执，然后绑定实际卡片消息：
+
+```bash
+lark-channel-bridge callback bind --id <callback_id> --message-id <message_id>
+```
+
+登记和绑定都必须在原 run 结束前完成，未绑定的卡片点击会被拒绝。完成绑定后，点击可在原 run 结束后进入同一聊天或话题的下一轮；一个 id 只接受一次成功点击。Bridge 检查来源消息、chat、操作者、当前策略、来源 session/thread、有效期和数据 schema，移除内部 callback 字段，再将数据作为 `[card-click] {...}` 用户输入转发。执行 `/new` 或切换 session 后，旧卡不能进入新会话。表单值来自用户，应作为不可信数据处理。
+
+默认 TTL 是 3600 秒，`--ttl-seconds` 允许 1–86400 的整数。第一版只支持 `agent_callback`。schema 支持 `object`（`properties`、`required`、`additionalProperties:false`）、`string`（`enum`、`maxLength`）、`number`/`integer`（`minimum`、`maximum`）、`boolean` 和 `array`（`items`、`maxItems`）；默认拒绝未知字段，保留内部字段不能声明。schema 和回调数据各限 16 KiB，嵌套最多 5 层、每个对象最多 64 个字段、字符串最多 4096 字符、数组最多 32 项；不支持的 schema 规则会报错。
+
+登记授权由 Bridge 注入当前子进程，并在 run 结束时撤销；不接受调用方通过环境变量指定 run/chat/operator/策略。registry 保存在 profile 的 `callback-registry.json`，读写使用跨进程文件锁和原子落盘。平台提供 `event_id` 时持久去重；SDK 只保留 body 时使用平台事件 token，无事件标识时仍以 callback id 保证一次性。旧 `bridge_token` 回调与纯展示卡保持兼容。
 
 ## 前置条件
 

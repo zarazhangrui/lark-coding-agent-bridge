@@ -5,6 +5,8 @@ import type { ChatModeCache } from '../bot/chat-mode-cache';
 import type { PendingQueue } from '../bot/pending-queue';
 import type { ProcessPool } from '../bot/process-pool';
 import type { CallbackAuth } from './callback-auth';
+import type { CallbackExpected, CallbackRegistryStore } from './callback-registry';
+import type { AccessDecision } from '../policy/access';
 import { runCommandHandler, type CommandContext, type Controls } from '../commands';
 import { log } from '../core/logger';
 import { canUseDm, canUseGroup } from '../policy/access';
@@ -38,6 +40,7 @@ export interface CardDispatchDeps {
   pending: PendingQueue;
   chatModeCache: ChatModeCache;
   callbackAuth?: CallbackAuth;
+  callbackRegistry?: CallbackRegistryStore;
   callbackPolicyFingerprint?: string;
   callbackPolicyFingerprintForScope?: (scope: string) => string | undefined;
 }
@@ -56,7 +59,7 @@ export async function handleCardAction(deps: CardDispatchDeps): Promise<void> {
   const raw = (deps.evt as CardActionEvent & { raw?: unknown }).raw as
     | { action?: { form_value?: Record<string, unknown> } }
     | undefined;
-  const formValue = raw?.action?.form_value;
+  const formValue = deps.evt.action.formValue ?? raw?.action?.form_value;
 
   // Resolve the click's session scope. For topic groups we need to know
   // the message's thread_id so the action targets the right topic's
@@ -79,6 +82,39 @@ export async function handleCardAction(deps: CardDispatchDeps): Promise<void> {
 
   if (LEGACY_CLAUDE_CALLBACK_MARKER in payload) {
     log.info('cardAction', 'skip-legacy-callback-marker', { scope });
+    return;
+  }
+
+  const hasLegacyToken = typeof payload.bridge_token === 'string' && Boolean(payload.bridge_token);
+  if ('callback_id' in payload && !hasLegacyToken) {
+    if (payload.__bridge_cb !== true || typeof payload.callback_id !== 'string' || !deps.callbackRegistry) {
+      log.warn('callback', 'denied', { scope, reason: 'invalid-registry-callback' });
+      return;
+    }
+    const expected = await registryCallbackContext(deps, scope, threadId, mode, accessDecision);
+    if (!expected) {
+      log.warn('callback', 'denied', { scope, reason: 'session-or-policy-unavailable' });
+      return;
+    }
+    const { __bridge_cb: _marker, callback_id: _id, bridge_token: _token, ...data } = payload;
+    try {
+      const result = await deps.callbackRegistry.consume(payload.callback_id, expected,
+        formValue ? { ...data, form_value: formValue } : data, callbackEventId(deps.evt));
+      if (!result.ok) {
+        log.warn('callback', 'denied', { scope, action: 'agent_callback', reason: result.reason });
+        return;
+      }
+      // 消费落盘期间 /new 或策略命令可能已经执行，入队前再核对来源会话。
+      const current = await registryCallbackContext(deps, scope, threadId, mode, accessDecision);
+      if (!current || Object.entries(expected).some(([key, value]) => current[key as keyof CallbackExpected] !== value)) {
+        log.warn('callback', 'denied', { scope, reason: 'context-changed' });
+        return;
+      }
+      forwardToAgent(deps, result.data, undefined, scope, threadId, mode);
+    } catch (err) {
+      log.fail('callback-registry', err, { step: 'consume' });
+      log.warn('callback', 'denied', { scope, reason: 'storage-unavailable' });
+    }
     return;
   }
 
@@ -141,23 +177,50 @@ export async function handleCardAction(deps: CardDispatchDeps): Promise<void> {
   return;
 }
 
+function callbackEventId(evt: CardActionEvent): string | undefined {
+  // SDK 版本可能只保留事件 body，使用平台 token 作为无 header 时的投递标识。
+  const raw = evt.raw as { event_id?: unknown; header?: { event_id?: unknown }; token?: unknown } | undefined;
+  const id = raw?.header?.event_id ?? raw?.event_id ?? raw?.token;
+  return typeof id === 'string' && id.length <= 200 ? id : undefined;
+}
+
+async function registryCallbackContext(
+  deps: CardDispatchDeps, scope: string, threadId: string | undefined,
+  mode: 'p2p' | 'group' | 'topic', access: AccessDecision,
+): Promise<CallbackExpected | undefined> {
+  const identity = await commandSessionCatalogIdentity({
+    msg: makeFakeMsg(deps.evt, threadId), scope, mode,
+    workspaces: deps.workspaces, controls: deps.controls, access,
+  });
+  if (!identity) return undefined;
+  const entry = deps.sessionCatalog?.activeFor(identity);
+  const agentSessionId = identity.agentId === 'claude'
+    ? entry?.sessionId ?? deps.sessions.resumeFor(scope, identity.cwdRealpath)
+    : entry?.threadId;
+  if (!agentSessionId) return undefined;
+  return {
+    scope, chatId: deps.evt.chatId, operatorOpenId: deps.evt.operator.openId,
+    policyFingerprint: deps.callbackPolicyFingerprint ?? identity.policyFingerprint,
+    messageId: deps.evt.messageId, agentId: identity.agentId, agentSessionId,
+  };
+}
+
 async function resolveScope(
   deps: CardDispatchDeps,
 ): Promise<{ scope: string; threadId: string | undefined; mode: 'p2p' | 'group' | 'topic' }> {
   const chatId = deps.evt.chatId;
   const mode = await deps.chatModeCache.resolve(deps.channel, chatId);
-  if (mode !== 'topic') {
+  if (mode === 'p2p') {
     return { scope: chatId, threadId: undefined, mode };
   }
-  // Topic group — need the carrier message's thread_id to compose scope.
-  // One API call per click; could cache by messageId if it ever becomes hot.
+  // 与消息管线一致：群聊以卡片消息的 thread_id 为准，chat_mode 可能仍为 group。
   const threadId = await lookupMessageThreadId(deps.channel, deps.evt.messageId);
   if (!threadId) {
     // Fall back to plain chatId. Better to land in the chat's "default"
     // scope than fail the click silently.
     return { scope: chatId, threadId: undefined, mode };
   }
-  return { scope: `${chatId}:${threadId}`, threadId, mode };
+  return { scope: `${chatId}:${threadId}`, threadId, mode: 'topic' };
 }
 
 function forwardToAgent(
