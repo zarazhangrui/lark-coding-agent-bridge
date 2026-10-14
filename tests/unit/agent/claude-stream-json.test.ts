@@ -83,6 +83,35 @@ describe('Claude stream-json translator', () => {
     expect([...translateEvent({ type: 'result', session_id: 'sess-2' })][0]).not.toHaveProperty('threadId');
   });
 
+  it('maps a successful result to final_text before usage and done', () => {
+    expect([
+      ...translateEvent({
+        type: 'result',
+        subtype: 'success',
+        result: '第一段原文\n\n第二段原文',
+        session_id: 'sess-final',
+        usage: { input_tokens: 1, output_tokens: 2 },
+      }),
+    ]).toEqual([
+      { type: 'final_text', content: '第一段原文\n\n第二段原文' },
+      { type: 'usage', inputTokens: 1, outputTokens: 2 },
+      { type: 'done', sessionId: 'sess-final', terminationReason: 'normal' },
+    ]);
+  });
+
+  it('does not map blank, missing, or errored result text', () => {
+    const resultEvents = [
+      { type: 'result', subtype: 'success', result: '   \n\t' },
+      { type: 'result', subtype: 'success', is_error: true, result: 'should not send' },
+      { type: 'result', subtype: 'error', result: 'should not send' },
+      { type: 'result', subtype: 'success' },
+    ];
+
+    for (const raw of resultEvents) {
+      expect([...translateEvent(raw)].filter((event) => event.type === 'final_text')).toEqual([]);
+    }
+  });
+
   it('ignores unknown, empty, and incomplete raw events', () => {
     expect([...translateEvent(null)]).toEqual([]);
     expect([...translateEvent({ type: 'assistant', message: { content: [{ type: 'text', text: '' }] } })]).toEqual([]);
@@ -121,6 +150,37 @@ describe('Claude stream-json reader behavior', () => {
         message: `claude exited with code 7: ${stderr}`,
         terminationReason: 'failed',
       },
+    ]);
+  });
+
+  it('delivers the raw successful result through the real adapter', async () => {
+    const binary = await createFakeBinary([
+      JSON.stringify({
+        type: 'assistant',
+        message: { content: [{ type: 'text', text: 'assistant process' }] },
+      }),
+      JSON.stringify({
+        type: 'result',
+        subtype: 'success',
+        result: '第一段答案\n第二段答案',
+        session_id: 'sess-real-adapter',
+        usage: { input_tokens: 7, output_tokens: 8 },
+      }),
+    ], 0, '');
+    cleanup = binary.cleanup;
+
+    const run = new ClaudeAdapter({ binary: binary.path }).run({
+      runId: 'run-real-adapter',
+      prompt: 'hi',
+      cwd: tmpdir(),
+    });
+    const events = await collect(run.events);
+
+    expect(events).toEqual([
+      { type: 'text', delta: 'assistant process' },
+      { type: 'final_text', content: '第一段答案\n第二段答案' },
+      { type: 'usage', inputTokens: 7, outputTokens: 8 },
+      { type: 'done', sessionId: 'sess-real-adapter', terminationReason: 'normal' },
     ]);
   });
 });

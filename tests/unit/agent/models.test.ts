@@ -1,10 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import {
+  CODEX_REASONING_LEVELS,
   DEFAULT_MODEL,
   isDefaultModel,
   modelLabel,
   normalizeModelSelection,
+  normalizeReasoningEffort,
+  reasoningLevelLabel,
   resolveModelArg,
+  resolveReasoningEffort,
   supportedModels,
 } from '../../../src/agent/models.js';
 
@@ -15,8 +19,8 @@ describe('agent model catalog', () => {
     expect(claude[0]?.value).toBe(DEFAULT_MODEL);
     expect(codex[0]?.value).toBe(DEFAULT_MODEL);
     expect(claude.map((m) => m.value)).toContain('claude-opus-4-8');
-    expect(codex.map((m) => m.value)).toContain('gpt-5-codex');
-    expect(claude.map((m) => m.value)).not.toContain('gpt-5-codex');
+    expect(codex.map((m) => m.value)).toContain('gpt-6.1-sol');
+    expect(claude.map((m) => m.value)).not.toContain('gpt-6.1-sol');
   });
 
   it('treats unset and the default sentinel as "use agent default"', () => {
@@ -44,5 +48,39 @@ describe('agent model catalog', () => {
   it('labels a stored value using the picker option text', () => {
     expect(modelLabel('claude', 'claude-opus-4-8')).toBe('Opus 4.8（最新）');
     expect(modelLabel('claude', DEFAULT_MODEL)).toContain('跟随默认');
+  });
+});
+
+describe('codex reasoning effort catalog', () => {
+  it('offers the default sentinel plus the five shared levels, without ultra', () => {
+    expect(CODEX_REASONING_LEVELS[0]?.value).toBe(DEFAULT_MODEL);
+    expect(CODEX_REASONING_LEVELS.map((l) => l.value)).toEqual([
+      DEFAULT_MODEL,
+      'low',
+      'medium',
+      'high',
+      'xhigh',
+      'max',
+    ]);
+  });
+
+  it('coerces unknown / non-codex effort values back to the default', () => {
+    expect(normalizeReasoningEffort('codex', 'xhigh')).toBe('xhigh');
+    // `ultra` is model-specific and intentionally not offered.
+    expect(normalizeReasoningEffort('codex', 'ultra')).toBe(DEFAULT_MODEL);
+    expect(normalizeReasoningEffort('codex', undefined)).toBe(DEFAULT_MODEL);
+    expect(normalizeReasoningEffort('claude', 'high')).toBe(DEFAULT_MODEL);
+  });
+
+  it('resolves the -c override value, omitting it for the default', () => {
+    expect(resolveReasoningEffort('codex', 'high')).toBe('high');
+    expect(resolveReasoningEffort('codex', DEFAULT_MODEL)).toBeUndefined();
+    expect(resolveReasoningEffort('codex', undefined)).toBeUndefined();
+    expect(resolveReasoningEffort('claude', 'high')).toBeUndefined();
+  });
+
+  it('labels a stored effort using the picker option text', () => {
+    expect(reasoningLevelLabel('codex', 'xhigh')).toBe('超高（xhigh）');
+    expect(reasoningLevelLabel('codex', DEFAULT_MODEL)).toContain('跟随默认');
   });
 });

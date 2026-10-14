@@ -24,6 +24,7 @@ import {
   runServiceUnregister,
 } from './commands/service';
 import { runStart } from './commands/start';
+import { runCallbackBind, runCallbackCreate } from './commands/callback';
 import { runUi } from './commands/ui';
 
 const program = new Command();
@@ -221,6 +222,21 @@ program
   .action(async (opts: { profile?: string; webUi?: boolean }) => {
     await runServiceUnregister({ profile: opts.profile, webUi: opts.webUi });
   });
+
+const callback = program.command('callback').description('登记并绑定当前 agent run 的一次性卡片回调');
+
+callback.command('create')
+  .description('创建 callback_id，发卡后必须绑定消息回执')
+  .requiredOption('--schema <file>', '回调数据的 JSON schema 文件')
+  .option('--action <name>', '只支持 agent_callback')
+  .option('--ttl-seconds <seconds>', '有效期，默认 3600 秒，最大 86400 秒')
+  .action(runCallbackCreate);
+
+callback.command('bind')
+  .description('将 callback_id 绑定到已发送卡片的 message_id')
+  .requiredOption('--id <id>', 'callback create 返回的 callback_id')
+  .requiredOption('--message-id <id>', '发卡回执中的 message_id')
+  .action(runCallbackBind);
 
 const secrets = program
   .command('secrets')

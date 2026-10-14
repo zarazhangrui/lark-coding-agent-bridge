@@ -38,9 +38,13 @@ const CLAUDE_MODELS: ModelOption[] = [
 /** Codex CLI models. Forwarded to `codex exec --model`. */
 const CODEX_MODELS: ModelOption[] = [
   { value: DEFAULT_MODEL, label: '跟随默认（不指定）' },
-  { value: 'gpt-5-codex', label: 'GPT-5 Codex' },
-  { value: 'gpt-5', label: 'GPT-5' },
-  { value: 'o3', label: 'o3' },
+  { value: 'gpt-6.1-sol', label: 'GPT-6.1-Sol（最新主力）' },
+  { value: 'gpt-6-astra', label: 'GPT-6-Astra（最强前沿）' },
+  { value: 'gpt-6-sol', label: 'GPT-6-Sol' },
+  { value: 'gpt-6-luna', label: 'GPT-6-Luna（快速经济）' },
+  { value: 'gpt-5.6-sol', label: 'GPT-5.6-Sol' },
+  { value: 'gpt-5.6-terra', label: 'GPT-5.6-Terra' },
+  { value: 'gpt-5.6-luna', label: 'GPT-5.6-Luna' },
 ];
 
 /** The model picker options for a profile's agent kind. */
@@ -86,4 +90,54 @@ export function resolveModelArg(
 export function modelLabel(agentKind: AgentKind, value: string | undefined): string {
   const normalized = normalizeModelSelection(agentKind, value);
   return supportedModels(agentKind).find((m) => m.value === normalized)?.label ?? normalized;
+}
+
+/**
+ * Codex reasoning-effort levels for the `/config` picker, forwarded as
+ * `codex exec -c model_reasoning_effort="<level>"`. Only levels shared by
+ * every catalog model are offered (`ultra` is model-specific, so it is
+ * omitted); `DEFAULT_MODEL` means "don't override" so the user's Codex
+ * config decides.
+ */
+export const CODEX_REASONING_LEVELS: ModelOption[] = [
+  { value: DEFAULT_MODEL, label: '跟随默认（不指定）' },
+  { value: 'low', label: '低（low）' },
+  { value: 'medium', label: '中（medium）' },
+  { value: 'high', label: '高（high）' },
+  { value: 'xhigh', label: '超高（xhigh）' },
+  { value: 'max', label: '最高（max）' },
+];
+
+/**
+ * Coerce a stored reasoning effort into a value guaranteed to be one of the
+ * picker options (same `select_static` exact-match constraint as models).
+ * Claude profiles and unknown values fall back to {@link DEFAULT_MODEL}.
+ */
+export function normalizeReasoningEffort(
+  agentKind: AgentKind,
+  value: string | undefined,
+): string {
+  if (agentKind !== 'codex' || isDefaultModel(value)) return DEFAULT_MODEL;
+  return CODEX_REASONING_LEVELS.some((l) => l.value === value)
+    ? (value as string)
+    : DEFAULT_MODEL;
+}
+
+/**
+ * Resolve the concrete effort level to hand Codex as a
+ * `-c model_reasoning_effort=...` override, or `undefined` to omit it (Codex
+ * then uses its own config). Claude profiles always resolve to `undefined`.
+ */
+export function resolveReasoningEffort(
+  agentKind: AgentKind,
+  value: string | undefined,
+): string | undefined {
+  const normalized = normalizeReasoningEffort(agentKind, value);
+  return normalized === DEFAULT_MODEL ? undefined : normalized;
+}
+
+/** Picker label for a stored effort, for display in the saved-config card. */
+export function reasoningLevelLabel(agentKind: AgentKind, value: string | undefined): string {
+  const normalized = normalizeReasoningEffort(agentKind, value);
+  return CODEX_REASONING_LEVELS.find((l) => l.value === normalized)?.label ?? normalized;
 }

@@ -18,6 +18,7 @@ import type { AgentAdapter, AgentEvent } from '../agent/types';
 import { handleCardAction } from '../card/dispatcher';
 import { CallbackAuth } from '../card/callback-auth';
 import { CallbackNonceStore } from '../card/callback-store';
+import { CallbackRegistryStore } from '../card/callback-registry';
 import { renderCard } from '../card/run-renderer';
 import {
   finalizeIfRunning,
@@ -190,7 +191,6 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
   // Concurrency cap — reads `preferences.maxConcurrentRuns` on each acquire,
   // so /config bumps take effect for the next run.
   const pool = new ProcessPool(() => getMaxConcurrentRuns(controls.cfg));
-  const executor = new RunExecutor({ agent, pool, activeRuns });
 
   // Resolve the App Secret to plaintext. The config field can be a literal
   // string, a "${VAR}" template, or a {source, id} SecretRef referencing
@@ -201,6 +201,11 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
     ? new CallbackNonceStore(join(dirname(deps.appPaths.mediaDir), 'callback-nonces.json'))
     : undefined;
   await callbackNonceStore?.load();
+  const callbackRegistry = deps.appPaths?.mediaDir
+    ? new CallbackRegistryStore(join(dirname(deps.appPaths.mediaDir), 'callback-registry.json'))
+    : undefined;
+  await callbackRegistry?.endAllRuns();
+  const executor = new RunExecutor({ agent, pool, activeRuns, callbackRegistry });
   const callbackAuth = callbackNonceStore
     ? new CallbackAuth({
         keys: [{ version: 1, secret: appSecret }],
@@ -372,6 +377,7 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
           chatModeCache,
           callbackAuth,
           callbackPolicyFingerprintForScope: (scope) => activePolicyFingerprints.get(scope),
+          callbackRegistry,
         });
       }).catch((err) => log.fail('cardAction', err));
     },
@@ -525,6 +531,7 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
         sessions.flush(),
         sessionCatalog?.flush(),
         callbackNonceStore?.flush(),
+        callbackRegistry?.close(),
         workspaces.flush(),
       ]);
       if (stopAllResult.status === 'rejected') {
@@ -1274,7 +1281,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
         chatId,
         scope,
         state:
-          controls.profileConfig.agentKind === 'codex'
+          controls.profileConfig.agentKind === 'codex' || finalState.finalText?.trim()
             ? finalAnswerOnlyState(filterForPrefs(finalState))
             : filterForPrefs(finalState),
         replyMode,

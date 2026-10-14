@@ -111,6 +111,7 @@ describe('CodexAdapter process contract', () => {
       runId: 'run-profile-env',
       prompt: 'profile',
       cwd: await realpath(fake.dir),
+      callbackToken: 'opaque-run-grant',
     });
 
     await collect(run.events);
@@ -122,6 +123,7 @@ describe('CodexAdapter process contract', () => {
       LARK_CHANNEL_HOME: rootDir,
       LARK_CHANNEL_CONFIG: larkCliSourceConfigFile,
       LARKSUITE_CLI_CONFIG_DIR: larkCliConfigDir,
+      LARK_CHANNEL_CALLBACK_TOKEN: 'opaque-run-grant',
       CODEX_HOME: '/outer/codex-home',
     });
   });
@@ -179,6 +181,32 @@ describe('CodexAdapter process contract', () => {
         images: [image],
       }),
     );
+  });
+
+  it('forwards the reasoning effort override into the Codex argv', async () => {
+    const fake = await createFakeCodex({
+      lines: [{ type: 'turn.completed' }],
+    });
+    cleanup.push(fake.dir);
+    const cwd = await realpath(fake.dir);
+
+    const run = new CodexAdapter({
+      binary: fake.path,
+      profileStateDir: fake.dir,
+      sandbox: 'read-only',
+    }).run({
+      runId: 'run-effort',
+      prompt: 'effort',
+      cwd,
+      reasoningEffort: 'xhigh',
+    });
+
+    await collect(run.events);
+    const record = await readRecord(fake.recordPath);
+    expect(record.argv).toEqual(
+      buildCodexArgs({ cwd, sandbox: 'read-only', reasoningEffort: 'xhigh' }),
+    );
+    expect(record.argv).toContain('model_reasoning_effort="xhigh"');
   });
 
   it('lets per-run policy sandbox override the adapter default', async () => {
@@ -449,6 +477,7 @@ async function createFakeCodex(options: {
       '    env: {',
       '      LARK_CHANNEL: process.env.LARK_CHANNEL,',
       '      LARK_CHANNEL_PROFILE: process.env.LARK_CHANNEL_PROFILE,',
+      '      LARK_CHANNEL_CALLBACK_TOKEN: process.env.LARK_CHANNEL_CALLBACK_TOKEN,',
       '      LARK_CHANNEL_HOME: process.env.LARK_CHANNEL_HOME,',
       '      LARK_CHANNEL_CONFIG: process.env.LARK_CHANNEL_CONFIG,',
       '      LARKSUITE_CLI_CONFIG_DIR: process.env.LARKSUITE_CLI_CONFIG_DIR,',

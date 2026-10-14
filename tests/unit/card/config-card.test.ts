@@ -5,6 +5,7 @@ const base: ConfigFormOpts = {
   agentKind: 'claude',
   mode: 'personal',
   model: 'default',
+  reasoningEffort: 'default',
   messageReply: 'markdown',
   showToolCalls: false,
   cotMessages: 'off',
@@ -29,5 +30,15 @@ describe('configFormCard console URL', () => {
   it('omits the console section when no console is running', () => {
     const card = configFormCard(base);
     expect(JSON.stringify(card)).not.toContain('Web 控制台');
+  });
+});
+
+describe('configFormCard reasoning effort picker', () => {
+  it('shows the effort picker for codex profiles only', () => {
+    const codex = configFormCard({ ...base, agentKind: 'codex', reasoningEffort: 'xhigh' });
+    expect(JSON.stringify(codex)).toContain('reasoning_effort');
+    expect(JSON.stringify(codex)).toContain('超高（xhigh）');
+    const claude = configFormCard({ ...base, agentKind: 'claude' });
+    expect(JSON.stringify(claude)).not.toContain('reasoning_effort');
   });
 });

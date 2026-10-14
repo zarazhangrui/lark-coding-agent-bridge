@@ -1,5 +1,5 @@
 import type { AgentCapability } from '../agent/capability';
-import { resolveModelArg } from '../agent/models';
+import { resolveModelArg, resolveReasoningEffort } from '../agent/models';
 import type { AgentEvent } from '../agent/types';
 import type { ProfileConfig } from '../config/profile-schema';
 import type { AccessDecision } from '../policy/access';
@@ -148,6 +148,10 @@ export async function startRunFlow(input: StartRunFlowInput): Promise<StartRunFl
         input.profileConfig.agentKind,
         input.profileConfig.preferences.model,
       ),
+      reasoningEffort: resolveReasoningEffort(
+        input.profileConfig.agentKind,
+        input.profileConfig.preferences.reasoningEffort,
+      ),
       images:
         input.capability.agentId === 'codex'
           ? policy.attachments
@@ -156,6 +160,9 @@ export async function startRunFlow(input: StartRunFlowInput): Promise<StartRunFl
               .filter((path): path is string => Boolean(path))
           : undefined,
       stopGraceMs: input.stopGraceMs,
+      ...((input.scope.source === 'im' || input.scope.source === 'card') && input.scope.chatId ? {
+        callbackContext: { chatId: input.scope.chatId, operatorOpenId: input.scope.actorId, agentId: input.capability.agentId },
+      } : {}),
       observability: input.observability,
     });
   } catch (err) {

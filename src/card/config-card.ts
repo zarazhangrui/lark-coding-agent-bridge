@@ -1,4 +1,4 @@
-import { modelLabel, supportedModels } from '../agent/models';
+import { CODEX_REASONING_LEVELS, modelLabel, reasoningLevelLabel, supportedModels } from '../agent/models';
 import type { KnownChat } from '../bot/lark-info';
 import type { AgentKind, LarkCliIdentityPreset, ProfileMode } from '../config/profile-schema';
 import type { CotMessagesMode, MessageReplyMode } from '../config/schema';
@@ -10,6 +10,11 @@ export interface ConfigFormOpts {
   mode: ProfileMode;
   /** Current model selection (a value from {@link supportedModels}). */
   model: string;
+  /**
+   * Current reasoning-effort selection for codex profiles (a value from
+   * {@link CODEX_REASONING_LEVELS}); ignored for claude.
+   */
+  reasoningEffort: string;
   messageReply: MessageReplyMode;
   showToolCalls: boolean;
   cotMessages: CotMessagesMode;
@@ -169,6 +174,25 @@ export function configFormCard(opts: ConfigFormOpts): object {
                 value: m.value,
               })),
             },
+            ...(opts.agentKind === 'codex'
+              ? [
+                  {
+                    tag: 'markdown',
+                    content:
+                      '\n**思考程度（reasoning effort）**\n' +
+                      '_仅 Codex 生效；「跟随默认」= 不指定，由 codex 配置决定_',
+                  },
+                  {
+                    tag: 'select_static',
+                    name: 'reasoning_effort',
+                    initial_option: opts.reasoningEffort,
+                    options: CODEX_REASONING_LEVELS.map((l) => ({
+                      text: { tag: 'plain_text', content: l.label },
+                      value: l.value,
+                    })),
+                  },
+                ]
+              : []),
             { tag: 'hr' },
             {
               tag: 'markdown',
@@ -338,6 +362,10 @@ export function configSavedCard(opts: ConfigFormOpts): object {
   const summarize = (list: string[]): string =>
     list.length === 0 ? '_(空)_' : `${list.length} 项`;
   const cotLabel = cotMessagesLabel(opts.cotMessages);
+  const effortLine =
+    opts.agentKind === 'codex'
+      ? `**思考程度**:\`${reasoningLevelLabel(opts.agentKind, opts.reasoningEffort)}\`\n`
+      : '';
   return {
     schema: '2.0',
     config: { summary: { content: '偏好已保存' } },
@@ -349,6 +377,7 @@ export function configSavedCard(opts: ConfigFormOpts): object {
             '✅ **偏好已保存**\n\n' +
             `**运行模式**:\`${opts.mode === 'team' ? '团队版' : '个人版'}\`\n` +
             `**模型**:\`${modelLabel(opts.agentKind, opts.model)}\`\n` +
+            effortLine +
             `**消息回复方式**:${replyLabel}\n` +
             `**工具调用显示**:\`${opts.showToolCalls ? 'show' : 'hide'}\`\n` +
             `**COT 过程消息**:\`${cotLabel}\`\n` +

@@ -35,6 +35,11 @@ export interface AgentRunOptions {
   sessionId?: string;
   threadId?: string;
   model?: string;
+  /**
+   * Codex reasoning-effort override (low/medium/high/xhigh/max), forwarded
+   * via `-c model_reasoning_effort=...`. Claude adapters ignore it.
+   */
+  reasoningEffort?: string;
   images?: readonly string[];
   sandbox?: CodexSandboxMode;
   permissionMode?: ClaudePermissionMode;
@@ -46,6 +51,8 @@ export interface AgentRunOptions {
    * are adapter-specific.
   */
   stopGraceMs?: number;
+  /** Bridge 签发的当前 run 登记授权，不含应用密钥。 */
+  callbackToken?: string;
 }
 
 export interface AgentRun {

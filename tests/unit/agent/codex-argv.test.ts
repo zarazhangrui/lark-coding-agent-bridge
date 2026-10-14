@@ -136,4 +136,23 @@ describe('Codex argv contract', () => {
     ).toContain('--ignore-user-config');
   });
 
+  it('forwards the reasoning effort as a global -c override before resume', () => {
+    const args = buildCodexArgs({
+      cwd: '/repo',
+      sandbox: 'workspace-write',
+      threadId: 'thread-123',
+      reasoningEffort: 'xhigh',
+    });
+    const flagIdx = args.indexOf('model_reasoning_effort="xhigh"');
+    expect(flagIdx).toBeGreaterThan(-1);
+    expect(args[flagIdx - 1]).toBe('-c');
+    // Global flag: must come before the `resume` subcommand.
+    expect(flagIdx).toBeLessThan(args.indexOf('resume'));
+  });
+
+  it('omits the reasoning effort override when none is selected', () => {
+    const args = buildCodexArgs({ cwd: '/repo', sandbox: 'read-only' });
+    expect(args.join(' ')).not.toContain('model_reasoning_effort');
+  });
+
 });

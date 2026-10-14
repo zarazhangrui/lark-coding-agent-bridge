@@ -115,6 +115,13 @@ export interface AppPreferences {
    */
   model?: string;
   /**
+   * Codex reasoning-effort override (a value from `CODEX_REASONING_LEVELS` in
+   * `agent/models.ts`), forwarded as `-c model_reasoning_effort="<level>"`.
+   * `undefined` or the `'default'` sentinel means "don't override" so the
+   * user's Codex config decides. Codex profiles only.
+   */
+  reasoningEffort?: string;
+  /**
    * Whether to send a separate Lark COT process message before the final
    * answer. `brief` mirrors the lightweight tool/progress visibility from
    * the legacy tool display; `detailed` also includes tool args/output.

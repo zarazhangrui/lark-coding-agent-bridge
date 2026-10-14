@@ -4,7 +4,13 @@ import { homedir } from 'node:os';
 import { dirname, isAbsolute } from 'node:path';
 import type { LarkChannel, NormalizedMessage } from '@larksuite/channel';
 import { claudeCapability, codexCapability } from '../agent/capability';
-import { DEFAULT_MODEL, normalizeModelSelection, supportedModels } from '../agent/models';
+import {
+  CODEX_REASONING_LEVELS,
+  DEFAULT_MODEL,
+  normalizeModelSelection,
+  normalizeReasoningEffort,
+  supportedModels,
+} from '../agent/models';
 import type { AgentAdapter } from '../agent/types';
 import type { ActiveRuns } from '../bot/active-runs';
 import {
@@ -1744,6 +1750,10 @@ async function showConfigForm(ctx: CommandContext): Promise<void> {
       ctx.controls.profileConfig.agentKind,
       ctx.controls.cfg.preferences?.model,
     ),
+    reasoningEffort: normalizeReasoningEffort(
+      ctx.controls.profileConfig.agentKind,
+      ctx.controls.cfg.preferences?.reasoningEffort,
+    ),
     messageReply: getMessageReplyMode(ctx.controls.cfg),
     showToolCalls: getShowToolCalls(ctx.controls.cfg),
     cotMessages: getCotMessages(ctx.controls.cfg),
@@ -1808,6 +1818,20 @@ async function submitConfig(ctx: CommandContext): Promise<void> {
     ? rawModel
     : normalizeModelSelection(agentKind, ctx.controls.cfg.preferences?.model);
   const model = modelSelection === DEFAULT_MODEL ? undefined : modelSelection;
+  // Parse the reasoning-effort picker (codex profiles only). Unexpected /
+  // empty values keep the current selection. Store `undefined` for the
+  // "default" sentinel to keep config tidy (resolveReasoningEffort treats
+  // both the same way).
+  const rawEffort = String(fv.reasoning_effort ?? '').trim();
+  const effortValid =
+    agentKind === 'codex' &&
+    rawEffort !== '' &&
+    CODEX_REASONING_LEVELS.some((l) => l.value === rawEffort);
+  const reasoningEffortSelection = effortValid
+    ? rawEffort
+    : normalizeReasoningEffort(agentKind, ctx.controls.cfg.preferences?.reasoningEffort);
+  const reasoningEffort =
+    reasoningEffortSelection === DEFAULT_MODEL ? undefined : reasoningEffortSelection;
   const rawCotMessages = String(fv.cot_messages ?? '').trim();
   const cotMessages =
     rawCotMessages === 'brief'
@@ -1887,6 +1911,7 @@ async function submitConfig(ctx: CommandContext): Promise<void> {
     const nextPreferences: AppPreferences = {
       ...(ctx.controls.cfg.preferences ?? {}),
       model,
+      reasoningEffort,
       messageReply,
       // Mark the messageReply value as living in the new (post-0.1.27)
       // semantic — `text` now means real plain text, not the lightweight
@@ -1957,6 +1982,7 @@ async function submitConfig(ctx: CommandContext): Promise<void> {
         agentKind,
         mode,
         model: modelSelection,
+        reasoningEffort: reasoningEffortSelection,
         messageReply,
         showToolCalls,
         cotMessages,
