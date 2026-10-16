@@ -46,6 +46,7 @@ export function createRuntimeAgent(
       ignoreUserConfig: codex.ignoreUserConfig === true,
       ignoreRules: codex.ignoreRules !== false,
       sandbox: profileConfig.sandbox.defaultMode,
+      approvalMode: profileConfig.permissions.codex?.approvalMode,
       larkChannel,
     });
   }

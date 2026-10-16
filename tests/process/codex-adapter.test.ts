@@ -5,6 +5,8 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { CodexAdapter } from '../../src/agent/codex/adapter.js';
 import { buildCodexArgs } from '../../src/agent/codex/argv.js';
 import type { AgentEvent } from '../../src/agent/types.js';
+import { createDefaultProfileConfig } from '../../src/config/profile-schema.js';
+import { createRuntimeAgent } from '../../src/runtime/agent-runtime.js';
 
 interface FakeBinary {
   path: string;
@@ -84,6 +86,38 @@ describe('CodexAdapter process contract', () => {
       CODEX_HOME: '/outer/codex-home',
     });
     expect(record.env.APP_SECRET).toBe('inherited-secret');
+  });
+
+  it('passes profile automatic review settings to the Codex process', async () => {
+    const fake = await createFakeCodex({
+      lines: [{ type: 'thread.started', thread_id: 'thread-new' }, { type: 'turn.completed' }],
+    });
+    cleanup.push(fake.dir);
+    const profile = createDefaultProfileConfig({
+      agentKind: 'codex',
+      accounts: { app: { id: 'cli_test', secret: '${APP_SECRET}', tenant: 'feishu' } },
+      codex: { binaryPath: fake.path },
+      permissions: {
+        defaultAccess: 'workspace',
+        maxAccess: 'workspace',
+        codex: { approvalMode: 'auto-review' },
+      },
+    });
+    const agent = createRuntimeAgent(profile, { profileDir: fake.dir });
+    const run = agent.run({
+      runId: 'run-auto-review',
+      prompt: 'hello from lark',
+      cwd: await realpath(fake.dir),
+    });
+
+    expect(await collect(run.events)).toContainEqual({
+      type: 'done', threadId: 'thread-new', terminationReason: 'normal',
+    });
+    const record = await readRecord(fake.recordPath);
+    expect(record.argv).toContain('approval_policy="on-request"');
+    expect(record.argv).toContain('approvals_reviewer="auto_review"');
+    expect(record.argv).not.toContain('approval_policy="never"');
+    expect(record.argv[record.argv.indexOf('--sandbox') + 1]).toBe('workspace-write');
   });
 
   it('injects the active bridge profile env while preserving Codex env overrides', async () => {

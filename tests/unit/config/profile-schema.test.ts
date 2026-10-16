@@ -439,6 +439,46 @@ describe('profile schema', () => {
     expect(accessToClaudePermissionMode('full', cfg.permissions)).toBe('default');
   });
 
+  it.each(['never', 'auto-review'] as const)('preserves Codex approval mode %s', (approvalMode) => {
+    const cfg = createDefaultProfileConfig({
+      agentKind: 'codex',
+      accounts: { app },
+      codex: { binaryPath: '/usr/local/bin/codex' },
+      permissions: {
+        defaultAccess: 'workspace',
+        maxAccess: 'workspace',
+        codex: { approvalMode },
+      },
+    });
+
+    expect(cfg.permissions.codex).toEqual({ approvalMode });
+    expect(cfg.sandbox.defaultMode).toBe('workspace-write');
+  });
+
+  it.each([undefined, {}])('does not opt existing profiles into automatic review (%j)', (codex) => {
+    const cfg = createDefaultProfileConfig({
+      agentKind: 'codex',
+      accounts: { app },
+      codex: { binaryPath: '/usr/local/bin/codex' },
+      permissions: { codex },
+    });
+
+    expect(cfg.permissions.codex).toBeUndefined();
+  });
+
+  it.each([null, [], 'auto-review', { approvalMode: 'on-request' }, { approvalMode: true }])(
+    'rejects invalid Codex approval config (%j)',
+    (codex) => {
+      expect(() => normalizeProfileConfig({
+        schemaVersion: 2,
+        agentKind: 'codex',
+        accounts: { app },
+        codex: { binaryPath: '/usr/local/bin/codex' },
+        permissions: { codex },
+      })).toThrow(/invalid permission codex/);
+    },
+  );
+
   it('clamps access by both profile and capability maximums', () => {
     expect(clampAccess('full', 'workspace', 'full')).toBe('workspace');
     expect(clampAccess('workspace', 'full', 'read-only')).toBe('read-only');

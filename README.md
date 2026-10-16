@@ -218,6 +218,26 @@ Mode mapping:
 
 The legacy `sandbox` field is still readable for old configs. After the bridge saves the profile, it migrates that setting to canonical `permissions`.
 
+For Codex's **Approve for me** mode, set `permissions.codex.approvalMode` to
+`"auto-review"` in the matching profile, then restart the bridge:
+
+```json
+{
+  "permissions": {
+    "defaultAccess": "workspace",
+    "maxAccess": "workspace",
+    "codex": {
+      "approvalMode": "auto-review"
+    }
+  }
+}
+```
+
+Codex reviews approval requests automatically. This requires a Codex version that
+supports [Auto-review](https://learn.chatgpt.com/docs/sandboxing/auto-review).
+The configured sandbox stays unchanged; use `workspace` as above to retain a sandbox boundary.
+Omitting `approvalMode` or setting it to `"never"` preserves the existing behavior.
+
 ## Data directories
 
 | Path | Content |

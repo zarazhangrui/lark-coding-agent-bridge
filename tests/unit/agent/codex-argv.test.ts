@@ -46,6 +46,35 @@ describe('Codex argv contract', () => {
     ]);
   });
 
+  it.each([undefined, 'thread-123'])(
+    'enables automatic review without changing the sandbox (thread=%s)',
+    (threadId) => {
+      const args = buildCodexArgs({
+        cwd: '/repo',
+        sandbox: 'workspace-write',
+        approvalMode: 'auto-review',
+        threadId,
+      });
+
+      expect(args.slice(args.indexOf('--sandbox'), args.indexOf('--sandbox') + 6)).toEqual([
+        '--sandbox', 'workspace-write',
+        '-c', 'approval_policy="on-request"',
+        '-c', 'approvals_reviewer="auto_review"',
+      ]);
+      expect(args).not.toContain('approval_policy="never"');
+      // --approve-for-me conflicts with the existing --sandbox flag.
+      expect(args).not.toContain('--approve-for-me');
+      if (threadId) {
+        expect(args.indexOf('approvals_reviewer="auto_review"')).toBeLessThan(args.indexOf('resume'));
+      }
+    },
+  );
+
+  it('keeps explicit never mode identical to the existing default', () => {
+    const input = { cwd: '/repo', sandbox: 'read-only' as const };
+    expect(buildCodexArgs({ ...input, approvalMode: 'never' })).toEqual(buildCodexArgs(input));
+  });
+
   it('allows danger-full-access for Claude bridge parity', () => {
     expect(buildCodexArgs({ cwd: '/repo', sandbox: 'danger-full-access' })).toContain(
       'danger-full-access',

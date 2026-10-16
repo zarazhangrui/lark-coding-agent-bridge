@@ -1,8 +1,10 @@
 import type { SandboxMode } from '../../config/profile-schema';
+import type { CodexApprovalMode } from '../../config/permissions';
 
 export interface BuildCodexArgsInput {
   cwd: string;
   sandbox: SandboxMode;
+  approvalMode?: CodexApprovalMode;
   threadId?: string;
   images?: readonly string[];
   ignoreUserConfig?: boolean;
@@ -20,12 +22,16 @@ export function buildCodexArgs(input: BuildCodexArgsInput): string[] {
     throw new Error(`unsafe sandbox mode: ${input.sandbox}`);
   }
 
+  // Preserve existing profiles' never policy unless auto-review is opted into.
+  const approvalFlags = input.approvalMode === 'auto-review'
+    ? ['-c', 'approval_policy="on-request"', '-c', 'approvals_reviewer="auto_review"']
+    : ['-c', 'approval_policy="never"'];
+
   const globalFlags = [
     '--sandbox',
     input.sandbox,
     ...(input.model ? ['--model', input.model] : []),
-    '-c',
-    'approval_policy="never"',
+    ...approvalFlags,
     '-c',
     'shell_environment_policy.inherit="all"',
     ...(input.ignoreUserConfig === true ? ['--ignore-user-config'] : []),

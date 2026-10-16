@@ -1,5 +1,6 @@
 export type AccessMode = 'read-only' | 'workspace' | 'full';
 export type CodexSandboxMode = 'read-only' | 'workspace-write' | 'danger-full-access';
+export type CodexApprovalMode = 'never' | 'auto-review';
 export type ClaudePermissionMode = 'default' | 'acceptEdits' | 'bypassPermissions' | 'plan';
 
 export interface PermissionConfig {
@@ -7,6 +8,10 @@ export interface PermissionConfig {
   maxAccess: AccessMode;
   claude?: {
     permissionMode?: ClaudePermissionMode;
+  };
+  codex?: {
+    /** Omitted keeps the existing non-interactive approval policy. */
+    approvalMode?: CodexApprovalMode;
   };
 }
 
@@ -163,6 +168,7 @@ function normalizeCanonicalPermissions(
   assertAccessPair(defaultAccess, maxAccess);
 
   const claude = normalizeClaudePermissions(input.claude);
+  const codex = normalizeCodexPermissions(input.codex);
   if (claude?.permissionMode) {
     assertClaudePermissionWithinAccess(claude.permissionMode, maxAccess);
   }
@@ -170,6 +176,7 @@ function normalizeCanonicalPermissions(
     defaultAccess,
     maxAccess,
     ...(claude ? { claude } : {}),
+    ...(codex ? { codex } : {}),
   };
 }
 
@@ -225,6 +232,26 @@ function normalizeClaudePermissions(
   }
   return {
     permissionMode: input.permissionMode,
+  };
+}
+
+function normalizeCodexPermissions(
+  input: PermissionConfig['codex'] | undefined,
+): PermissionConfig['codex'] | undefined {
+  if (input === undefined) {
+    return undefined;
+  }
+  if (!isConfigObject(input)) {
+    throw new Error('invalid permission codex config');
+  }
+  if (input.approvalMode === undefined) {
+    return undefined;
+  }
+  if (input.approvalMode !== 'never' && input.approvalMode !== 'auto-review') {
+    throw new Error('invalid permission codex.approvalMode');
+  }
+  return {
+    approvalMode: input.approvalMode,
   };
 }
 

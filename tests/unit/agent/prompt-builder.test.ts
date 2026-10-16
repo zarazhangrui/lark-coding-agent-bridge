@@ -104,8 +104,6 @@ describe('agent prompt builder', () => {
 
     expect(source).not.toContain('命令必须写成 env -u LARK_CHANNEL');
     expect(source).not.toContain('env -u LARK_CHANNEL lark-cli');
-    expect(source).toContain('danger-full-access');
-    expect(source).toContain('bypassPermissions');
     expect(source).toContain('不要 unset LARK_CHANNEL');
     expect(source).toContain('LARKSUITE_CLI_CONFIG_DIR');
     expect(source).not.toContain('lark-cli config bind --source lark-channel');

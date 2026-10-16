@@ -133,7 +133,7 @@ describe('profile store canonical serialization', () => {
     expect(savedProfile).not.toHaveProperty('sandbox');
   });
 
-  it('loads canonical-only saved config and re-derives runtime sandbox', async () => {
+  it('round-trips Codex approval mode and re-derives runtime sandbox', async () => {
     const root = await tmpRoot();
     const configPath = join(root, 'config.json');
     const profile = createDefaultProfileConfig({
@@ -143,6 +143,7 @@ describe('profile store canonical serialization', () => {
       permissions: {
         defaultAccess: 'workspace',
         maxAccess: 'workspace',
+        codex: { approvalMode: 'auto-review' },
       },
     });
 
@@ -157,6 +158,7 @@ describe('profile store canonical serialization', () => {
     expect(loaded?.profiles.codex?.permissions).toEqual({
       defaultAccess: 'workspace',
       maxAccess: 'workspace',
+      codex: { approvalMode: 'auto-review' },
     });
     expect(loaded?.profiles.codex?.sandbox).toMatchObject({
       defaultMode: 'workspace-write',

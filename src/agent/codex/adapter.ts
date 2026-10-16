@@ -2,6 +2,7 @@ import { createInterface } from 'node:readline';
 import type { Readable, Writable } from 'node:stream';
 import { join } from 'node:path';
 import type { SandboxMode } from '../../config/profile-schema';
+import type { CodexApprovalMode } from '../../config/permissions';
 import { log } from '../../core/logger';
 import { mergeProcessEnv, spawnProcess, type SpawnedProcessByStdio } from '../../platform/spawn';
 import { SpawnFailed } from '../../runtime/errors';
@@ -26,6 +27,7 @@ export interface CodexAdapterOptions {
   ignoreUserConfig?: boolean;
   ignoreRules?: boolean;
   sandbox?: SandboxMode;
+  approvalMode?: CodexApprovalMode;
   stopGraceMs?: number;
   larkChannel?: LarkChannelEnvContext;
 }
@@ -43,6 +45,7 @@ export class CodexAdapter implements AgentAdapter {
   private readonly ignoreUserConfig: boolean;
   private readonly ignoreRules: boolean;
   private readonly sandbox: SandboxMode;
+  private readonly approvalMode: CodexApprovalMode | undefined;
   private readonly defaultStopGraceMs: number;
   private readonly larkChannel: LarkChannelEnvContext | undefined;
   private botIdentity: AgentBotIdentity | undefined;
@@ -55,6 +58,7 @@ export class CodexAdapter implements AgentAdapter {
     this.ignoreUserConfig = opts.ignoreUserConfig === true;
     this.ignoreRules = opts.ignoreRules !== false;
     this.sandbox = opts.sandbox ?? 'danger-full-access';
+    this.approvalMode = opts.approvalMode;
     this.defaultStopGraceMs = opts.stopGraceMs ?? 5000;
     this.larkChannel = opts.larkChannel;
   }
@@ -96,6 +100,7 @@ export class CodexAdapter implements AgentAdapter {
     const args = buildCodexArgs({
       cwd: opts.cwd,
       sandbox: opts.sandbox ?? this.sandbox,
+      approvalMode: this.approvalMode,
       threadId: opts.threadId,
       images: opts.images,
       ignoreUserConfig: this.ignoreUserConfig,
