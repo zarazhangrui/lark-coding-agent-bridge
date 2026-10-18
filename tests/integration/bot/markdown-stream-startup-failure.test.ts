@@ -389,9 +389,10 @@ describe('markdown stream startup failures', () => {
     ).toBe(false);
   });
 
-  it('sends one dedicated final reply card after progress completes in card mode', async () => {
+  it.each(['codex', 'pi'] as const)('sends one dedicated final reply for %s after progress completes in card mode', async (agentKind) => {
     const progressCards: unknown[] = [];
     const h = await createHarness({
+      agentKind,
       messageReply: 'card',
       events: [
         { type: 'text', delta: 'progress update' },
@@ -437,7 +438,7 @@ async function createHarness(options: {
   events?: FakeAgentEvents;
   messageReply?: 'card' | 'markdown' | 'text';
   /** Codex holds its answer back for a dedicated final reply; Claude streams it. */
-  agentKind?: 'claude' | 'codex';
+  agentKind?: 'claude' | 'codex' | 'pi';
 } = {}): Promise<{
   tmp: TmpProfile;
   channel: FakeLarkChannel;

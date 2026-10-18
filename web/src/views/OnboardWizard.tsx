@@ -133,6 +133,7 @@ export function OnboardWizard({ onCreated }: { onCreated: (profile: string) => v
             <SelectContent>
               <SelectItem value="claude">Claude Code</SelectItem>
               <SelectItem value="codex">Codex</SelectItem>
+              <SelectItem value="pi">Pi</SelectItem>
             </SelectContent>
           </Select>
         </div>

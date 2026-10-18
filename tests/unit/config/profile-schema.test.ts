@@ -221,7 +221,7 @@ describe('profile schema', () => {
     expect(cfg.workspaces).toEqual({ default: '/repo' });
   });
 
-  it('drops comment config while tolerating legacy comment fields', () => {
+  it('preserves the comment opt-out while dropping legacy comment fields', () => {
     const cfg = normalizeProfileConfig({
       schemaVersion: 2,
       agentKind: 'claude',
@@ -246,7 +246,7 @@ describe('profile schema', () => {
       },
     });
 
-    expect(cfg.comments).not.toHaveProperty('enabled');
+    expect(cfg.comments.enabled).toBe(false);
     expect(cfg.comments).not.toHaveProperty('allowlist');
     expect(cfg.comments).not.toHaveProperty('allowUsers');
     expect(cfg.comments).not.toHaveProperty('allowGroups');
@@ -254,7 +254,7 @@ describe('profile schema', () => {
     expect(cfg.comments).not.toHaveProperty('bindings');
     expect(cfg.comments).not.toHaveProperty('workspace');
     expect(cfg.comments).not.toHaveProperty('rateLimit');
-    expect(cfg.comments).toEqual({});
+    expect(cfg.comments).toEqual({ enabled: false });
   });
 
   it('does not enable comment rate limits by default', () => {

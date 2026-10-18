@@ -76,7 +76,7 @@ describe('agent-aware session catalog', () => {
         threadId: 'thread-wrong',
         now: 1000,
       }),
-    ).toThrow(/Claude.*sessionId/i);
+    ).toThrow(/Session-based.*sessionId/i);
     expect(() =>
       catalog.upsertActive({
         scopeId: 'chat-1',

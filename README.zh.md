@@ -4,6 +4,8 @@
 
 [English README](./README.md)
 
+也支持 Pi 1.3+。通过 `--agent pi` 选择，模型、思考强度和账号沿用 Pi 设置；权限边界与配置见 [Pi 接入说明](./doc/pi.md)。
+
 关于能实现的效果，详情可以阅读[飞书文档](https://larkcommunity.feishu.cn/docx/OaRIdFIRFoLM3xxTmKwcetHqn5e)
 
 ## 主要功能

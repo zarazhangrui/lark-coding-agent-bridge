@@ -13,7 +13,7 @@ import {
   type PermissionSource,
 } from './permissions';
 
-export type AgentKind = 'claude' | 'codex';
+export type AgentKind = 'claude' | 'codex' | 'pi';
 export type SandboxMode = CodexSandboxMode;
 export type { AccessMode, PermissionConfig, PermissionSource };
 
@@ -60,7 +60,7 @@ export interface AttachmentConfig {
   cacheMaxBytes: number;
 }
 
-export type CommentConfig = Record<string, never>;
+export interface CommentConfig { enabled?: boolean }
 
 /** Where the agent's answer goes when it responds to meeting content. */
 export type MeetingRespondIn = 'meeting' | 'im' | 'both';
@@ -248,8 +248,8 @@ export function normalizeProfileConfig(input: unknown): ProfileConfig {
   if (raw.schemaVersion !== 2) {
     throw new Error('profile schemaVersion must be 2');
   }
-  if (raw.agentKind !== 'claude' && raw.agentKind !== 'codex') {
-    throw new Error('agentKind must be claude or codex');
+  if (raw.agentKind !== 'claude' && raw.agentKind !== 'codex' && raw.agentKind !== 'pi') {
+    throw new Error('agentKind must be claude or codex or pi');
   }
   const accounts = normalizeAccounts(raw.accounts);
   if (raw.agentKind === 'codex' && !raw.codex) {
@@ -391,7 +391,8 @@ function normalizeCodex(input: CodexConfig & { flags?: unknown }): CodexConfig {
   return codex;
 }
 
-function normalizeComments(_input: unknown): CommentConfig {
+function normalizeComments(input: unknown): CommentConfig {
+  if (input && typeof input === 'object' && 'enabled' in input && input.enabled === false) return { enabled: false };
   return {};
 }
 

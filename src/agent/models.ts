@@ -45,6 +45,7 @@ const CODEX_MODELS: ModelOption[] = [
 
 /** The model picker options for a profile's agent kind. */
 export function supportedModels(agentKind: AgentKind): ModelOption[] {
+  if (agentKind === 'pi') return [{ value: DEFAULT_MODEL, label: 'Pi 默认模型（在 Pi 中设置）' }];
   return agentKind === 'codex' ? CODEX_MODELS : CLAUDE_MODELS;
 }
 

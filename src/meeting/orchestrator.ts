@@ -1,6 +1,6 @@
 import type { LarkChannel } from '@larksuite/channel';
 import type { AgentEvent } from '../agent/types';
-import { claudeCapability, codexCapability } from '../agent/capability';
+import { profileCapability } from '../agent/capability';
 import type { Controls } from '../commands';
 import { log } from '../core/logger';
 import type { RunExecutor } from '../runtime/run-executor';
@@ -296,9 +296,7 @@ async function runMeetingAgent(
   const { session, controls } = deps;
   const scopeId = meetingScopeId(session.meetingId);
   const capability =
-    controls.profileConfig.agentKind === 'codex'
-      ? codexCapability(controls.profileConfig)
-      : claudeCapability(controls.profileConfig);
+    profileCapability(controls.profileConfig);
   const result = await startRunFlow({
     scopeId,
     scope: {
