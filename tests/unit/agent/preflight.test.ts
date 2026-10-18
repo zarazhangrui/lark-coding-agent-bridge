@@ -7,6 +7,7 @@ import {
   AgentPreflightError,
   checkAgentVersion,
   formatAgentPreflightError,
+  isAgentPreflightDiagnostic,
 } from '../../../src/agent/preflight.js';
 
 describe('agent preflight diagnostics', () => {
@@ -147,6 +148,27 @@ describe('agent preflight diagnostics', () => {
       expect(message).toContain(`错误码：${code}`);
       expect(message).not.toContain('/opt/homebrew');
     }
+  });
+
+  it('accepts kimi as a diagnostic agentId alongside claude and codex', () => {
+    for (const agentId of ['claude', 'codex', 'kimi'] as const) {
+      expect(
+        isAgentPreflightDiagnostic({
+          code: 'agent-binary-not-found',
+          agentId,
+          agentName: 'Kimi Code',
+          command: agentId,
+        }),
+      ).toBe(true);
+    }
+    expect(
+      isAgentPreflightDiagnostic({
+        code: 'agent-binary-not-found',
+        agentId: 'other',
+        agentName: 'Other',
+        command: 'other',
+      }),
+    ).toBe(false);
   });
 });
 

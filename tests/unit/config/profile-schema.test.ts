@@ -96,6 +96,34 @@ describe('profile schema', () => {
     ).toThrow(/codex/i);
   });
 
+  it('accepts agentKind kimi without extra binary configuration', () => {
+    const cfg = createDefaultProfileConfig({
+      agentKind: 'kimi',
+      accounts: { app },
+    });
+
+    expect(cfg.agentKind).toBe('kimi');
+    expect(cfg.permissions).toMatchObject({
+      defaultAccess: 'full',
+      maxAccess: 'full',
+    });
+
+    const normalized = normalizeProfileConfig({
+      schemaVersion: 2,
+      agentKind: 'kimi',
+      accounts: { app },
+    });
+    expect(normalized.agentKind).toBe('kimi');
+
+    expect(() =>
+      normalizeProfileConfig({
+        schemaVersion: 2,
+        agentKind: 'other',
+        accounts: { app },
+      }),
+    ).toThrow(/agentKind/i);
+  });
+
   it('rejects sandbox defaults that exceed max capability as a permission error', () => {
     expect(() =>
       normalizeProfileConfig({

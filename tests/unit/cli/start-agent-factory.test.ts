@@ -60,6 +60,19 @@ describe('start runtime agent factory', () => {
     expect(agent.displayName).toBe('Codex CLI');
   });
 
+  it('creates KimiAdapter for kimi profiles without extra binary configuration', () => {
+    const agent = createRuntimeAgent(
+      createDefaultProfileConfig({
+        agentKind: 'kimi',
+        accounts: appAccount(),
+      }),
+      { profileDir: '/tmp/lark-channel-bridge/profiles/kimi-e2e' },
+    );
+
+    expect(agent.id).toBe('kimi');
+    expect(agent.displayName).toBe('Kimi Code');
+  });
+
   it('seeds a default Codex binary when bootstrapping a new Codex profile', () => {
     const profile = createRuntimeProfileConfig({
       agentKind: 'codex',
@@ -102,7 +115,9 @@ describe('start runtime agent factory', () => {
 
   it('rejects reconnect when a profile changes agent kind in place', () => {
     expect(() => assertReconnectAgentKindUnchanged('claude', 'codex')).toThrow(/agent kind/i);
+    expect(() => assertReconnectAgentKindUnchanged('claude', 'kimi')).toThrow(/agent kind/i);
     expect(() => assertReconnectAgentKindUnchanged('codex', 'codex')).not.toThrow();
+    expect(() => assertReconnectAgentKindUnchanged('kimi', 'kimi')).not.toThrow();
   });
 });
 

@@ -117,6 +117,39 @@ describe('agent-aware session catalog', () => {
     await catalog.flush();
   });
 
+  it('validates kimi entries like claude: sessionId required, threadId forbidden', async () => {
+    const catalog = new SessionCatalog(await path());
+
+    catalog.upsertActive({
+      scopeId: 'chat-1',
+      agentId: 'kimi',
+      cwdRealpath: '/repo',
+      policyFingerprint: 'fp-1',
+      sessionId: 'sess-kimi',
+      now: 1000,
+    });
+    expect(
+      catalog.activeFor({
+        scopeId: 'chat-1',
+        agentId: 'kimi',
+        cwdRealpath: '/repo',
+        policyFingerprint: 'fp-1',
+      }),
+    ).toMatchObject({ sessionId: 'sess-kimi', agentId: 'kimi' });
+
+    expect(() =>
+      catalog.upsertActive({
+        scopeId: 'chat-1',
+        agentId: 'kimi',
+        cwdRealpath: '/repo',
+        policyFingerprint: 'fp-1',
+        threadId: 'thread-wrong',
+        now: 1000,
+      }),
+    ).toThrow(/kimi.*sessionId/i);
+    await catalog.flush();
+  });
+
   it('archives only the current agent/cwd/fingerprint entry for a new conversation', async () => {
     const catalog = new SessionCatalog(await path());
     const base = {

@@ -12,11 +12,20 @@ describe('agent model catalog', () => {
   it('offers a distinct catalog per agent kind, each led by the default sentinel', () => {
     const claude = supportedModels('claude');
     const codex = supportedModels('codex');
+    const kimi = supportedModels('kimi');
     expect(claude[0]?.value).toBe(DEFAULT_MODEL);
     expect(codex[0]?.value).toBe(DEFAULT_MODEL);
+    expect(kimi[0]?.value).toBe(DEFAULT_MODEL);
     expect(claude.map((m) => m.value)).toContain('claude-opus-4-8');
     expect(codex.map((m) => m.value)).toContain('gpt-5-codex');
     expect(claude.map((m) => m.value)).not.toContain('gpt-5-codex');
+    expect(kimi.map((m) => m.value)).toEqual([
+      DEFAULT_MODEL,
+      'kimi-code/kimi-for-coding',
+      'kimi-code/kimi-for-coding-highspeed',
+      'kimi-code/k3',
+      'kimi-code/k3-256k',
+    ]);
   });
 
   it('treats unset and the default sentinel as "use agent default"', () => {
@@ -31,6 +40,10 @@ describe('agent model catalog', () => {
     // A Codex model left over after switching a profile to Claude is invalid.
     expect(normalizeModelSelection('claude', 'gpt-5-codex')).toBe(DEFAULT_MODEL);
     expect(normalizeModelSelection('claude', undefined)).toBe(DEFAULT_MODEL);
+    expect(normalizeModelSelection('kimi', 'kimi-code/k3')).toBe('kimi-code/k3');
+    // A Claude model left over after switching a profile to Kimi is invalid.
+    expect(normalizeModelSelection('kimi', 'claude-opus-4-8')).toBe(DEFAULT_MODEL);
+    expect(normalizeModelSelection('kimi', 'gpt-5-codex')).toBe(DEFAULT_MODEL);
   });
 
   it('resolves the --model argument, omitting it for the default', () => {
@@ -39,10 +52,15 @@ describe('agent model catalog', () => {
     expect(resolveModelArg('claude', undefined)).toBeUndefined();
     // Cross-agent value → no flag rather than a broken model.
     expect(resolveModelArg('codex', 'claude-opus-4-8')).toBeUndefined();
+    expect(resolveModelArg('kimi', 'kimi-code/kimi-for-coding')).toBe('kimi-code/kimi-for-coding');
+    expect(resolveModelArg('kimi', DEFAULT_MODEL)).toBeUndefined();
+    expect(resolveModelArg('kimi', 'claude-opus-4-8')).toBeUndefined();
   });
 
   it('labels a stored value using the picker option text', () => {
     expect(modelLabel('claude', 'claude-opus-4-8')).toBe('Opus 4.8（最新）');
     expect(modelLabel('claude', DEFAULT_MODEL)).toContain('跟随默认');
+    expect(modelLabel('kimi', 'kimi-code/k3')).toBe('K3');
+    expect(modelLabel('kimi', 'claude-opus-4-8')).toContain('跟随默认');
   });
 });

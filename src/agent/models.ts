@@ -43,9 +43,30 @@ const CODEX_MODELS: ModelOption[] = [
   { value: 'o3', label: 'o3' },
 ];
 
+/**
+ * Kimi Code models. Forwarded to `kimi -m`. Aliases are `<provider>/<model>`
+ * pairs defined in the user's kimi config.toml — these are the aliases that
+ * ship in kimi's default config. Users with custom providers can set any
+ * alias by editing the profile's `preferences.model` in config.json.
+ */
+const KIMI_MODELS: ModelOption[] = [
+  { value: DEFAULT_MODEL, label: '跟随默认（不指定）' },
+  { value: 'kimi-code/kimi-for-coding', label: 'Kimi for Coding' },
+  { value: 'kimi-code/kimi-for-coding-highspeed', label: 'Kimi for Coding（高速版）' },
+  { value: 'kimi-code/k3', label: 'K3' },
+  { value: 'kimi-code/k3-256k', label: 'K3（256K 上下文）' },
+];
+
 /** The model picker options for a profile's agent kind. */
 export function supportedModels(agentKind: AgentKind): ModelOption[] {
-  return agentKind === 'codex' ? CODEX_MODELS : CLAUDE_MODELS;
+  switch (agentKind) {
+    case 'codex':
+      return CODEX_MODELS;
+    case 'kimi':
+      return KIMI_MODELS;
+    case 'claude':
+      return CLAUDE_MODELS;
+  }
 }
 
 /** True when the selection means "use the agent default" (no `--model`). */

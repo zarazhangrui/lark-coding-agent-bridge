@@ -3,7 +3,7 @@ import { readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, isAbsolute } from 'node:path';
 import type { LarkChannel, NormalizedMessage } from '@larksuite/channel';
-import { claudeCapability, codexCapability } from '../agent/capability';
+import { capabilityFor } from '../agent/capability';
 import { DEFAULT_MODEL, normalizeModelSelection, supportedModels } from '../agent/models';
 import type { AgentAdapter } from '../agent/types';
 import type { ActiveRuns } from '../bot/active-runs';
@@ -62,6 +62,7 @@ import {
   type RunState,
 } from '../card/run-state';
 import { formatRelTime, listRecentSessions, type SessionSummary } from '../session/history';
+import { listKimiResumeHistory } from '../session/kimi-history';
 import {
   listCodexThreadHistory,
   type CodexThreadHistoryEntry,
@@ -141,6 +142,7 @@ export interface CommandContext {
     options: ListCodexThreadHistoryOptions,
   ) => Promise<CodexThreadHistoryEntry[]>;
   claudeHistoryProvider?: (cwd: string, limit: number) => Promise<SessionSummary[]>;
+  kimiHistoryProvider?: (options: { cwd: string; limit: number }) => Promise<SessionSummary[]>;
   /** Set when invoked from a CardKit 2.0 form submit. Keys are input `name`s. */
   formValue?: Record<string, unknown>;
   /** True when this invocation came from a card button click rather than a
@@ -153,7 +155,7 @@ type Handler = (args: string, ctx: CommandContext) => Promise<void>;
 
 interface ResumeCandidate {
   scopeId: string;
-  agentId: 'claude' | 'codex';
+  agentId: 'claude' | 'codex' | 'kimi';
   cwdRealpath: string;
   policyFingerprint: string;
   sessionId?: string;
@@ -592,9 +594,22 @@ async function handleResume(args: string, ctx: CommandContext): Promise<void> {
     return;
   }
 
-  const sessions = await listClaudeResumeHistory(ctx, cwd, limit);
+  // sessionId-based agents: claude and kimi
+  const agentKind = ctx.controls.profileConfig.agentKind;
+  const sessions =
+    agentKind === 'kimi'
+      ? await (ctx.kimiHistoryProvider ?? listKimiResumeHistory)({ cwd, limit })
+      : await listClaudeResumeHistory(ctx, cwd, limit);
   const currentSession = ctx.sessions.getRaw(ctx.scope);
   const identity = ctx.sessionCatalogIdentity;
+  // kimi sessions live only in the catalog (never the legacy session store),
+  // so the "current" marker comes from the catalog entry.
+  const currentCatalogEntry =
+    agentKind === 'kimi' && ctx.sessionCatalog && identity
+      ? ctx.sessionCatalog.activeFor(identity)
+      : undefined;
+  const currentSessionId =
+    agentKind === 'kimi' ? currentCatalogEntry?.sessionId : currentSession?.sessionId;
   const entries = sessions.map((s) => ({
     sessionId: identity
       ? issueResumeCandidate(identity, { sessionId: s.sessionId })
@@ -603,7 +618,7 @@ async function handleResume(args: string, ctx: CommandContext): Promise<void> {
     preview: s.preview,
     relTime: formatRelTime(s.mtime),
     lineCount: s.lineCount,
-    current: s.sessionId === currentSession?.sessionId,
+    current: s.sessionId === currentSessionId,
   }));
   const card = resumeCard(cwd, entries);
   await ctx.channel.send(ctx.msg.chatId, { card }, commandReplyOptions(ctx));
@@ -624,14 +639,19 @@ async function applyResume(sessionId: string, ctx: CommandContext): Promise<void
           threadId: resolved.threadId!,
         });
       } else {
+        // claude and kimi both resume by sessionId; only claude also mirrors
+        // into the legacy per-scope session store.
+        const agentId = ctx.sessionCatalogIdentity.agentId;
         ctx.sessionCatalog.upsertActive({
           scopeId: ctx.sessionCatalogIdentity.scopeId,
-          agentId: 'claude',
+          agentId,
           cwdRealpath: ctx.sessionCatalogIdentity.cwdRealpath,
           policyFingerprint: ctx.sessionCatalogIdentity.policyFingerprint,
           sessionId: resolved.sessionId!,
         });
-        ctx.sessions.set(ctx.scope, resolved.sessionId!, ctx.sessionCatalogIdentity.cwdRealpath);
+        if (agentId === 'claude') {
+          ctx.sessions.set(ctx.scope, resolved.sessionId!, ctx.sessionCatalogIdentity.cwdRealpath);
+        }
       }
       await reply(ctx, RESUME_APPLIED_REPLY);
       return;
@@ -655,6 +675,13 @@ async function applyResume(sessionId: string, ctx: CommandContext): Promise<void
 
   if (ctx.controls.profileConfig.agentKind === 'codex') {
     await reply(ctx, '当前上下文没有可恢复的 Codex thread，请先在当前工作区完成一次运行。');
+    return;
+  }
+
+  if (ctx.controls.profileConfig.agentKind === 'kimi') {
+    // kimi sessions live only in the session catalog; without it there is
+    // nowhere to record the picked session.
+    await reply(ctx, '当前上下文不支持恢复会话（会话目录不可用）。');
     return;
   }
 
@@ -699,7 +726,7 @@ function consumeResumeCandidate(
     candidate.agentId !== identity.agentId ||
     candidate.cwdRealpath !== identity.cwdRealpath ||
     candidate.policyFingerprint !== identity.policyFingerprint ||
-    (identity.agentId === 'claude' && !candidate.sessionId) ||
+    (identity.agentId !== 'codex' && !candidate.sessionId) ||
     (identity.agentId === 'codex' && !candidate.threadId)
   ) {
     return undefined;
@@ -771,6 +798,14 @@ function runtimeAccessStatus(
       ),
     };
   }
+  if (profileConfig.agentKind === 'kimi') {
+    // kimi headless runs always use kimi's own `auto` approval policy; the
+    // bridge access mode still applies bridge-side, so show it directly.
+    return {
+      label: 'access',
+      value: `${profileConfig.permissions.defaultAccess}/${profileConfig.permissions.maxAccess}`,
+    };
+  }
   return {
     label: 'sandbox',
     value: `${profileConfig.sandbox.defaultMode}/${profileConfig.sandbox.maxMode}`,
@@ -812,17 +847,20 @@ async function larkCliStatus(ctx: CommandContext): Promise<'app' | 'user-ready' 
 async function handleStatus(_args: string, ctx: CommandContext): Promise<void> {
   const cwd = effectiveWorkspaceCwd(ctx);
   const sess = ctx.sessions.getRaw(ctx.scope);
-  const isCodex = ctx.controls.profileConfig.agentKind === 'codex';
+  const agentKind = ctx.controls.profileConfig.agentKind;
+  const isCodex = agentKind === 'codex';
+  // kimi and codex sessions are tracked only in the catalog; claude uses the
+  // legacy per-scope store.
   const catalogEntry =
-    isCodex && ctx.sessionCatalog && ctx.sessionCatalogIdentity
+    agentKind !== 'claude' && ctx.sessionCatalog && ctx.sessionCatalogIdentity
       ? ctx.sessionCatalog.activeFor(ctx.sessionCatalogIdentity)
       : undefined;
   const card = statusCard({
     profileName: ctx.controls.profile,
     cwd,
-    sessionId: isCodex ? catalogEntry?.threadId : sess?.sessionId,
+    sessionId: isCodex ? catalogEntry?.threadId : agentKind === 'kimi' ? catalogEntry?.sessionId : sess?.sessionId,
     emptySessionText: isCodex ? '(未建立)' : undefined,
-    sessionStale: !isCodex && Boolean(cwd && sess && sess.cwd !== cwd),
+    sessionStale: agentKind === 'claude' && Boolean(cwd && sess && sess.cwd !== cwd),
     agentName: ctx.agent.displayName,
     runtimeAccess: runtimeAccessStatus(ctx.controls.profileConfig),
     larkCliStatus: await larkCliStatus(ctx),
@@ -1127,10 +1165,7 @@ async function handleDoctor(args: string, ctx: CommandContext): Promise<void> {
   }
   doctorLastByOperator.set(rateKey, now);
 
-  const capability =
-    ctx.controls.profileConfig.agentKind === 'codex'
-      ? codexCapability(ctx.controls.profileConfig)
-      : claudeCapability(ctx.controls.profileConfig);
+  const capability = capabilityFor(ctx.controls.profileConfig);
   const policy = evaluateRunPolicy({
     scope: {
       source: 'im',

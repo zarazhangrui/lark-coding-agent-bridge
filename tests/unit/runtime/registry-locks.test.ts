@@ -59,6 +59,28 @@ describe('registry and runtime lock integration', () => {
     });
   });
 
+  it('accepts kimi as a registry agent kind', async () => {
+    const root = await makeRoot();
+    const registryFile = join(root, 'registry', 'processes.json');
+
+    const registered = await register({
+      appId: 'cli_kimi',
+      tenant: 'feishu',
+      profileName: 'kimi-dev',
+      agentKind: 'kimi',
+      configPath: join(root, 'config.json'),
+      version: '0.1.32',
+      registryFile,
+    });
+
+    expect(readAndPrune(registryFile).map((item) => item.id)).toEqual([registered.id]);
+    const persisted = JSON.parse(await readFile(registryFile, 'utf8')) as { entries: ProcessEntry[] };
+    expect(persisted.entries[0]).toMatchObject({
+      profileName: 'kimi-dev',
+      agentKind: 'kimi',
+    });
+  });
+
   it('uses active profile/app locks instead of PID liveness when pruning writes', async () => {
     const root = await makeRoot();
     const registryFile = join(root, 'registry', 'processes.json');

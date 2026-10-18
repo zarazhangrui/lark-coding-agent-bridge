@@ -100,4 +100,19 @@ describe('runtime locks', () => {
       expect(true).toBe(true);
     });
   });
+
+  it('writes kimi agentKind into the lock metadata sidecars', async () => {
+    const root = await makeRoot();
+    const paths = resolveAppPaths({ rootDir: root, profile: 'kimi' });
+    await mkdir(paths.userLockDir, { recursive: true });
+
+    await withProfileAndAppLocks(paths, 'cli_test', 'kimi', async (acquired) => {
+      for (const lock of acquired) {
+        const meta = JSON.parse(await readFile(`${lock.target}.meta.json`, 'utf8')) as {
+          agentKind: string;
+        };
+        expect(meta.agentKind).toBe('kimi');
+      }
+    });
+  });
 });

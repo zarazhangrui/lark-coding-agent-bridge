@@ -1,7 +1,7 @@
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { CardActionEvent, NormalizedMessage } from '@larksuite/channel';
-import { claudeCapability, codexCapability } from '../../../src/agent/capability.js';
+import { claudeCapability, codexCapability, kimiCapability } from '../../../src/agent/capability.js';
 import { ActiveRuns } from '../../../src/bot/active-runs.js';
 import type { ChatModeCache } from '../../../src/bot/chat-mode-cache.js';
 import { PendingQueue } from '../../../src/bot/pending-queue.js';
@@ -30,6 +30,7 @@ interface Harness {
   identity: SessionCatalogIdentity;
   claudeHistory: SessionSummary[];
   codexHistory: CodexThreadHistoryEntry[];
+  kimiHistory: SessionSummary[];
   activeRuns: ActiveRuns;
   pending: PendingQueue;
   run(content: string, options?: { withCatalogIdentity?: boolean; chatMode?: 'p2p' | 'group' | 'topic' }): Promise<boolean>;
@@ -107,6 +108,52 @@ describe('agent-aware resume commands', () => {
       sessionId: 'sess-target',
     });
     expect(lastMarkdown(h.channel)).toContain('已完成');
+  });
+
+  it('resumes the selected Kimi history entry into the catalog without touching the legacy session store', async () => {
+    const h = await createHarness('kimi');
+    h.catalog.upsertActive({ ...h.identity, sessionId: 'sess-current', now: 1000 });
+    h.kimiHistory.push(
+      kimiSession('sess-current', 'current prompt', 1_700_000_100_000),
+      kimiSession('sess-target', 'target prompt', 1_700_000_000_000),
+    );
+
+    await expect(h.run('/resume')).resolves.toBe(true);
+
+    const card = lastContent(h.channel);
+    const rendered = JSON.stringify(card);
+    expect(rendered).toContain('current prompt');
+    expect(rendered).toContain('target prompt');
+    expect(rendered).toContain('sess-tar');
+
+    const nonces = resumeArgsFromCard(card);
+    expect(nonces).toHaveLength(2);
+    await h.dispatchResumeArg(nonces[1]!);
+
+    expect(h.catalog.activeFor(h.identity)).toMatchObject({
+      sessionId: 'sess-target',
+    });
+    expect(h.sessions.getRaw('chat-1')).toBeUndefined();
+    expect(lastMarkdown(h.channel)).toContain('已完成');
+  });
+
+  it('shows the kimi catalog session id and access label in /status', async () => {
+    const h = await createHarness('kimi');
+
+    await expect(h.run('/status')).resolves.toBe(true);
+    let status = JSON.stringify(lastContent(h.channel));
+    expect(status).toContain('**session**');
+    expect(status).toContain('(无)');
+    expect(status).toContain('**access**');
+    expect(status).toContain('full/full');
+
+    h.catalog.upsertActive({ ...h.identity, sessionId: 'sess-kimi', now: 1000 });
+    await expect(h.run('/status')).resolves.toBe(true);
+
+    status = JSON.stringify(lastContent(h.channel));
+    expect(status).toContain('**session**');
+    expect(status).toContain('sess-ki');
+    expect(status).not.toContain('(无)');
   });
 
   it('accepts the current Codex thread without writing it into legacy SessionStore', async () => {
@@ -277,6 +324,7 @@ async function createHarness(
   const catalog = new SessionCatalog(join(tmp.profile, 'session-catalog.json'));
   const claudeHistory: SessionSummary[] = [];
   const codexHistory: CodexThreadHistoryEntry[] = [];
+  const kimiHistory: SessionSummary[] = [];
   const activeRuns = new ActiveRuns();
   const pending = new PendingQueue(60_000, () => {});
   const agent = createFakeAgent();
@@ -322,6 +370,7 @@ async function createHarness(
       controls,
       claudeHistoryProvider: async () => claudeHistory,
       codexHistoryProvider: async () => codexHistory,
+      kimiHistoryProvider: async () => kimiHistory,
     });
 
   const dispatchResumeArg = (arg: string): Promise<void> =>
@@ -354,6 +403,7 @@ async function createHarness(
     identity,
     claudeHistory,
     codexHistory,
+    kimiHistory,
     activeRuns,
     pending,
     run,
@@ -374,6 +424,19 @@ function claudeSession(
   };
 }
 
+function kimiSession(
+  sessionId: string,
+  preview: string,
+  mtime: number,
+): SessionSummary {
+  return {
+    sessionId,
+    preview,
+    mtime,
+    lineCount: 0,
+  };
+}
+
 async function commandIdentity(
   agentKind: AgentKind,
   profileConfig: ProfileConfig,
@@ -382,7 +445,12 @@ async function commandIdentity(
 ): Promise<SessionCatalogIdentity> {
   const workspace = await resolveWorkingDirectory(cwd);
   if (!workspace.ok) throw new Error(workspace.userVisible);
-  const capability = agentKind === 'codex' ? codexCapability(profileConfig) : claudeCapability(profileConfig);
+  const capability =
+    agentKind === 'codex'
+      ? codexCapability(profileConfig)
+      : agentKind === 'kimi'
+        ? kimiCapability(profileConfig)
+        : claudeCapability(profileConfig);
   const access = canUseDm(profileConfig, controls, 'ou-user');
   const policy = evaluateRunPolicy({
     scope: {

@@ -6,7 +6,12 @@ import {
   createDefaultProfileConfig,
   type RootConfig,
 } from '../../../src/config/profile-schema';
-import { createRootConfig, loadRootConfig, saveRootConfig } from '../../../src/config/profile-store';
+import {
+  agentKindFromString,
+  createRootConfig,
+  loadRootConfig,
+  saveRootConfig,
+} from '../../../src/config/profile-store';
 
 const roots: string[] = [];
 
@@ -257,5 +262,40 @@ describe('profile store canonical serialization', () => {
     const root = createRootConfig('claude', profile);
 
     expect(root.migrations?.permissionDefaultsV1).toEqual(['claude']);
+  });
+
+  it('round-trips a kimi profile through save→load', async () => {
+    const root = await tmpRoot();
+    const configPath = join(root, 'config.json');
+    const profile = createDefaultProfileConfig({
+      agentKind: 'kimi',
+      accounts: { app },
+    });
+
+    await saveRootConfig({
+      schemaVersion: 2,
+      activeProfile: 'kimi',
+      preferences: {},
+      profiles: { kimi: profile },
+    }, configPath);
+
+    const saved = JSON.parse(await readFile(configPath, 'utf8'));
+    expect(saved.profiles.kimi.agentKind).toBe('kimi');
+
+    const loaded = await loadRootConfig(configPath);
+    expect(loaded?.profiles.kimi?.agentKind).toBe('kimi');
+  });
+});
+
+describe('agentKindFromString', () => {
+  it('accepts the three supported agent kinds', () => {
+    expect(agentKindFromString('claude')).toBe('claude');
+    expect(agentKindFromString('codex')).toBe('codex');
+    expect(agentKindFromString('kimi')).toBe('kimi');
+    expect(agentKindFromString(undefined)).toBeUndefined();
+  });
+
+  it('rejects unsupported agent names', () => {
+    expect(() => agentKindFromString('gpt')).toThrow(/unsupported agent/);
   });
 });
