@@ -18,6 +18,7 @@ import {
 } from '../../../src/agent/bridge-system-prompt';
 import { ClaudeAdapter } from '../../../src/agent/claude/adapter';
 import { CodexAdapter } from '../../../src/agent/codex/adapter';
+import { KimiAdapter } from '../../../src/agent/kimi/adapter';
 
 interface FakeChild extends EventEmitter {
   pid: number;
@@ -112,6 +113,37 @@ describe('CodexAdapter system prompt wiring', () => {
 
     const stdin = await readAll(child.stdin);
     expect(stdin).toBe(prefixBridgeSystemPrompt('hi', undefined));
+  });
+});
+
+describe('KimiAdapter system prompt wiring', () => {
+  // kimi has no --append-system-prompt flag and does not read the prompt from
+  // stdin: the bridge system prompt is prefixed into the single -p argv value.
+  it('prefixes the -p prompt with the identity-aware bridge system prompt after setBotIdentity', async () => {
+    const child = fakeChild();
+    spawnMock.spawnProcess.mockReturnValue(child);
+    const adapter = new KimiAdapter();
+    adapter.setBotIdentity({ openId: 'ou_bot_self', name: 'Bridge' });
+
+    adapter.run({ runId: 'r1', prompt: 'hi', cwd: '/tmp' });
+
+    const args = spawnMock.spawnProcess.mock.calls[0]?.[1] as string[];
+    expect(args[0]).toBe('-p');
+    expect(args[1]).toBe(prefixBridgeSystemPrompt('hi', { openId: 'ou_bot_self', name: 'Bridge' }));
+    expect(args.slice(2)).toEqual(['--output-format', 'stream-json']);
+    expect(await readAll(child.stdin)).toBe('');
+  });
+
+  it('falls back to the base system prompt when no identity was set', async () => {
+    const child = fakeChild();
+    spawnMock.spawnProcess.mockReturnValue(child);
+    const adapter = new KimiAdapter();
+
+    adapter.run({ runId: 'r1', prompt: 'hi', cwd: '/tmp' });
+
+    const args = spawnMock.spawnProcess.mock.calls[0]?.[1] as string[];
+    expect(args[1]).toBe(prefixBridgeSystemPrompt('hi', undefined));
+    expect(await readAll(child.stdin)).toBe('');
   });
 });
 

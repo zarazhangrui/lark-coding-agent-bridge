@@ -1,7 +1,7 @@
 import { realpath } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { claudeCapability, codexCapability } from '../../../src/agent/capability.js';
+import { claudeCapability, codexCapability, kimiCapability } from '../../../src/agent/capability.js';
 import { ActiveRuns } from '../../../src/bot/active-runs.js';
 import { ProcessPool } from '../../../src/bot/process-pool.js';
 import {
@@ -95,6 +95,41 @@ describe('agent-aware run-flow resume', () => {
     });
   });
 
+  it('resumes Kimi by catalog sessionId and ignores legacy Claude SessionStore entries', async () => {
+    const h = await createHarness('kimi');
+    const cwdRealpath = await realpath(h.tmp.workspace);
+    h.sessions.set('chat-1', 'legacy-claude-session', cwdRealpath);
+
+    const probe = await start(h);
+    expect(probe.ok).toBe(true);
+    if (!probe.ok) throw new Error('expected probe run');
+    // The legacy store is a claude-only fallback; kimi never resumes from it.
+    expect(probe.resumeFrom).toBeUndefined();
+    expect(h.agent.runOptions[0]).toMatchObject({
+      sessionId: undefined,
+      threadId: undefined,
+    });
+    await collect(probe.execution.subscribe());
+    h.catalog.upsertActive({
+      scopeId: 'chat-1',
+      agentId: 'kimi',
+      cwdRealpath: probe.cwdRealpath,
+      policyFingerprint: probe.policy.policyFingerprint,
+      sessionId: 'sess-kimi-catalog',
+      now: 1000,
+    });
+
+    const resumed = await start(h);
+
+    expect(resumed.ok).toBe(true);
+    if (!resumed.ok) throw new Error('expected resumed run');
+    expect(resumed.resumeFrom).toBe('sess-kimi-catalog');
+    expect(h.agent.runOptions[1]).toMatchObject({
+      sessionId: 'sess-kimi-catalog',
+      threadId: undefined,
+    });
+  });
+
   it('does not resume when the policy fingerprint changes', async () => {
     const h = await createHarness('claude');
     const first = await start(h);
@@ -172,9 +207,36 @@ describe('agent-aware run-flow resume', () => {
     ).toMatchObject({ threadId: 'thread-recorded' });
     expect(codex.sessions.getRaw('chat-1')).toBeUndefined();
   });
+
+  it('records Kimi session identifiers into the catalog only', async () => {
+    const kimi = await createHarness('kimi');
+    const kimiRun = await start(kimi);
+    expect(kimiRun.ok).toBe(true);
+    if (!kimiRun.ok) throw new Error('expected kimi run');
+    await collect(kimiRun.execution.subscribe());
+
+    recordRunSessionEvent({
+      scopeId: 'chat-1',
+      sessions: kimi.sessions,
+      sessionCatalog: kimi.catalog,
+      capability: kimiCapability(kimi.profileConfig),
+      policy: kimiRun.policy,
+      event: { type: 'system', sessionId: 'sess-kimi-recorded' },
+    });
+
+    expect(
+      kimi.catalog.activeFor({
+        scopeId: 'chat-1',
+        agentId: 'kimi',
+        cwdRealpath: kimiRun.cwdRealpath,
+        policyFingerprint: kimiRun.policy.policyFingerprint,
+      }),
+    ).toMatchObject({ sessionId: 'sess-kimi-recorded' });
+    expect(kimi.sessions.getRaw('chat-1')).toBeUndefined();
+  });
 });
 
-async function createHarness(agentKind: 'claude' | 'codex'): Promise<{
+async function createHarness(agentKind: 'claude' | 'codex' | 'kimi'): Promise<{
   tmp: TmpProfile;
   agent: FakeAgentAdapter;
   executor: RunExecutor;
@@ -247,7 +309,9 @@ async function start(h: Awaited<ReturnType<typeof createHarness>>) {
     capability:
       h.profileConfig.agentKind === 'codex'
         ? codexCapability(h.profileConfig)
-        : claudeCapability(h.profileConfig),
+        : h.profileConfig.agentKind === 'kimi'
+          ? kimiCapability(h.profileConfig)
+          : claudeCapability(h.profileConfig),
     profileConfig: h.profileConfig,
     sessions: h.sessions,
     sessionCatalog: h.catalog,
