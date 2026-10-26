@@ -1,5 +1,5 @@
 import type { NormalizedMessage } from '@larksuite/channel';
-import { realpath } from 'node:fs/promises';
+import { realpath, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { AgentEvent } from '../../../src/agent/types.js';
@@ -48,6 +48,7 @@ interface FakeLarkChannel {
     };
     im: {
       v1: {
+        image: { create: ReturnType<typeof vi.fn> };
         message: {
           get: ReturnType<typeof vi.fn>;
         };
@@ -201,6 +202,38 @@ describe('markdown stream startup failures', () => {
     expect(h.channel.sent).toHaveLength(1);
     expect(lastMarkdown(h.channel)).toContain('FINAL_SENTINEL');
     expect(h.channel.sent[0]?.options).toMatchObject({ replyTo: 'om_final' });
+  });
+
+  it.each(['text', 'markdown', 'card'] as const)('uploads final local images in %s replies to the same topic', async (messageReply) => {
+    const h = await createHarness({
+      messageReply,
+      events: [
+        { type: 'final_text', content: 'Saved.\n![截图](<./result image.png>)\nVerified.' },
+        { type: 'done', terminationReason: 'normal' },
+      ],
+    });
+    const bytes = Buffer.from('image fixture');
+    await writeFile(join(h.tmp.workspace, 'result image.png'), bytes);
+    await startTestBridge(h);
+    await h.channel.handlers.message?.({
+      ...message('om_image', 'run'),
+      threadId: 'omt_image',
+      rootId: 'om_root',
+    });
+    await waitFor(() => h.channel.sent.length === 1);
+
+    expect(h.channel.sent).toHaveLength(1);
+    expect(JSON.stringify(h.channel.sent[0]?.content)).toContain('Saved.');
+    expect(JSON.stringify(h.channel.sent[0]?.content)).not.toContain('result image.png');
+    expect(h.channel.rawClient.im.v1.image.create).toHaveBeenCalledWith({ data: { image_type: 'message', image: bytes } });
+    expect(h.channel.sent[0]?.content).toEqual({ post: { zh_cn: { title: '', content: [
+      [{ tag: 'md', text: 'Saved.\n' }],
+      [{ tag: 'img', image_key: 'img_uploaded' }],
+      [{ tag: 'md', text: '\nVerified.' }],
+    ] } } });
+    for (const sent of h.channel.sent) {
+      expect(sent.options).toMatchObject({ replyTo: 'om_image', replyInThread: true });
+    }
   });
 
   it('opens no progress stream for a final-only round', async () => {
@@ -548,6 +581,7 @@ function createFakeLarkChannel(harnessOptions: {
       },
       im: {
         v1: {
+          image: { create: vi.fn(async () => ({ image_key: 'img_uploaded' })) },
           message: {
             get: vi.fn(async () => ({ data: { items: [] } })),
           },

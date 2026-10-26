@@ -65,6 +65,7 @@ import { PendingQueue } from './pending-queue';
 import { ProcessPool } from './process-pool';
 import { fetchQuotedContext, fetchTopicContext, type QuotedContext } from './quote';
 import { lookupMessageThreadId } from './thread-id';
+import { buildLocalImagePost } from './local-images';
 import { addWorkingReaction, removeReaction } from './reaction';
 import { fetchKnownChats } from './lark-info';
 import type { AppPaths } from '../config/app-paths';
@@ -1111,6 +1112,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
           });
         }
         await sendFinalReply({
+          cwd,
           channel,
           chatId,
           scope,
@@ -1185,6 +1187,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
       await recallIfEmptyStreamedReply(channel, progress, filterForPrefs(latestState), scope);
       if (controls.profileConfig.agentKind === 'codex') {
         await sendFinalReply({
+          cwd,
           channel,
           chatId,
           scope,
@@ -1248,6 +1251,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
       await recallIfEmptyStreamedReply(channel, progress, filterForPrefs(latestState), scope);
       if (controls.profileConfig.agentKind === 'codex') {
         await sendFinalReply({
+          cwd,
           channel,
           chatId,
           scope,
@@ -1270,6 +1274,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
         async () => {},
       );
       await sendFinalReply({
+        cwd,
         channel,
         chatId,
         scope,
@@ -1442,6 +1447,7 @@ async function recallStreamedMessage(
 }
 
 async function sendFinalReply(input: {
+  cwd: string;
   channel: LarkChannel;
   chatId: string;
   scope: string;
@@ -1460,7 +1466,22 @@ async function sendFinalReply(input: {
     return;
   }
 
-  if (input.replyMode === 'card') {
+  const post = await buildLocalImagePost({
+    body,
+    scope: input.scope,
+    cwd: input.cwd,
+    uploadImage: async (image) => {
+      const result = await input.channel.rawClient.im.v1.image.create({
+        data: { image_type: 'message', image },
+      });
+      return result?.image_key ?? '';
+    },
+  });
+  if (post) {
+    const result = await input.channel.send(input.chatId, { post }, input.sendOpts);
+    requireMessageReceipt(result, 'post');
+    log.info('outbound', 'sent', outboundLogFields(input, 'post', body, result));
+  } else if (input.replyMode === 'card') {
     const result = await input.channel.send(
       input.chatId,
       { card: renderCard(input.state, input.cardRenderOptions) },
