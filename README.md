@@ -171,6 +171,12 @@ DMs do not require an @ mention. Groups and topic groups require `@bot` by defau
 
 When COT is enabled, the bridge splits the process view and final answer into two messages. The COT message is for tracing what the agent did; the final answer is still generated from the agent's raw text, without heuristic bridge-side filtering. If an agent emits final-answer text as ordinary stream text, that text can also appear in the COT process message.
 
+## Model and effort
+
+`/config` saves the model and, for Claude Code, the effort level in the current profile. The next run uses the saved selection; an in-progress run keeps its original settings. The selection survives a bridge restart and applies to all chats using that profile.
+
+Claude effort options are `low`, `medium`, `high`, `xhigh`, and `max`. The bridge passes an explicit selection as `--effort`, including `max` on every run. Choosing **Follow default** clears the bridge preference and omits the flag. The installed CLI and selected model determine which levels are supported. Codex profiles keep their existing behavior.
+
 ## lark-cli identity policy
 
 Each profile uses a profile-local lark-cli directory at `~/.lark-channel/profiles/<profile>/lark-cli`. The agent process receives `LARKSUITE_CLI_CONFIG_DIR` for that directory, so personal authorization in one profile is not shared with another profile.

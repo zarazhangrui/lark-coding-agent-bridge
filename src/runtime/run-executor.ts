@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import type { AgentAdapter, AgentEvent, AgentRun } from '../agent/types';
+import type { AgentAdapter, AgentEvent, AgentRun, AgentRunOptions } from '../agent/types';
 import { ActiveRuns, type RunHandle } from '../bot/active-runs';
 import { ProcessPool } from '../bot/process-pool';
 import type { RunPolicyAllow } from '../policy/run-policy';
@@ -21,6 +21,7 @@ export interface SubmitRunInput {
   sessionId?: string;
   threadId?: string;
   model?: string;
+  effortLevel?: AgentRunOptions['effortLevel'];
   images?: readonly string[];
   stopGraceMs?: number;
   nowait?: boolean;
@@ -100,6 +101,7 @@ export class RunExecutor {
       sessionId: input.sessionId,
       threadId: input.threadId,
       model: input.model,
+      effortLevel: input.effortLevel,
       images: input.images,
       sandbox: input.policy.sandbox,
       permissionMode: input.policy.permissionMode,

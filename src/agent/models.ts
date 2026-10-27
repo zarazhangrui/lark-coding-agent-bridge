@@ -27,11 +27,18 @@ export interface ModelOption {
  */
 const CLAUDE_MODELS: ModelOption[] = [
   { value: DEFAULT_MODEL, label: '跟随默认（不指定）' },
-  { value: 'claude-opus-4-8', label: 'Opus 4.8（最新）' },
+  { value: 'claude-opus-5-5', label: 'Opus 5.5' },
+  { value: 'claude-fable-5-1', label: 'Fable 5.1' },
+  { value: 'claude-sonnet-5-5', label: 'Sonnet 5.5' },
+  { value: 'claude-haiku-5-5', label: 'Haiku 5.5' },
+  { value: 'claude-opus-5', label: 'Opus 5' },
+  { value: 'claude-fable-5', label: 'Fable 5' },
+  { value: 'claude-opus-4-8', label: 'Opus 4.8' },
   { value: 'claude-opus-4-7', label: 'Opus 4.7' },
-  { value: 'claude-sonnet-5', label: 'Sonnet 5（最新）' },
+  { value: 'claude-opus-4-6', label: 'Opus 4.6' },
+  { value: 'claude-sonnet-5', label: 'Sonnet 5' },
   { value: 'claude-sonnet-4-6', label: 'Sonnet 4.6' },
-  { value: 'claude-haiku-4-5', label: 'Haiku 4.5（最新）' },
+  { value: 'claude-haiku-4-5', label: 'Haiku 4.5' },
   { value: 'opusplan', label: 'Opus Plan（规划用 Opus，执行用 Sonnet）' },
 ];
 

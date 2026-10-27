@@ -113,6 +113,36 @@ describe('profile-aware account and config commands', () => {
     expect(cleared.profiles.claude?.preferences.model).toBeUndefined();
   });
 
+  it('persists max effort in the active profile and clears it for the CLI default', async () => {
+    vi.useFakeTimers();
+    const h = await createHarness();
+    await h.command('/config submit', { effort_level: 'max' });
+    const saved = await waitForRoot(h.rootDir, (root) =>
+      root.profiles.claude?.preferences.effortLevel === 'max',
+    );
+    expect(runtimeProfileConfig(saved, 'claude').preferences?.effortLevel).toBe('max');
+    expect(saved.profiles['codex-dev']?.preferences.effortLevel).toBeUndefined();
+
+    await h.command('/config submit', { effort_level: 'default' });
+    const cleared = await waitForRoot(h.rootDir, (root) =>
+      root.profiles.claude?.preferences.effortLevel === undefined,
+    );
+    expect(cleared.profiles.claude?.preferences.effortLevel).toBeUndefined();
+  });
+
+  it.each([undefined, 'invalid', 'max --permission-mode bypassPermissions'])(
+    'preserves the current effort for an omitted or invalid form value: %s',
+    async (effort_level) => {
+      vi.useFakeTimers();
+      const h = await createHarness({ preferences: { effortLevel: 'high' } });
+      await h.command('/config submit', { effort_level, max_concurrent_runs: '7' });
+      const saved = await waitForRoot(h.rootDir, (root) =>
+        root.profiles.claude?.preferences.maxConcurrentRuns === 7,
+      );
+      expect(saved.profiles.claude?.preferences.effortLevel).toBe('high');
+    },
+  );
+
   it('keeps the current message reply mode when the config submit payload omits it', async () => {
     vi.useFakeTimers();
     const h = await createHarness({

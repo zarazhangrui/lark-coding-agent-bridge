@@ -1,3 +1,5 @@
+import type { ClaudeEffortLevel } from '../agent/effort';
+
 export type TenantBrand = 'feishu' | 'lark';
 
 /**
@@ -114,6 +116,8 @@ export interface AppPreferences {
    * CLI / account default applies. Default: unset.
    */
   model?: string;
+  /** Claude-only --effort selection. Unset follows the CLI default. */
+  effortLevel?: ClaudeEffortLevel;
   /**
    * Whether to send a separate Lark COT process message before the final
    * answer. `brief` mirrors the lightweight tool/progress visibility from

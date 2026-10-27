@@ -171,6 +171,12 @@ lark-channel-bridge profile export <name> --include-secrets --yes
 
 开启 COT 后，bridge 会把过程消息和最终答案拆成两条消息。过程消息用于追踪 agent 做了什么；最终答案仍由 agent 原始文本生成，bridge 不做启发式过滤。若 agent 把最终答案也作为普通流式文本输出，COT 过程消息中可能会出现对应片段。
 
+## 模型与思考强度
+
+`/config` 将模型和 Claude Code 的思考强度保存到当前 profile，供该 profile 的所有聊天使用。下一轮任务使用新设置，正在执行的任务继续使用原设置；Bot 重启后选择仍会保留。
+
+Claude 强度可选 `low`、`medium`、`high`、`xhigh`、`max`。选择具体级别后，bridge 每轮通过 `--effort` 传入，包括 `max`。选择“跟随默认”会清除 bridge 的强度设置，不传这个参数。实际支持的级别由安装的 CLI 和所选模型决定。Codex profile 沿用原有行为。
+
 ## lark-cli 身份策略
 
 每个 profile 都使用当前 profile 的 lark-cli 目录：`~/.lark-channel/profiles/<profile>/lark-cli`。agent 子进程会收到指向这个目录的 `LARKSUITE_CLI_CONFIG_DIR`，所以一个 profile 里的个人授权不会共享给另一个 profile。

@@ -21,6 +21,7 @@ describe('RunExecutor policy runtime options', () => {
 
     const execution = await executor.submit({
       scopeId: 'scope-policy',
+      effortLevel: 'high',
       policy: policy({
         sandbox: 'workspace-write',
         permissionMode: 'acceptEdits',
@@ -31,6 +32,7 @@ describe('RunExecutor policy runtime options', () => {
       runId: 'run-policy',
       sandbox: 'workspace-write',
       permissionMode: 'acceptEdits',
+      effortLevel: 'high',
     });
 
     await collect(execution.subscribe());

@@ -1,4 +1,5 @@
 import type { AgentAvailability } from './preflight';
+import type { ClaudeEffortLevel } from './effort';
 import type { ClaudePermissionMode, CodexSandboxMode } from '../config/permissions';
 
 export type { ClaudePermissionMode } from '../config/permissions';
@@ -35,6 +36,8 @@ export interface AgentRunOptions {
   sessionId?: string;
   threadId?: string;
   model?: string;
+  /** Explicit Claude effort for this run; unset leaves the CLI default intact. */
+  effortLevel?: ClaudeEffortLevel;
   images?: readonly string[];
   sandbox?: CodexSandboxMode;
   permissionMode?: ClaudePermissionMode;

@@ -1,5 +1,6 @@
 import type { AgentCapability } from '../agent/capability';
 import { resolveModelArg } from '../agent/models';
+import { resolveEffortArg } from '../agent/effort';
 import type { AgentEvent } from '../agent/types';
 import type { ProfileConfig } from '../config/profile-schema';
 import type { AccessDecision } from '../policy/access';
@@ -147,6 +148,10 @@ export async function startRunFlow(input: StartRunFlowInput): Promise<StartRunFl
       model: resolveModelArg(
         input.profileConfig.agentKind,
         input.profileConfig.preferences.model,
+      ),
+      effortLevel: resolveEffortArg(
+        input.profileConfig.agentKind,
+        input.profileConfig.preferences.effortLevel,
       ),
       images:
         input.capability.agentId === 'codex'

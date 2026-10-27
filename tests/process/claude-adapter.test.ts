@@ -64,6 +64,7 @@ describe('ClaudeAdapter process contract', () => {
     expect(record.systemPrompt).not.toContain('__claude_cb');
     expect(record.argv).not.toContain('--resume');
     expect(record.argv).not.toContain('--model');
+    expect(record.argv).not.toContain('--effort');
   });
 
   it('injects the active bridge profile env into spawned runs', async () => {
@@ -124,6 +125,22 @@ describe('ClaudeAdapter process contract', () => {
 
     expect(record.argv.slice(-4)).toEqual(['--resume', 'sess-old', '--model', 'sonnet']);
     expect(record.argv[5]).toBe('bypassPermissions');
+  });
+
+  it('passes explicit effort on resumed runs while preserving permissions and stdin', async () => {
+    const fake = await createFakeClaude({ lines: [{ type: 'result', session_id: 'sess-effort' }] });
+    cleanup.push(fake.dir);
+    const run = new ClaudeAdapter({ binary: fake.path }).run({
+      runId: 'run-effort', prompt: 'continue', cwd: fake.dir,
+      sessionId: 'sess-existing', model: 'claude-opus-5-5', effortLevel: 'max',
+    });
+    await collect(run.events);
+    const record = await readRecord(fake.recordPath);
+    expect(record.argv.slice(-6)).toEqual([
+      '--resume', 'sess-existing', '--model', 'claude-opus-5-5', '--effort', 'max',
+    ]);
+    expect(record.argv[5]).toBe('bypassPermissions');
+    expect(record.stdin).toBe('continue');
   });
 
   it('includes stderr when the process exits non-zero', async () => {

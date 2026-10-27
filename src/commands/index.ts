@@ -5,6 +5,12 @@ import { dirname, isAbsolute } from 'node:path';
 import type { LarkChannel, NormalizedMessage } from '@larksuite/channel';
 import { claudeCapability, codexCapability } from '../agent/capability';
 import { DEFAULT_MODEL, normalizeModelSelection, supportedModels } from '../agent/models';
+import {
+  DEFAULT_EFFORT,
+  normalizeEffortSelection,
+  resolveEffortArg,
+  supportedEfforts,
+} from '../agent/effort';
 import type { AgentAdapter } from '../agent/types';
 import type { ActiveRuns } from '../bot/active-runs';
 import {
@@ -1744,6 +1750,7 @@ async function showConfigForm(ctx: CommandContext): Promise<void> {
       ctx.controls.profileConfig.agentKind,
       ctx.controls.cfg.preferences?.model,
     ),
+    effortLevel: normalizeEffortSelection(ctx.controls.cfg.preferences?.effortLevel),
     messageReply: getMessageReplyMode(ctx.controls.cfg),
     showToolCalls: getShowToolCalls(ctx.controls.cfg),
     cotMessages: getCotMessages(ctx.controls.cfg),
@@ -1808,6 +1815,16 @@ async function submitConfig(ctx: CommandContext): Promise<void> {
     ? rawModel
     : normalizeModelSelection(agentKind, ctx.controls.cfg.preferences?.model);
   const model = modelSelection === DEFAULT_MODEL ? undefined : modelSelection;
+  const rawEffort = String(fv.effort_level ?? '').trim();
+  const currentEffort = normalizeEffortSelection(ctx.controls.cfg.preferences?.effortLevel);
+  const effortSelection = supportedEfforts().some((option) => option.value === rawEffort)
+    ? rawEffort
+    : currentEffort;
+  // Codex has its own reasoning controls. Ignore a forged/leftover Claude
+  // form field rather than changing a Codex profile's preferences.
+  const effortLevel = agentKind === 'claude'
+    ? resolveEffortArg(agentKind, effortSelection)
+    : ctx.controls.cfg.preferences?.effortLevel;
   const rawCotMessages = String(fv.cot_messages ?? '').trim();
   const cotMessages =
     rawCotMessages === 'brief'
@@ -1887,6 +1904,7 @@ async function submitConfig(ctx: CommandContext): Promise<void> {
     const nextPreferences: AppPreferences = {
       ...(ctx.controls.cfg.preferences ?? {}),
       model,
+      effortLevel,
       messageReply,
       // Mark the messageReply value as living in the new (post-0.1.27)
       // semantic — `text` now means real plain text, not the lightweight
@@ -1937,6 +1955,8 @@ async function submitConfig(ctx: CommandContext): Promise<void> {
     }
 
     log.info('command', 'config-saved', {
+      model,
+      effortLevel,
       mode,
       messageReply,
       showToolCalls,
@@ -1957,6 +1977,7 @@ async function submitConfig(ctx: CommandContext): Promise<void> {
         agentKind,
         mode,
         model: modelSelection,
+        effortLevel: effortLevel ?? DEFAULT_EFFORT,
         messageReply,
         showToolCalls,
         cotMessages,
