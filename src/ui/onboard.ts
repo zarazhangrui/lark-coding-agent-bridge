@@ -77,7 +77,8 @@ export interface CreateProfileInput {
  */
 export async function onboardCreate(body: unknown, rootDir?: string) {
   const fv = asRecord(body);
-  const agentKind: AgentKind = fv.agentKind === 'codex' ? 'codex' : 'claude';
+  const agentKind: AgentKind =
+    fv.agentKind === 'codex' ? 'codex' : fv.agentKind === 'omp' ? 'omp' : 'claude';
   const input: CreateProfileInput = {
     profile: String(fv.profile ?? '').trim() || agentKind,
     agentKind,

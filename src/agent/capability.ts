@@ -2,8 +2,8 @@ import type { AccessMode } from '../config/permissions';
 import type { ProfileConfig } from '../config/profile-schema';
 import { BRIDGE_SYSTEM_PROMPT } from './bridge-system-prompt';
 
-export type AgentCapabilityId = 'claude' | 'codex';
-export type AgentSessionKind = 'claude-session' | 'codex-thread';
+export type AgentCapabilityId = 'claude' | 'codex' | 'omp';
+export type AgentSessionKind = 'claude-session' | 'codex-thread' | 'omp-session';
 export type PromptInjectionMode = 'append-system-prompt' | 'stdin-prefix';
 
 export interface AgentCapability {
@@ -18,6 +18,12 @@ export interface AgentCapability {
   };
   permissions: {
     maxAccess: AccessMode;
+    /**
+     * True when the agent has no enforceable restricted-access mode. The run
+     * policy then rejects read-only / workspace profiles instead of silently
+     * running them with full access.
+     */
+    requiresFullAccess?: boolean;
   };
 }
 
@@ -55,4 +61,40 @@ export function codexCapability(profile: Pick<ProfileConfig, 'permissions'>): Ag
       maxAccess,
     },
   };
+}
+
+/**
+ * OMP runs over its RPC mode. That transport has no approval dialog, so every
+ * write/exec tool would fail closed under a restricted mode. The capability is
+ * therefore marked `requiresFullAccess`; `evaluateRunPolicy` rejects profiles
+ * that ask for less rather than quietly weakening the configured policy.
+ */
+export function ompCapability(profile: Pick<ProfileConfig, 'permissions'>): AgentCapability {
+  return {
+    agentId: 'omp',
+    sessionKind: 'omp-session',
+    promptInjection: 'append-system-prompt',
+    systemPrompt: BRIDGE_SYSTEM_PROMPT,
+    supportsNativeHistory: true,
+    callback: {
+      marker: '__bridge_cb',
+      legacyMarkers: [],
+    },
+    permissions: {
+      maxAccess: profile.permissions.maxAccess,
+      requiresFullAccess: true,
+    },
+  };
+}
+
+/** Pick the capability for a profile's configured agent. */
+export function agentCapability(profile: ProfileConfig): AgentCapability {
+  switch (profile.agentKind) {
+    case 'codex':
+      return codexCapability(profile);
+    case 'omp':
+      return ompCapability(profile);
+    default:
+      return claudeCapability(profile);
+  }
 }

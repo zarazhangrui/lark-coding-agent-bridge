@@ -51,6 +51,17 @@ describe('profile schema', () => {
     });
   });
 
+  it('accepts OMP profiles without extra agent configuration', () => {
+    const cfg = createDefaultProfileConfig({ agentKind: 'omp', accounts: { app } });
+
+    expect(cfg.agentKind).toBe('omp');
+    expect(cfg.codex).toBeUndefined();
+    expect(cfg.permissions).toMatchObject({
+      defaultAccess: 'full',
+      maxAccess: 'full',
+    });
+  });
+
   it('defaults deployment mode to personal and parses team', () => {
     const fresh = createDefaultProfileConfig({ agentKind: 'claude', accounts: { app } });
     expect(fresh.mode).toBe('personal');

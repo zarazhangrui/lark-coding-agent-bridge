@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import { BRIDGE_SYSTEM_PROMPT } from '../../../src/agent/bridge-system-prompt';
-import { claudeCapability, codexCapability } from '../../../src/agent/capability';
+import {
+  agentCapability,
+  claudeCapability,
+  codexCapability,
+  ompCapability,
+} from '../../../src/agent/capability';
 import { createDefaultProfileConfig } from '../../../src/config/profile-schema';
 
 describe('agent capability contract', () => {
@@ -71,5 +76,35 @@ describe('agent capability contract', () => {
     });
 
     expect(codexCapability(profile).permissions.maxAccess).toBe('read-only');
+  });
+
+  it('defines OMP capability as a full-access RPC session', () => {
+    const profile = createDefaultProfileConfig({
+      agentKind: 'omp',
+      accounts: {
+        app: {
+          id: 'cli_test',
+          secret: '${APP_SECRET}',
+          tenant: 'feishu',
+        },
+      },
+      permissions: {
+        defaultAccess: 'full',
+        maxAccess: 'full',
+      },
+    });
+
+    expect(ompCapability(profile)).toMatchObject({
+      agentId: 'omp',
+      sessionKind: 'omp-session',
+      promptInjection: 'append-system-prompt',
+      supportsNativeHistory: true,
+      systemPrompt: BRIDGE_SYSTEM_PROMPT,
+      permissions: {
+        maxAccess: 'full',
+        requiresFullAccess: true,
+      },
+    });
+    expect(agentCapability(profile).agentId).toBe('omp');
   });
 });

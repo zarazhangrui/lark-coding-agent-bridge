@@ -143,8 +143,16 @@ export function ConfigView({ profile }: { profile: string }) {
         <CardHeader><CardTitle>回复与运行</CardTitle></CardHeader>
         <CardContent className="space-y-4">
           <Field label="模型">
-            <SelectRow value={cfg.model} onChange={(v) => set("model", v)}
-              options={cfg.models.map((m) => [m.value, m.label])} />
+            {cfg.agentKind === "omp" ? (
+              <Input
+                value={cfg.model === "default" ? "" : cfg.model}
+                onChange={(e) => set("model", e.target.value.trim() ? e.target.value : "default")}
+                placeholder="provider/model（留空=跟随 OMP 默认）"
+              />
+            ) : (
+              <SelectRow value={cfg.model} onChange={(v) => set("model", v)}
+                options={cfg.models.map((m) => [m.value, m.label])} />
+            )}
           </Field>
           <Field label="消息回复方式">
             <SelectRow value={cfg.messageReply} onChange={(v) => set("messageReply", v as ConfigData["messageReply"])}

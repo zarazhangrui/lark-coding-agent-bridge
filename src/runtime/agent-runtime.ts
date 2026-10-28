@@ -1,5 +1,6 @@
 import { ClaudeAdapter } from '../agent/claude/adapter';
 import { CodexAdapter } from '../agent/codex/adapter';
+import { OmpAdapter } from '../agent/omp/adapter';
 import { AgentPreflightError, type AgentAvailability } from '../agent/preflight';
 import type { AgentAdapter } from '../agent/types';
 import type { AppPaths } from '../config/app-paths';
@@ -49,6 +50,9 @@ export function createRuntimeAgent(
       larkChannel,
     });
   }
+  if (profileConfig.agentKind === 'omp') {
+    return new OmpAdapter({ larkChannel });
+  }
   return new ClaudeAdapter({ larkChannel });
 }
 
@@ -56,11 +60,14 @@ export async function checkRuntimeAgentAvailability(agent: AgentAdapter): Promis
   if (agent.checkAvailability) return agent.checkAvailability();
   const ok = await agent.isAvailable();
   if (ok) return { ok: true };
+  const agentId =
+    agent.id === 'codex' ? ('codex' as const) : agent.id === 'omp' ? ('omp' as const) : ('claude' as const);
+  const command = agent.id === 'codex' ? 'codex' : agent.id === 'omp' ? 'omp' : 'claude';
   const diagnostic = {
     code: 'agent-binary-not-found' as const,
-    agentId: agent.id === 'codex' ? ('codex' as const) : ('claude' as const),
+    agentId,
     agentName: agent.displayName,
-    command: agent.id === 'codex' ? 'codex' : 'claude',
+    command,
   };
   return { ok: false, diagnostic, error: new AgentPreflightError(diagnostic) };
 }

@@ -1,7 +1,11 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { claudeCapability, codexCapability } from '../../../src/agent/capability';
+import {
+  claudeCapability,
+  codexCapability,
+  ompCapability,
+} from '../../../src/agent/capability';
 import type { AccessMode } from '../../../src/config/permissions';
 import { createDefaultProfileConfig, type ProfileConfig } from '../../../src/config/profile-schema';
 import {
@@ -133,6 +137,39 @@ describe('run policy', () => {
     expect(stricterPolicy.policyFingerprint).not.toBe(noAttachment.policyFingerprint);
   });
 
+  it('rejects restricted access for OMP, which has no enforceable sandbox', () => {
+    const restricted = profile({
+      agentKind: 'omp',
+      permissions: { defaultAccess: 'workspace', maxAccess: 'workspace' },
+    });
+    const result = evaluateRunPolicy(
+      baseInput({
+        profileConfig: restricted,
+        capability: ompCapability(restricted),
+      }),
+    );
+
+    expect(result).toMatchObject({
+      ok: false,
+      rejectReason: { code: 'agent-access-unsupported' },
+    });
+  });
+
+  it('allows full access for OMP', () => {
+    const full = profile({
+      agentKind: 'omp',
+      permissions: { defaultAccess: 'full', maxAccess: 'full' },
+    });
+    const result = evaluateRunPolicy(
+      baseInput({
+        profileConfig: full,
+        capability: ompCapability(full),
+      }),
+    );
+
+    expect(result.ok).toBe(true);
+  });
+
   it('fails closed for unverified folder resource bindings', () => {
     const result = evaluateRunPolicy({
       ...baseInput(),
@@ -175,7 +212,7 @@ function baseInput(overrides: Partial<RunPolicyInput> = {}): RunPolicyInput {
 }
 
 function profile(options: {
-  agentKind?: 'claude' | 'codex';
+  agentKind?: 'claude' | 'codex' | 'omp';
   permissions?: {
     defaultAccess: AccessMode;
     maxAccess: AccessMode;

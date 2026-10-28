@@ -1,4 +1,4 @@
-import { modelLabel, supportedModels } from '../agent/models';
+import { DEFAULT_MODEL, modelLabel, modelOptions } from '../agent/models';
 import type { KnownChat } from '../bot/lark-info';
 import type { AgentKind, LarkCliIdentityPreset, ProfileMode } from '../config/profile-schema';
 import type { CotMessagesMode, MessageReplyMode } from '../config/schema';
@@ -164,11 +164,27 @@ export function configFormCard(opts: ConfigFormOpts): object {
               tag: 'select_static',
               name: 'model',
               initial_option: opts.model,
-              options: supportedModels(opts.agentKind).map((m) => ({
+              options: modelOptions(opts.agentKind, opts.model).map((m) => ({
                 text: { tag: 'plain_text', content: m.label },
                 value: m.value,
               })),
             },
+            ...(opts.agentKind === 'omp'
+              ? [
+                  {
+                    tag: 'markdown',
+                    content:
+                      '_OMP 模型可以自定义：填写 `provider/model`（例如 `anthropic/claude-sonnet-4-5`），留空则用上方选择。填写值优先。_',
+                  },
+                  {
+                    tag: 'input',
+                    name: 'model_custom',
+                    default_value: opts.model === DEFAULT_MODEL ? '' : opts.model,
+                    placeholder: { tag: 'plain_text', content: 'provider/model（留空=默认）' },
+                    input_type: 'text',
+                  },
+                ]
+              : []),
             { tag: 'hr' },
             {
               tag: 'markdown',

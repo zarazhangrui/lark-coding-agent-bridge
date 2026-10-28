@@ -43,9 +43,39 @@ const CODEX_MODELS: ModelOption[] = [
   { value: 'o3', label: 'o3' },
 ];
 
+/**
+ * OMP models are user-configurable (providers + `omp models` catalog), so the
+ * picker only offers "use OMP's configured default". A concrete
+ * `provider/model` value can still be stored in `preferences.model`; it is
+ * forwarded verbatim and surfaced as an extra picker option by
+ * {@link modelOptions}.
+ */
+const OMP_MODELS: ModelOption[] = [{ value: DEFAULT_MODEL, label: '跟随 OMP 默认（不指定）' }];
+
 /** The model picker options for a profile's agent kind. */
 export function supportedModels(agentKind: AgentKind): ModelOption[] {
-  return agentKind === 'codex' ? CODEX_MODELS : CLAUDE_MODELS;
+  switch (agentKind) {
+    case 'codex':
+      return CODEX_MODELS;
+    case 'omp':
+      return OMP_MODELS;
+    default:
+      return CLAUDE_MODELS;
+  }
+}
+
+/**
+ * Picker options for a profile, including a stored OMP model that is not in
+ * the static catalog. Feishu rejects an `initial_option` that is absent from
+ * the option list, so a custom value must be appended before rendering.
+ */
+export function modelOptions(agentKind: AgentKind, current?: string): ModelOption[] {
+  const options = supportedModels(agentKind);
+  const value = current?.trim();
+  if (!value || value === DEFAULT_MODEL || options.some((option) => option.value === value)) {
+    return options;
+  }
+  return [...options, { value, label: value }];
 }
 
 /** True when the selection means "use the agent default" (no `--model`). */
@@ -59,14 +89,19 @@ export function isDefaultModel(value: string | undefined): boolean {
  * `initial_option` to match an option value exactly. Unknown / cross-agent
  * values (e.g. a Claude alias left over after switching a profile to Codex)
  * fall back to {@link DEFAULT_MODEL}.
+ *
+ * OMP is the exception: its catalog is user-managed, so any non-empty value
+ * is kept and forwarded as `--model`.
  */
 export function normalizeModelSelection(
   agentKind: AgentKind,
   value: string | undefined,
 ): string {
-  if (isDefaultModel(value)) return DEFAULT_MODEL;
-  return supportedModels(agentKind).some((m) => m.value === value)
-    ? (value as string)
+  const trimmed = value?.trim();
+  if (!trimmed) return DEFAULT_MODEL;
+  if (agentKind === 'omp') return trimmed;
+  return supportedModels(agentKind).some((m) => m.value === trimmed)
+    ? trimmed
     : DEFAULT_MODEL;
 }
 
@@ -85,5 +120,7 @@ export function resolveModelArg(
 /** Picker label for a stored value, for display in the saved-config card. */
 export function modelLabel(agentKind: AgentKind, value: string | undefined): string {
   const normalized = normalizeModelSelection(agentKind, value);
-  return supportedModels(agentKind).find((m) => m.value === normalized)?.label ?? normalized;
+  return (
+    supportedModels(agentKind).find((m) => m.value === normalized)?.label ?? normalized
+  );
 }

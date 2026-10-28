@@ -1,6 +1,3 @@
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 import type { Readable, Writable } from 'node:stream';
 import { log } from '../../core/logger';
@@ -8,6 +5,7 @@ import { mergeProcessEnv, spawnProcess, type SpawnedProcessByStdio } from '../..
 import { buildBridgeSystemPrompt } from '../bridge-system-prompt';
 import { buildLarkChannelEnv, type LarkChannelEnvContext } from '../lark-channel-env';
 import { checkAgentAvailability, type AgentAvailability } from '../preflight';
+import { writeSystemPromptFile } from '../system-prompt-file';
 import {
   CLAUDE_DEFAULT_PERMISSION_MODE,
   type AgentAdapter,
@@ -68,7 +66,10 @@ export class ClaudeAdapter implements AgentAdapter {
     // stream-json response. Pass the prompt via stdin and the appended system
     // prompt via a temp file (the same approach the Codex adapter uses) so no
     // special characters ever reach the shell.
-    const systemPromptFile = writeSystemPromptFile(buildBridgeSystemPrompt(this.botIdentity));
+    const systemPromptFile = writeSystemPromptFile(
+      buildBridgeSystemPrompt(this.botIdentity),
+      { prefix: 'lark-claude-' },
+    );
 
     const args = [
       '-p',
@@ -268,27 +269,6 @@ async function* createEventStream(
       terminationReason: 'failed',
     };
   }
-}
-
-/**
- * Persist the appended system prompt to a throwaway temp file so it can be
- * passed via `--append-system-prompt-file` instead of argv. Returns the path
- * plus an idempotent, best-effort cleanup that removes the temp directory.
- */
-function writeSystemPromptFile(content: string): { path: string; cleanup: () => void } {
-  const dir = mkdtempSync(join(tmpdir(), 'lark-claude-'));
-  const path = join(dir, 'append-system-prompt.md');
-  writeFileSync(path, content, 'utf8');
-  return {
-    path,
-    cleanup: () => {
-      try {
-        rmSync(dir, { recursive: true, force: true });
-      } catch {
-        // best-effort: the OS will reclaim the temp dir eventually
-      }
-    },
-  };
 }
 
 function isWindowsCommandNotFoundLine(line: string): boolean {

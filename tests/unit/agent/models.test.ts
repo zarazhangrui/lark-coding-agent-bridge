@@ -3,6 +3,7 @@ import {
   DEFAULT_MODEL,
   isDefaultModel,
   modelLabel,
+  modelOptions,
   normalizeModelSelection,
   resolveModelArg,
   supportedModels,
@@ -44,5 +45,29 @@ describe('agent model catalog', () => {
   it('labels a stored value using the picker option text', () => {
     expect(modelLabel('claude', 'claude-opus-4-8')).toBe('Opus 4.8（最新）');
     expect(modelLabel('claude', DEFAULT_MODEL)).toContain('跟随默认');
+  });
+
+  it('passes arbitrary OMP model selectors through', () => {
+    expect(supportedModels('omp').map((m) => m.value)).toEqual([DEFAULT_MODEL]);
+    expect(normalizeModelSelection('omp', 'workbuddy/cn:deepseek-v4.1-flash')).toBe(
+      'workbuddy/cn:deepseek-v4.1-flash',
+    );
+    expect(resolveModelArg('omp', 'workbuddy/cn:deepseek-v4.1-flash')).toBe(
+      'workbuddy/cn:deepseek-v4.1-flash',
+    );
+    expect(resolveModelArg('omp', DEFAULT_MODEL)).toBeUndefined();
+    expect(modelLabel('omp', 'workbuddy/cn:deepseek-v4.1-flash')).toBe(
+      'workbuddy/cn:deepseek-v4.1-flash',
+    );
+  });
+
+  it('appends a stored custom OMP model to the picker options', () => {
+    expect(modelOptions('omp', 'workbuddy/cn:space-bunny')).toEqual([
+      { value: DEFAULT_MODEL, label: '跟随 OMP 默认（不指定）' },
+      { value: 'workbuddy/cn:space-bunny', label: 'workbuddy/cn:space-bunny' },
+    ]);
+    expect(modelOptions('omp', DEFAULT_MODEL)).toEqual([
+      { value: DEFAULT_MODEL, label: '跟随 OMP 默认（不指定）' },
+    ]);
   });
 });

@@ -77,7 +77,8 @@ export interface RunPolicyReject {
     code:
       | 'access-denied'
       | 'folder-allowlist-unverified'
-      | 'required-attachment-rejected';
+      | 'required-attachment-rejected'
+      | 'agent-access-unsupported';
     userVisible: string;
   };
 }
@@ -109,6 +110,12 @@ export function evaluateRunPolicy(input: RunPolicyInput): RunPolicyResult {
     input.profileConfig.permissions.maxAccess,
     input.capability.permissions.maxAccess,
   );
+  if (input.capability.permissions.requiresFullAccess && accessMode !== 'full') {
+    return reject(
+      'agent-access-unsupported',
+      'OMP 只支持完整访问权限：请把该 profile 的 permissions.defaultAccess 和 permissions.maxAccess 设为 full（OMP RPC 没有可执行的只读/工作区沙箱）。',
+    );
+  }
   const sandbox = accessToCodexSandbox(accessMode);
   const permissionMode = accessToClaudePermissionMode(
     accessMode,

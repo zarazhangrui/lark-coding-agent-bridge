@@ -30,4 +30,18 @@ describe('configFormCard console URL', () => {
     const card = configFormCard(base);
     expect(JSON.stringify(card)).not.toContain('Web 控制台');
   });
+
+  it('offers a custom model input for OMP and keeps the stored selector selectable', () => {
+    const model = 'workbuddy/cn:space-bunny';
+    const card = configFormCard({ ...base, agentKind: 'omp', model });
+    const json = JSON.stringify(card);
+
+    expect(json).toContain('"name":"model_custom"');
+    expect(json).toContain(`"initial_option":"${model}"`);
+    expect(json).toContain(`"value":"${model}"`);
+  });
+
+  it('does not add an OMP-only field to Claude profiles', () => {
+    expect(JSON.stringify(configFormCard(base))).not.toContain('model_custom');
+  });
 });

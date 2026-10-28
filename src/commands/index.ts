@@ -3,7 +3,7 @@ import { readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, isAbsolute } from 'node:path';
 import type { LarkChannel, NormalizedMessage } from '@larksuite/channel';
-import { claudeCapability, codexCapability } from '../agent/capability';
+import { agentCapability } from '../agent/capability';
 import { DEFAULT_MODEL, normalizeModelSelection, supportedModels } from '../agent/models';
 import type { AgentAdapter } from '../agent/types';
 import type { ActiveRuns } from '../bot/active-runs';
@@ -62,6 +62,7 @@ import {
   type RunState,
 } from '../card/run-state';
 import { formatRelTime, listRecentSessions, type SessionSummary } from '../session/history';
+import { listOmpResumeHistory } from '../session/omp-history';
 import {
   listCodexThreadHistory,
   type CodexThreadHistoryEntry,
@@ -141,6 +142,7 @@ export interface CommandContext {
     options: ListCodexThreadHistoryOptions,
   ) => Promise<CodexThreadHistoryEntry[]>;
   claudeHistoryProvider?: (cwd: string, limit: number) => Promise<SessionSummary[]>;
+  ompHistoryProvider?: (cwd: string, limit: number) => Promise<SessionSummary[]>;
   /** Set when invoked from a CardKit 2.0 form submit. Keys are input `name`s. */
   formValue?: Record<string, unknown>;
   /** True when this invocation came from a card button click rather than a
@@ -153,7 +155,7 @@ type Handler = (args: string, ctx: CommandContext) => Promise<void>;
 
 interface ResumeCandidate {
   scopeId: string;
-  agentId: 'claude' | 'codex';
+  agentId: 'claude' | 'codex' | 'omp';
   cwdRealpath: string;
   policyFingerprint: string;
   sessionId?: string;
@@ -592,6 +594,25 @@ async function handleResume(args: string, ctx: CommandContext): Promise<void> {
     return;
   }
 
+  if (ctx.controls.profileConfig.agentKind === 'omp') {
+    const identity = ctx.sessionCatalogIdentity;
+    const current = ctx.sessions.getRaw(ctx.scope);
+    const sessions = await listOmpResumeHistoryFor(ctx, cwd, limit);
+    const entries = sessions.map((s) => ({
+      sessionId: identity
+        ? issueResumeCandidate(identity, { sessionId: s.sessionId })
+        : s.sessionId,
+      displayId: s.sessionId,
+      preview: s.preview,
+      relTime: formatRelTime(s.mtime),
+      lineCount: s.lineCount,
+      current: s.sessionId === current?.sessionId,
+    }));
+    const card = resumeCard(cwd, entries);
+    await ctx.channel.send(ctx.msg.chatId, { card }, commandReplyOptions(ctx));
+    return;
+  }
+
   const sessions = await listClaudeResumeHistory(ctx, cwd, limit);
   const currentSession = ctx.sessions.getRaw(ctx.scope);
   const identity = ctx.sessionCatalogIdentity;
@@ -624,9 +645,11 @@ async function applyResume(sessionId: string, ctx: CommandContext): Promise<void
           threadId: resolved.threadId!,
         });
       } else {
+        const sessionAgentId =
+          ctx.sessionCatalogIdentity.agentId === 'omp' ? 'omp' : 'claude';
         ctx.sessionCatalog.upsertActive({
           scopeId: ctx.sessionCatalogIdentity.scopeId,
-          agentId: 'claude',
+          agentId: sessionAgentId,
           cwdRealpath: ctx.sessionCatalogIdentity.cwdRealpath,
           policyFingerprint: ctx.sessionCatalogIdentity.policyFingerprint,
           sessionId: resolved.sessionId!,
@@ -646,9 +669,7 @@ async function applyResume(sessionId: string, ctx: CommandContext): Promise<void
       return;
     }
     ctx.activeRuns.interrupt(ctx.scope);
-    if (ctx.sessionCatalogIdentity.agentId === 'claude') {
-      ctx.sessions.set(ctx.scope, sessionId, ctx.sessionCatalogIdentity.cwdRealpath);
-    }
+    ctx.sessions.set(ctx.scope, sessionId, ctx.sessionCatalogIdentity.cwdRealpath);
     await reply(ctx, RESUME_APPLIED_REPLY);
     return;
   }
@@ -699,7 +720,7 @@ function consumeResumeCandidate(
     candidate.agentId !== identity.agentId ||
     candidate.cwdRealpath !== identity.cwdRealpath ||
     candidate.policyFingerprint !== identity.policyFingerprint ||
-    (identity.agentId === 'claude' && !candidate.sessionId) ||
+    (identity.agentId !== 'codex' && !candidate.sessionId) ||
     (identity.agentId === 'codex' && !candidate.threadId)
   ) {
     return undefined;
@@ -719,6 +740,15 @@ async function listClaudeResumeHistory(
   limit: number,
 ): Promise<SessionSummary[]> {
   const provider = ctx.claudeHistoryProvider ?? listRecentSessions;
+  return provider(cwd, limit);
+}
+
+async function listOmpResumeHistoryFor(
+  ctx: CommandContext,
+  cwd: string,
+  limit: number,
+): Promise<SessionSummary[]> {
+  const provider = ctx.ompHistoryProvider ?? listOmpResumeHistory;
   return provider(cwd, limit);
 }
 
@@ -769,6 +799,12 @@ function runtimeAccessStatus(
         profileConfig.permissions.defaultAccess,
         profileConfig.permissions,
       ),
+    };
+  }
+  if (profileConfig.agentKind === 'omp') {
+    return {
+      label: 'approval',
+      value: `${profileConfig.permissions.defaultAccess} (yolo)`,
     };
   }
   return {
@@ -1127,10 +1163,7 @@ async function handleDoctor(args: string, ctx: CommandContext): Promise<void> {
   }
   doctorLastByOperator.set(rateKey, now);
 
-  const capability =
-    ctx.controls.profileConfig.agentKind === 'codex'
-      ? codexCapability(ctx.controls.profileConfig)
-      : claudeCapability(ctx.controls.profileConfig);
+  const capability = agentCapability(ctx.controls.profileConfig);
   const policy = evaluateRunPolicy({
     scope: {
       source: 'im',
@@ -1802,10 +1835,15 @@ async function submitConfig(ctx: CommandContext): Promise<void> {
   // selection. Store `undefined` for the "default" sentinel to keep config
   // tidy (resolveModelArg treats both the same way).
   const agentKind = ctx.controls.profileConfig.agentKind;
-  const rawModel = String(fv.model ?? '').trim();
-  const modelValid = rawModel !== '' && supportedModels(agentKind).some((m) => m.value === rawModel);
+  const rawModel =
+    (agentKind === 'omp' ? String(fv.model_custom ?? '').trim() : '') ||
+    String(fv.model ?? '').trim();
+  const modelValid =
+    agentKind === 'omp'
+      ? rawModel !== ''
+      : rawModel !== '' && supportedModels(agentKind).some((m) => m.value === rawModel);
   const modelSelection = modelValid
-    ? rawModel
+    ? normalizeModelSelection(agentKind, rawModel)
     : normalizeModelSelection(agentKind, ctx.controls.cfg.preferences?.model);
   const model = modelSelection === DEFAULT_MODEL ? undefined : modelSelection;
   const rawCotMessages = String(fv.cot_messages ?? '').trim();
