@@ -9,6 +9,7 @@ import {
   resolveBootstrapWorkspace,
 } from '../cli/profile-bootstrap';
 import { promptPassword } from '../cli/prompt';
+import { isInteractiveTerminal } from '../cli/terminal';
 import { setSecret } from '../config/keystore';
 import { resolveAppPaths, type AppPaths } from '../config/app-paths';
 import {
@@ -428,10 +429,6 @@ async function migrateV1ToV2WithActiveBridgeHandling(
 
 async function resolveBootstrapAppConfig(opts: ResolveProfileRuntimeOptions): Promise<AppConfig> {
   if (!opts.appId) {
-    if (!isInteractiveTerminal()) {
-      // Agent environments can surface the wizard URL from stderr and keep polling.
-      return runRegistrationWizard();
-    }
     return runRegistrationWizard();
   }
   let appSecret = opts.appSecret;
@@ -464,10 +461,6 @@ async function resolveBootstrapAppConfig(opts: ResolveProfileRuntimeOptions): Pr
       },
     },
   };
-}
-
-function isInteractiveTerminal(): boolean {
-  return Boolean(process.stdin.isTTY && process.stdout.isTTY);
 }
 
 function tenantBrandFromString(value: string | undefined): TenantBrand {

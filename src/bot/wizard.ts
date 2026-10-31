@@ -1,5 +1,6 @@
 import { registerApp } from '@larksuiteoapi/node-sdk';
 import qrcode from 'qrcode-terminal';
+import { isInteractiveTerminal } from '../cli/terminal';
 import type { AppConfig, TenantBrand } from '../config/schema';
 
 export async function runRegistrationWizard(): Promise<AppConfig> {
@@ -8,7 +9,7 @@ export async function runRegistrationWizard(): Promise<AppConfig> {
   const result = await registerApp({
     source: 'lark-channel-bridge',
     onQRCodeReady: (info) => {
-      if (!process.stdout.isTTY) {
+      if (!isInteractiveTerminal()) {
         console.error(
           JSON.stringify({
             type: 'qr_ready',

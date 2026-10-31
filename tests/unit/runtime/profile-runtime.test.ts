@@ -167,22 +167,25 @@ describe('profile runtime resolver', () => {
     });
   });
 
-  it('fails clearly instead of opening the QR wizard during non-interactive first run', async () => {
+  it('uses the QR wizard result during non-interactive first run', async () => {
     const root = await tmpRoot();
 
     await withTty(false, false, async () => {
-      await expect(
-        resolveProfileRuntime({
-          config: join(root, 'config.json'),
-          agent: 'claude',
-          allowBootstrap: true,
-        }),
-      ).rejects.toThrow(/非交互模式无法完成扫码创建应用/);
+      const runtime = await resolveProfileRuntime({
+        config: join(root, 'config.json'),
+        agent: 'claude',
+        allowBootstrap: true,
+      });
+      expect(runtime.profile).toBe('claude');
+      expect(runtime.profileConfig.accounts.app.id).toBe(wizard.next.accounts.app.id);
     });
 
-    await expect(readFile(join(root, 'config.json'), 'utf8')).rejects.toMatchObject({
-      code: 'ENOENT',
-    });
+    const savedText = await readFile(join(root, 'config.json'), 'utf8');
+    const saved = JSON.parse(savedText) as {
+      profiles: Record<string, { accounts: { app: { id: string } } }>;
+    };
+    expect(saved.profiles.claude?.accounts.app.id).toBe(wizard.next.accounts.app.id);
+    expect(savedText).not.toContain(wizard.next.accounts.app.secret);
   });
 
   it('fails clearly when non-interactive existing-app bootstrap omits the app secret', async () => {
