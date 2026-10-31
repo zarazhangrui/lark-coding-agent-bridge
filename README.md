@@ -49,6 +49,18 @@ The first run opens a QR-code wizard:
 
 You do not need to choose a project directory up front. The bridge creates a profile-managed default working directory; after startup, send `/cd <path>` in Feishu / Lark to switch to a real project.
 
+### Noninteractive first-run setup
+
+When either stdin or stdout is not a TTY, the QR wizard also writes one newline-terminated JSON object to **stderr** when the QR URL is ready: `{"type":"qr_ready","url":"<authorization URL>","expire_in":600}`. `expire_in` is the URL's validity in **seconds** as reported by the SDK; 600 is an example, not a fixed lifetime. Parse stderr line by line and select JSON objects with `type: "qr_ready"`, ignoring other lines. Both stdout and stderr can contain human-readable logs; neither is a pure JSONL stream, and stdout still includes the QR code and URL.
+
+For example, select an installed agent explicitly to avoid an agent-selection prompt:
+
+```bash
+lark-channel-bridge run --agent claude </dev/null
+```
+
+A user must still open the URL or scan the QR code and authorize with Feishu / Lark. Keep the bridge process alive while it polls for completion; this is not unattended authorization. Treat the URL as sensitive and do not publish captured output. If the URL expires, authorization is denied, or registration fails, the command reports an error on stderr and exits nonzero. There is no automatic QR refresh or structured completion/error event; rerun the command for a new URL after a failure.
+
 If you already have a PersonalAgent app, pass `--app-id` during initialization to skip app creation. The command prompts for the App Secret.
 
 ```bash
