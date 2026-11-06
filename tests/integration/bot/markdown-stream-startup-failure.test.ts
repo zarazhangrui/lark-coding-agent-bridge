@@ -76,6 +76,7 @@ const cleanups: Array<() => Promise<void>> = [];
 
 afterEach(async () => {
   vi.restoreAllMocks();
+  vi.unstubAllEnvs();
   sdkMock.channel = undefined;
   sdkMock.createLarkChannel.mockClear();
   await Promise.all(cleanups.splice(0).map((cleanup) => cleanup()));
@@ -120,12 +121,15 @@ describe('markdown stream startup failures', () => {
     await waitFor(() => h.channel.rawClient.im.v1.messageReaction.delete.mock.calls.length > 0);
   });
 
-  it('logs stream failures that arrive after terminal grace expires', async () => {
+  it('falls back to a normal reply when the progress stream hangs past the grace window', async () => {
+    // Regression: a card stuck in its create/update call used to make
+    // `awaitRenderAwareStream` return without sending anything. The user saw
+    // the tool card stop updating and had to prompt the bot again to get the
+    // answer. The grace window is configurable so this test does not wait 3s.
+    vi.stubEnv('LARK_CHANNEL_STREAM_TERMINAL_GRACE_MS', '40');
     const streamFailure = deferred<void>();
     let streamProducerStarted = false;
     const h = await createHarness({
-      // The first run has to stream something, or no progress stream is opened
-      // at all and there is no late failure to log.
       events: [
         [
           { type: 'text', delta: 'progress update' },
@@ -135,7 +139,6 @@ describe('markdown stream startup failures', () => {
             terminationReason: 'failed',
           },
         ],
-        [{ type: 'done', terminationReason: 'normal' }],
       ],
       stream: async (_chatId, input) => {
         const producer = (input as {
@@ -148,29 +151,38 @@ describe('markdown stream startup failures', () => {
         await streamFailure.promise;
       },
     });
+    const warn = vi.spyOn(log, 'warn').mockImplementation(() => {});
     const fail = vi.spyOn(log, 'fail').mockImplementation(() => {});
     await startTestBridge(h);
 
     await h.channel.handlers.message?.(message('om_first', 'first'));
     await waitFor(() => streamProducerStarted);
-    await waitFor(
-      () => h.channel.rawClient.im.v1.messageReaction.delete.mock.calls.length > 0,
-      4500,
-    );
+    await waitFor(() => h.channel.sent.length === 1);
 
-    await h.channel.handlers.message?.(message('om_second', 'second'));
-    await waitFor(() => h.agent.runOptions.length === 2);
+    expect(lastMarkdown(h.channel)).toContain('progress update');
+    expect(lastMarkdown(h.channel)).toContain('agent 失败');
+    expect(
+      warn.mock.calls.some(
+        (call) =>
+          call[0] === 'stream' &&
+          call[1] === 'terminal-grace-expired' &&
+          (call[2] as { graceMs?: number } | undefined)?.graceMs === 40,
+      ),
+    ).toBe(true);
 
+    // The abandoned stream may still fail late; that must not post a second
+    // reply or surface as an unhandled rejection.
     streamFailure.reject(new Error('late stream failed'));
-
     await waitFor(() =>
-      fail.mock.calls.some((call) =>
-        call[0] === 'stream' &&
-        call[1] instanceof Error &&
-        call[1].message === 'late stream failed' &&
-        (call[2] as { step?: string } | undefined)?.step === 'stream-terminal-late',
+      fail.mock.calls.some(
+        (call) =>
+          call[0] === 'stream' &&
+          call[1] instanceof Error &&
+          call[1].message === 'late stream failed' &&
+          (call[2] as { step?: string } | undefined)?.step === 'stream-terminal-late',
       ),
     );
+    expect(h.channel.sent).toHaveLength(1);
   }, 10_000);
 
   it('sends one dedicated non-streaming final reply after progress completes', async () => {
@@ -228,6 +240,27 @@ describe('markdown stream startup failures', () => {
     expect(streamCalls).toHaveLength(0);
     expect(h.channel.sent).toHaveLength(1);
     expect(lastMarkdown(h.channel)).toContain('FINAL_ONLY_SENTINEL');
+  });
+
+  it('opens the progress stream on tool activity even when tool blocks are hidden', async () => {
+    // A tool-only round renders nothing after `filterForPrefs` when the user
+    // hides tool calls. Opening the stream on the tool_running footer gives the
+    // card a head start instead of waiting for the first text delta.
+    let streamCalls = 0;
+    const h = await createHarness({
+      showToolCalls: false,
+      events: [
+        { type: 'tool_use', id: 'tool_1', name: 'Bash', input: { command: 'git status' } },
+        { type: 'done', terminationReason: 'normal' },
+      ],
+      stream: async () => {
+        streamCalls += 1;
+      },
+    });
+    await startTestBridge(h);
+
+    await h.channel.handlers.message?.(message('om_hidden_tool', 'run'));
+    await waitFor(() => streamCalls === 1);
   });
 
   it('does not repeat streamed text as the final reply when Codex held nothing back', async () => {
@@ -354,7 +387,7 @@ describe('markdown stream startup failures', () => {
           call[0] === 'stream' &&
           call[1] instanceof Error &&
           call[1].message === 'progress stream failed' &&
-          (call[2] as { step?: string } | undefined)?.step === 'progress-stream',
+          (call[2] as { step?: string } | undefined)?.step === 'stream',
       ),
     ).toBe(true);
   });
@@ -438,6 +471,8 @@ async function createHarness(options: {
   messageReply?: 'card' | 'markdown' | 'text';
   /** Codex holds its answer back for a dedicated final reply; Claude streams it. */
   agentKind?: 'claude' | 'codex';
+  /** Whether tool-call blocks are rendered. Default true. */
+  showToolCalls?: boolean;
 } = {}): Promise<{
   tmp: TmpProfile;
   channel: FakeLarkChannel;
@@ -464,7 +499,14 @@ async function createHarness(options: {
     codex: {
       binaryPath: '/usr/local/bin/codex',
     },
-    ...(options.messageReply ? { preferences: { messageReply: options.messageReply } } : {}),
+    ...(options.messageReply !== undefined || options.showToolCalls !== undefined
+      ? {
+          preferences: {
+            ...(options.messageReply ? { messageReply: options.messageReply } : {}),
+            ...(options.showToolCalls !== undefined ? { showToolCalls: options.showToolCalls } : {}),
+          },
+        }
+      : {}),
   });
   const profileConfig = {
     ...baseProfileConfig,
