@@ -236,6 +236,8 @@ The legacy `sandbox` field is still readable for old configs. After the bridge s
 
 Set `LARK_CHANNEL_HOME=/path/to/state` to move all local bridge state. `LARK_CHANNEL_LOG_DAYS` overrides log retention.
 
+`LARK_CHANNEL_STREAM_TERMINAL_GRACE_MS` (default `3000`) controls how long the bridge waits for an already-open progress card to finish after the agent reaches a terminal state. Raise it on slow Feishu networks; if the card still does not settle in time, the bridge abandons it and delivers the final state as a normal reply instead of staying silent.
+
 ## Access control
 
 **Chat access is private by default: out of the box, only *you* can use the bot in DMs and groups.** "You" = whoever created / owns the Feishu app (the person who scanned the QR to set it up). The bot figures out who the app owner is automatically from Feishu, so **solo chat use needs zero configuration** — you can DM it and `@`-mention it in any group, and everyone else's chat messages are silently ignored (no "permission denied" reply, which would only confirm the bot exists). Cloud-doc comments are document-scoped; see below.

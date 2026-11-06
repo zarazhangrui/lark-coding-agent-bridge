@@ -76,8 +76,26 @@ import {
 } from './cot';
 
 const DEBOUNCE_MS = 600;
-const STREAM_TERMINAL_GRACE_MS = 3000;
+const DEFAULT_STREAM_TERMINAL_GRACE_MS = 3000;
 const REACTION_CLEANUP_GRACE_MS = 1000;
+
+/**
+ * How long to wait for an already-open progress stream to finish after the
+ * agent reached a terminal state. Opening/updating a Feishu card is a network
+ * round trip that can be much slower than the agent itself; a short window
+ * turns a slow card into a lost final answer. Deployments on slow links can
+ * raise this without a code change.
+ */
+function streamTerminalGraceMs(): number {
+  const raw = process.env.LARK_CHANNEL_STREAM_TERMINAL_GRACE_MS;
+  if (raw === undefined || raw.trim() === '') return DEFAULT_STREAM_TERMINAL_GRACE_MS;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    log.warn('stream', 'invalid-terminal-grace', { value: raw });
+    return DEFAULT_STREAM_TERMINAL_GRACE_MS;
+  }
+  return parsed;
+}
 
 const BRIDGE_AGENT_INSTRUCTIONS = [
   '你在 bridge 进程中运行，普通 lark-cli 会继承 LARK_CHANNEL=1 并进入 bridge-bound 模式。',
@@ -1347,12 +1365,21 @@ function createLazyProgressStream(
 }
 
 /**
- * Is there anything in this state that will still be on screen when the run
- * ends? Footer status lines ("正在思考…") don't count: the terminal event drops
- * them, so a stream opened for a footer alone can still finish empty — which is
- * the placeholder-then-recall churn we're avoiding.
+ * Should the run open its progress stream yet?
  *
- * Terminal states don't count either. By then the stream has nothing left to
+ * Opening early matters: the card is created by two API round trips, and if
+ * the agent finishes first we can spend the whole terminal grace window just
+ * waiting for `channel.stream()` to return. Once the run is visibly producing
+ * something (text deltas, tool calls), open immediately so the stream has a
+ * head start; even a footer-only render is enough while the run is active
+ * because the next flush will update it.
+ *
+ * A run that has not shown any activity yet stays closed. That preserves the
+ * final-only optimization: a Codex round with no commentary finishes with the
+ * footer still on "thinking" and is delivered by `sendFinalReply` without an
+ * empty placeholder card ever appearing.
+ *
+ * Terminal states don't open either. By then the stream has nothing left to
  * stream, and whatever the run produced goes out as a normal reply
  * (`sendFinalReply`, or the stream fallback) instead of a card that would be
  * created only to be finished a moment later.
@@ -1363,6 +1390,7 @@ function createLazyProgressStream(
  */
 function shouldOpenProgressStream(state: RunState): boolean {
   if (state.terminal !== 'running') return false;
+  if (state.footer === 'streaming' || state.footer === 'tool_running') return true;
   return renderText({ ...state, footer: null }).trim() !== '';
 }
 
@@ -1709,43 +1737,42 @@ async function awaitRenderAwareStream(input: {
     return;
   }
 
-  // The run ended before the stream did. A producer that hasn't started yet is
-  // usually just a card still being created (two API round trips), so give the
-  // stream its grace window rather than replying immediately — an immediate
-  // fallback would post the same answer twice once the stream catches up.
+  // The run ended before the stream did. Opening a card costs two API round
+  // trips, so give the stream a grace window rather than replying immediately
+  // — an immediate fallback would post the same answer twice once the stream
+  // catches up.
+  const graceMs = streamTerminalGraceMs();
   const terminal = await Promise.race([
     streamResult,
-    delay(STREAM_TERMINAL_GRACE_MS).then(() => undefined),
+    delay(graceMs).then(() => undefined),
   ]);
 
   if (!terminal) {
-    if (input.producerStarted()) {
-      log.warn('stream', 'terminal-grace-expired', {
-        mode: input.mode,
-        graceMs: STREAM_TERMINAL_GRACE_MS,
-      });
-      void streamResult.then((result) => {
-        if (!result.ok) {
-          log.fail('stream', result.err, { mode: input.mode, step: 'stream-terminal-late' });
-        }
-      });
-      return;
-    }
-    // Still nothing on screen after the grace window: give up on the stream and
-    // reply without it. `abandon()` keeps a late producer from rendering the
-    // same answer again; the empty message it leaves is recalled in cleanup.
+    log.warn('stream', 'terminal-grace-expired', {
+      mode: input.mode,
+      graceMs,
+      producerStarted: input.producerStarted(),
+    });
+    // Never return silently here: the stream may be stuck in a network call
+    // and the user would be left with a half-rendered card and no answer.
+    // Abandon it so a producer that has not started yet renders nothing, send
+    // the final state as a normal reply, and recall the abandoned message if
+    // it ever settles (an in-flight update may still land before that).
     input.progress.abandon();
-    log.warn('stream', 'producer-not-started-before-agent-terminal', { mode: input.mode });
+    void streamResult.then((result) => {
+      if (!result.ok) {
+        log.fail('stream', result.err, { mode: input.mode, step: 'stream-terminal-late' });
+      }
+    });
     await runFallbackReply(input.mode, first.state, input.fallback);
     return;
   }
 
   if (!terminal.ok) {
-    // A stream that failed before producing anything delivered nothing, so the
-    // reply still has to go out; one that failed later already showed its
-    // content and the error is the caller's to handle.
-    if (input.producerStarted()) throw terminal.err;
+    // A failed progress stream must not swallow the answer. Abandon whatever
+    // the stream may still render and deliver the terminal state normally.
     log.fail('stream', terminal.err, { mode: input.mode, step: 'stream' });
+    input.progress.abandon();
     await runFallbackReply(input.mode, first.state, input.fallback);
   }
 }
