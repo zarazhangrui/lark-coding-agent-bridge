@@ -213,8 +213,47 @@ function isAdminCommand(cmd: string): boolean {
   return ADMIN_COMMANDS.has(cmd.startsWith('/') ? cmd : `/${cmd}`);
 }
 
+/**
+ * A forwarded Feishu meeting card arrives as
+ * `<meeting>\n📹 <topic>\n🔢 <meeting no>\n🕙 <time>\n</meeting>`. In a DM from
+ * an admin, treat it as `/meeting join <no>` instead of handing it to the
+ * agent: the agent can only join through lark-cli, which bypasses
+ * MeetingManager — the bot sits in the meeting, but nothing it hears reaches
+ * the bridge (no in-meeting answers, no summary). Anything else — another
+ * sender, a group chat, meetings disabled — falls through unchanged.
+ */
+async function tryJoinFromMeetingCard(ctx: CommandContext, trimmed: string): Promise<boolean> {
+  if (!/^<meeting>[\s\S]*<\/meeting>$/.test(trimmed)) return false;
+  if (ctx.msg.chatType !== 'p2p') return false;
+  if (!canRunAdminCommand(ctx.controls.profileConfig, ctx.controls, ctx.msg.senderId).ok) return false;
+  const manager = ctx.controls.meeting;
+  if (!ctx.controls.profileConfig.meeting.enabled || !manager) return false;
+  const numbers = [...new Set([...trimmed.matchAll(/^🔢\s*(\d{9})\s*$/gmu)].map((m) => m[1]!))];
+  log.info('meeting', 'card-intercept', {
+    sender: ctx.msg.senderId.slice(-6),
+    found: numbers.length,
+  });
+  if (numbers.length !== 1) {
+    await reply(ctx, '会议卡片里没找到唯一的 9 位会议号，请发 `/meeting join <9位会议号>`。');
+    return true;
+  }
+  const meetingNo = numbers[0]!;
+  const existing = manager.byMeetingNo(meetingNo);
+  if (existing && !existing.ended) {
+    await reply(ctx, `✅ 已在会中 **${existing.topic ?? meetingNo}**\n会议号 ${existing.meetingNo} · \`/meeting\` 看状态`);
+    return true;
+  }
+  try {
+    await handleMeeting(`join ${meetingNo}`, ctx);
+  } catch (err) {
+    log.fail('command', err, { cmd: '/meeting', via: 'meeting-card' });
+  }
+  return true;
+}
+
 export async function tryHandleCommand(ctx: CommandContext): Promise<boolean> {
   const trimmed = ctx.msg.content.trim();
+  if (await tryJoinFromMeetingCard(ctx, trimmed)) return true;
   if (!trimmed.startsWith('/')) return false;
   const parts = trimmed.split(/\s+/);
   const cmd = parts[0] ?? '';
