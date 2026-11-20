@@ -46,6 +46,8 @@ import {
   toPromptAttachment,
 } from '../media/attachment';
 import { canUseDm, canUseGroup, requireMentionForChat } from '../policy/access';
+import { resolveWorkingDirectory } from '../policy/workspace';
+import { batchInstructions, landAttachmentBatch, renderAttachmentNotice, type LandedBatch } from '../media/batch';
 import { MeetingManager } from '../meeting/manager';
 import type { VcRequestClient } from '../meeting/api';
 import { attachMeetingAgent, summarizeEndedMeeting } from '../meeting/orchestrator';
@@ -847,6 +849,10 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
     }
   }
 
+  // Dropped attachments are never silent. Empty when everything was accepted.
+  const attachmentNotice = renderAttachmentNotice(attachments);
+  if (attachmentNotice) log.info('attachment', 'notice', { text: attachmentNotice });
+
   // Collect any reply-quote targets in the batch. Dedup so the same target
   // quoted by multiple messages in one batch only fetches once. Filter out
   // ids that are themselves in the batch — those are already in the prompt.
@@ -893,6 +899,29 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
     }
   }
 
+  // Several attachments → also link them into a batch directory in the
+  // workspace. buildPrompt runs before startRunFlow resolves the cwd, so
+  // resolve it here with the same inputs. A convenience only: on failure the
+  // per-attachment paths are still in the prompt.
+  let attachmentBatch: LandedBatch | undefined;
+  try {
+    const wsReq = workspaces.cwdFor(scope) ?? controls.profileConfig.workspaces.default ?? '';
+    const ws = wsReq ? await resolveWorkingDirectory(wsReq) : undefined;
+    if (ws?.ok) {
+      attachmentBatch = await landAttachmentBatch(attachments, ws.cwdRealpath, controls.profileConfig.attachments);
+      if (attachmentBatch) {
+        log.info('attachment', 'batch-landed', {
+          dir: attachmentBatch.dir,
+          count: attachmentBatch.count,
+          linked: attachmentBatch.items.filter((i) => i.linked).length,
+        });
+      }
+    }
+  } catch (err) {
+    log.warn('attachment', 'batch-failed', { err: String(err) });
+    attachmentBatch = undefined;
+  }
+
   // Detect a model switch since this scope's last run. When resuming an
   // existing conversation the transcript still claims the old model, so tell
   // the (now-switched) agent its model changed — otherwise it keeps echoing
@@ -914,13 +943,14 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
       ]
     : undefined;
 
+  const allInstructions = [...(extraInstructions ?? []), ...(attachmentBatch ? batchInstructions(attachmentBatch) : [])];
   const prompt = buildPrompt(
     batch,
     attachments,
     quotes,
     topicContext,
     channel.botIdentity,
-    extraInstructions,
+    allInstructions.length > 0 ? allInstructions : undefined,
   );
   log.info('prompt', 'built', {
     promptChars: prompt.length,
