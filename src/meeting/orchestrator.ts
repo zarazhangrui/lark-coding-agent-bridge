@@ -87,6 +87,12 @@ export function triggerPrefixes(configured: string, botName?: string): string[] 
 /** Subscribe the agent to a freshly-created session. */
 export function attachMeetingAgent(deps: MeetingAgentDeps): void {
   const { session, controls } = deps;
+  session.onTrouble = (kind, err) =>
+    notifyMeetingOwner(
+      deps,
+      kind,
+      `会中事件拉取连续失败（${describeMeetingError(err)}），bot 可能收不到会中消息。`,
+    );
   session.on('chat', (event) => {
     const chat = event as ChatEvent;
     // message_type 3 is an in-meeting reaction, not text — never a question.
@@ -149,7 +155,7 @@ export async function answerInMeeting(
 ): Promise<string> {
   const { session, controls } = deps;
   const config = controls.profileConfig.meeting;
-  const transcript = session.recentTranscript(config.transcript.keep);
+  const transcript = session.recentContext(config.transcript.keep);
   const prompt = buildMeetingPrompt({
     question,
     transcript,
@@ -164,12 +170,20 @@ export async function answerInMeeting(
 
   const target = config.respondIn;
   if (target === 'meeting' || target === 'both') {
-    await session.sendMessage(answer).catch((err) =>
-      log.warn('meeting', 'send-meeting-message-failed', {
-        meetingId: session.meetingId,
-        err: describeMeetingError(err),
-      }),
-    );
+    await session.sendMessage(answer).catch(async (err) => {
+      const reason = describeMeetingError(err);
+      log.warn('meeting', 'send-meeting-message-failed', { meetingId: session.meetingId, err: reason });
+      // An answer that only exists in the log is lost. With respondIn=both and
+      // an origin chat, the IM copy below already covers it. Otherwise DM the
+      // owner only: the origin chat may be a group whose members aren't in the
+      // meeting.
+      if (target === 'both' && session.originChatId) return;
+      const to = controls.botOwnerId;
+      if (!to) return;
+      await deps.channel
+        .send(to, { markdown: `⚠️ 回答没能发进会议（${reason}），改私聊发给你：\n\n${answer}` })
+        .catch((e) => log.warn('meeting', 'send-fallback-failed', { err: String(e) }));
+    });
   }
   if ((target === 'im' || target === 'both') && session.originChatId) {
     await deps.channel
@@ -189,12 +203,12 @@ export interface MeetingPromptInput {
 /** Compose the agent prompt: meeting context first, then the actual ask. */
 export function buildMeetingPrompt(input: MeetingPromptInput): string {
   const parts: string[] = [];
-  parts.push('你正在参加一场飞书视频会议，以下是会议的实时字幕上下文。');
+  parts.push('你正在参加一场飞书视频会议，以下是会议的实时字幕和会中弹幕（标「弹幕」的是文字消息）。');
   if (input.topic) parts.push(`会议主题：${input.topic}`);
   parts.push('');
-  parts.push('=== 会议字幕（按时间顺序，可能不完整） ===');
-  parts.push(input.transcript.length ? input.transcript.join('\n') : '（暂无字幕）');
-  parts.push('=== 字幕结束 ===');
+  parts.push('=== 会议记录（按时间顺序，可能不完整） ===');
+  parts.push(input.transcript.length ? input.transcript.join('\n') : '（暂无字幕和弹幕）');
+  parts.push('=== 记录结束 ===');
   parts.push('');
   parts.push(
     input.askedBy
@@ -209,6 +223,31 @@ export function buildMeetingPrompt(input: MeetingPromptInput): string {
   return parts.join('\n');
 }
 
+const notifiedKinds = new WeakMap<MeetingSession, Set<string>>();
+
+/**
+ * Tell the bot owner about a meeting problem over DM. Once per meeting per
+ * `kind`: these are "something is wrong" signals, not a stream.
+ */
+export function notifyMeetingOwner(
+  deps: Pick<MeetingAgentDeps, 'session' | 'controls' | 'channel'>,
+  kind: string,
+  text: string,
+): void {
+  const { session, controls } = deps;
+  const notified = notifiedKinds.get(session) ?? new Set<string>();
+  notifiedKinds.set(session, notified);
+  if (notified.has(kind)) return;
+  notified.add(kind);
+  const to = controls.botOwnerId;
+  log.info('meeting', 'owner-notified', { meetingId: session.meetingId, kind, sent: Boolean(to) });
+  if (!to) return;
+  const title = session.topic ?? session.meetingNo;
+  void deps.channel
+    .send(to, { markdown: `⚠️ **会议智能体** · ${title}（${session.meetingNo}）\n${text}` })
+    .catch((err) => log.warn('meeting', 'owner-notify-failed', { kind, err: String(err) }));
+}
+
 /**
  * Summarize a finished meeting and deliver it over IM.
  *
@@ -217,14 +256,24 @@ export function buildMeetingPrompt(input: MeetingPromptInput): string {
  * else the bot owner's DM (`send` accepts an `ou_*` id as a direct message).
  * With neither, there is nowhere to put it, so we skip loudly instead of
  * silently dropping the work.
+ *
+ * Input is transcript + in-meeting chat: with captions off a meeting has no
+ * transcript at all, and "no summary, no message" looked exactly like a broken
+ * bot. When there is nothing, or the run / delivery fails, the owner is told.
  */
 export async function summarizeEndedMeeting(deps: MeetingAgentDeps): Promise<void> {
   const { session, controls } = deps;
   if (!controls.profileConfig.meeting.summaryOnEnd) return;
 
-  const transcript = session.recentTranscript();
-  if (transcript.length === 0) {
+  const transcriptLines = session.transcriptLineCount();
+  const context = session.recentContext();
+  if (context.length === 0) {
     log.info('meeting', 'summary-skipped', { meetingId: session.meetingId, reason: 'empty-transcript' });
+    notifyMeetingOwner(
+      deps,
+      'summary-skipped',
+      '会议已结束，但本场没收到任何字幕或弹幕，没有生成纪要。\n如果会上有人说话，多半是会议没开字幕/转写，bot 收不到语音内容。',
+    );
     return;
   }
   const target = resolveSummaryTarget(
@@ -240,21 +289,46 @@ export async function summarizeEndedMeeting(deps: MeetingAgentDeps): Promise<voi
   // deliver:'caller' — the meeting is over, so never try the in-meeting lane.
   const answer = await answerInMeeting(
     deps,
-    '会议已结束。请基于以上会议字幕输出一份纪要：讨论了什么、达成的结论、待办（含负责人，如字幕里有）。',
+    '会议已结束。请基于以上会议记录（字幕和弹幕）输出一份纪要：讨论了什么、达成的结论、待办（含负责人，如记录里有）。',
     { deliver: 'caller' },
   ).catch((err) => {
     log.warn('meeting', 'summary-run-failed', { meetingId: session.meetingId, err: String(err) });
+    notifyMeetingOwner(deps, 'summary-run-failed', `会议已结束，但生成纪要失败：${String(err)}`);
     return '';
   });
-  if (!answer) return;
+  if (!answer) {
+    notifyMeetingOwner(deps, 'summary-run-failed', '会议已结束，但生成纪要失败：agent 没有返回内容。');
+    return;
+  }
 
   const title = session.topic ?? session.meetingNo;
-  await deps.channel
-    .send(target.to, { markdown: `**会议纪要 · ${title}**\n\n${answer}` })
-    .catch((err) => log.warn('meeting', 'summary-send-failed', { err: String(err) }));
+  const notes: string[] = [];
+  if (transcriptLines === 0) notes.push('本场没收到字幕（可能没开转写），以上纪要只基于会中弹幕。');
+  if (session.resumedAt) {
+    const hhmm = new Date(session.resumedAt).toLocaleTimeString('zh-CN', {
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
+    });
+    notes.push(`bridge 在 ${hhmm} 重启后接回本场会议，此前的部分内容可能缺失。`);
+  }
+  const body =
+    `**会议纪要 · ${title}**\n\n${answer}` + (notes.length ? `\n\n> ${notes.join('\n> ')}` : '');
+  const sent = await deps.channel
+    .send(target.to, { markdown: body })
+    .then(() => true)
+    .catch((err) => {
+      log.warn('meeting', 'summary-send-failed', { err: String(err) });
+      if (target.to !== controls.botOwnerId) {
+        notifyMeetingOwner(deps, 'summary-send-failed', `纪要发到来源会话失败（${String(err)}），改发这里：\n\n${body}`);
+      }
+      return false;
+    });
+  if (!sent) return;
   log.info('meeting', 'summary-sent', {
     meetingId: session.meetingId,
-    lines: transcript.length,
+    lines: context.length,
+    transcriptLines,
     target: target.kind,
     fellBack: target.fellBack,
   });

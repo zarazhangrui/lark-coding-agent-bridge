@@ -11,6 +11,9 @@ import { unpackActivity, type MeetingEvent, type TranscriptEvent } from './types
 
 export type MeetingEventSourceKind = 'push' | 'poll';
 
+/** Consecutive poll failures before the owner is told. */
+export const POLL_FAILURE_ALERT = 5;
+
 export interface MeetingSessionStatus {
   meetingId: string;
   meetingNo: string;
@@ -57,6 +60,14 @@ export class MeetingSession {
   readonly topic?: string;
   readonly startedAt: string;
   readonly originChatId?: string;
+  /** Set when the session was re-adopted after a bridge restart (epoch ms). */
+  resumedAt?: number;
+  /**
+   * Called when the session hits a problem the user should hear about (the
+   * orchestrator turns it into an owner DM). Currently: polling failed
+   * {@link POLL_FAILURE_ALERT} times in a row.
+   */
+  onTrouble?: (kind: 'poll-failed', err: unknown) => void;
 
   private readonly client: VcRequestClient;
   private readonly config: MeetingConfig;
@@ -64,7 +75,18 @@ export class MeetingSession {
   private readonly now: () => number;
 
   /** Rolling transcript kept structurally so a re-sent sentence replaces in place. */
-  private transcript: { sentenceId: string; speaker: string; text: string }[] = [];
+  private transcript: { sentenceId: string; speaker: string; text: string; seq: number }[] = [];
+  /**
+   * In-meeting chat lines. Chat is meeting content too: a meeting without
+   * transcription (captions off) only has chat, and without this buffer the
+   * agent's context and the end-of-meeting summary would both be empty.
+   */
+  private chatLines: { speaker: string; text: string; seq: number }[] = [];
+  /**
+   * Arrival order shared by transcript and chat lines. A counter, not a clock:
+   * a poll page or a catch-up delivers many events in the same millisecond.
+   */
+  private seq = 0;
   /** sentence_id → latest text, so a re-sent sentence overwrites rather than appends. */
   private sentences = new Map<string, string>();
   /** event_id of already-ingested activity items (push replay / poll overlap). */
@@ -80,6 +102,7 @@ export class MeetingSession {
   private cursor?: string;
   private poller?: ReturnType<typeof setTimeout>;
   private idleRounds = 0;
+  private pollFailures = 0;
   private stopped = false;
   private leaving = false;
   ended = false;
@@ -124,6 +147,25 @@ export class MeetingSession {
     const slice =
       !limit || limit >= this.transcript.length ? this.transcript : this.transcript.slice(-limit);
     return slice.map((l) => `${l.speaker}: ${l.text}`);
+  }
+
+  /**
+   * Transcript and in-meeting chat merged in arrival order, oldest first — the
+   * agent's context. Chat lines are tagged so the agent can tell typed messages
+   * from speech.
+   */
+  recentContext(limit?: number): string[] {
+    const lines = [
+      ...this.transcript.map((l) => ({ seq: l.seq, line: `${l.speaker}: ${l.text}` })),
+      ...this.chatLines.map((c) => ({ seq: c.seq, line: `${c.speaker}（弹幕）: ${c.text}` })),
+    ].sort((a, b) => a.seq - b.seq);
+    const slice = !limit || limit >= lines.length ? lines : lines.slice(-limit);
+    return slice.map((l) => l.line);
+  }
+
+  /** Number of buffered transcript lines (chat excluded). */
+  transcriptLineCount(): number {
+    return this.transcript.length;
   }
 
   /**
@@ -190,6 +232,16 @@ export class MeetingSession {
       this.handleTranscript(event);
       return;
     }
+    // message_type 3 is a reaction, not text.
+    if (event.kind === 'chat' && event.messageType !== 3 && event.content) {
+      this.chatLines.push({
+        speaker: event.from.name ?? event.from.id ?? '?',
+        text: event.content,
+        seq: ++this.seq,
+      });
+      const keep = this.config.transcript.keep;
+      if (this.chatLines.length > keep) this.chatLines = this.chatLines.slice(-keep);
+    }
     if (event.kind === 'participant') {
       const id = event.user.id;
       if (id) {
@@ -230,11 +282,13 @@ export class MeetingSession {
       sentenceId: event.sentenceId,
       speaker: event.speaker.name ?? event.speaker.id ?? '?',
       text: event.text,
+      seq: ++this.seq,
     };
     // Same sentence growing -> replace in place, so the buffer holds one entry
-    // per sentence instead of every intermediate prefix.
+    // per sentence instead of every intermediate prefix. Keep the first arrival
+    // position so the sentence doesn't jump past chat sent while it was spoken.
     const idx = this.transcript.findIndex((l) => l.sentenceId === event.sentenceId);
-    if (idx >= 0) this.transcript[idx] = line;
+    if (idx >= 0) this.transcript[idx] = { ...line, seq: this.transcript[idx]!.seq };
     else this.transcript.push(line);
     const keep = this.config.transcript.keep;
     if (this.transcript.length > keep) this.transcript = this.transcript.slice(-keep);
@@ -258,6 +312,26 @@ export class MeetingSession {
   }
 
   /**
+   * Read the events the meeting already has, page by page, and leave the cursor
+   * at the end. Used when re-adopting a meeting after a restart: it runs before
+   * the agent subscribes, so old `@bot` questions fill the context without
+   * being answered a second time. Throws on API errors — the caller decides
+   * whether the meeting is gone.
+   */
+  async catchUp(maxPages = 1000): Promise<void> {
+    for (let i = 0; i < maxPages; i++) {
+      const page = await fetchMeetingEvents(this.client, {
+        meetingId: this.meetingId,
+        ...(this.cursor ? { pageToken: this.cursor } : {}),
+      });
+      if (page.pageToken) this.cursor = page.pageToken;
+      for (const item of page.items) this.ingest(item);
+      if (!page.hasMore) return;
+    }
+    log.warn('meeting', 'catchup-truncated', { meetingId: this.meetingId, pages: maxPages });
+  }
+
+  /**
    * Start the `bots/events` poller. Used as the primary source until push is
    * proven, and as gap-fill afterwards. Idle rounds back off to 10s.
    */
@@ -270,6 +344,7 @@ export class MeetingSession {
           meetingId: this.meetingId,
           ...(this.cursor ? { pageToken: this.cursor } : {}),
         });
+        this.pollFailures = 0;
         if (page.pageToken) this.cursor = page.pageToken;
         for (const item of page.items) this.ingest(item);
         this.idleRounds = page.items.length > 0 ? 0 : Math.min(this.idleRounds + 1, 3);
@@ -278,6 +353,10 @@ export class MeetingSession {
       } catch (err) {
         this.idleRounds = Math.min(this.idleRounds + 1, 3);
         log.warn('meeting', 'poll-failed', { meetingId: this.meetingId, err: String(err) });
+        // Report once per streak: a poller that keeps failing means the bot is
+        // deaf to the meeting, which is otherwise only visible in the log.
+        this.pollFailures += 1;
+        if (this.pollFailures === POLL_FAILURE_ALERT) this.onTrouble?.('poll-failed', err);
       }
       if (this.stopped || this.ended) return;
       const base = this.config.pollIntervalMs;
