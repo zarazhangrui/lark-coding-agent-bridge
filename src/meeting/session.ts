@@ -34,6 +34,8 @@ export interface MeetingSessionStatus {
    */
   eventCounts: Record<string, number>;
   ended: boolean;
+  /** In-meeting triggers refused by the authorization gate. */
+  deniedCount: number;
 }
 
 export interface MeetingSessionDeps {
@@ -114,6 +116,8 @@ export class MeetingSession {
   private stopped = false;
   private leaving = false;
   ended = false;
+  /** Bumped by the in-meeting authorization gate (see authz.ts). */
+  deniedCount = 0;
 
   constructor(deps: MeetingSessionDeps) {
     this.client = deps.client;
@@ -139,6 +143,7 @@ export class MeetingSession {
       ingested: this.ingested,
       eventCounts: { ...this.eventCounts },
       ended: this.ended,
+      deniedCount: this.deniedCount,
     };
   }
 

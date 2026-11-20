@@ -10,8 +10,9 @@ import type { SessionStore } from '../session/store';
 import type { WorkspaceStore } from '../workspace/store';
 import { startRunFlow } from '../bot/run-flow';
 import { describeMeetingError } from './manager';
+import { meetingAuthzGate, meetingEffectiveAccess, meetingReadOnlyAccess } from './authz';
 import type { MeetingSession } from './session';
-import type { MeetingSummaryTarget } from '../config/profile-schema';
+import type { AccessMode, MeetingSummaryTarget } from '../config/profile-schema';
 import type { ChatEvent, MeetingEvent } from './types';
 
 /**
@@ -66,15 +67,8 @@ const STOP_WORDS = new Set(['stop', '停', '停止', '中断', '取消', 'cancel
 export function matchTrigger(text: string, prefixes: string[]): string | undefined {
   const trimmed = text.trim();
   const lower = trimmed.toLowerCase();
-  for (const prefix of prefixes) {
-    const p = prefix.trim();
-    if (!p) continue;
-    if (!lower.startsWith(p.toLowerCase())) continue;
-    return trimmed
-      .slice(p.length)
-      .replace(/^[\s,，、:：。.!！?？~～-]+/, '')
-      .trim();
-  }
+  const head = matchPrefix(trimmed, prefixes);
+  if (head !== undefined) return head;
   // People also mention the bot mid- or end-of-sentence ("说句话听听@助手").
   // Accept the mention anywhere, unless it is glued to a latin word or an
   // email/domain on either side ("a@bot.com", "@bottle" don't count).
@@ -95,6 +89,55 @@ export function matchTrigger(text: string, prefixes: string[]): string | undefin
         .replace(/\s+/g, ' ')
         .trim();
     }
+  }
+  return undefined;
+}
+
+const escapeRe = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+/**
+ * The elevation word counts only directly after a trigger mention
+ * (`@bot !write 改 README`), never elsewhere in the sentence ("@bot 别用
+ * !write"), and only as a whole word (`!writer` is not `!write`). Matched on
+ * the raw text: trigger matching strips leading punctuation, which would eat
+ * the `!` of `!write`. Returns the text without trigger and word, or undefined.
+ */
+export function matchElevation(content: string, prefixes: string[], word: string): string | undefined {
+  const w = word.trim();
+  if (!w) return undefined;
+  for (const prefix of prefixes) {
+    const p = prefix.trim();
+    if (!p) continue;
+    const re = new RegExp(`${escapeRe(p)}[\\s,，、:：]*${escapeRe(w)}(?=$|[\\s,，、:：。.!！?？])`, 'gi');
+    let m: RegExpExecArray | null;
+    // Same left boundary as the trigger: `foo@bot !write` is an email-ish token, not a mention.
+    while ((m = re.exec(content)) && EMAIL_LOCAL.test(content[m.index - 1] ?? '')) {
+      /* keep looking */
+    }
+    if (!m) continue;
+    return `${content.slice(0, m.index)} ${content.slice(m.index + m[0].length)}`
+      .replace(/^[\s,，、:：。.!！?？~～-]+/, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+  return undefined;
+}
+
+/**
+ * Prefix-only match: the text must start with one of `prefixes`. Returns the
+ * rest (punctuation after the prefix dropped), or `undefined`.
+ */
+export function matchPrefix(text: string, prefixes: string[]): string | undefined {
+  const trimmed = text.trim();
+  const lower = trimmed.toLowerCase();
+  for (const prefix of prefixes) {
+    const p = prefix.trim();
+    if (!p) continue;
+    if (!lower.startsWith(p.toLowerCase())) continue;
+    return trimmed
+      .slice(p.length)
+      .replace(/^[\s,，、:：。.!！?？~～-]+/, '')
+      .trim();
   }
   return undefined;
 }
@@ -130,12 +173,17 @@ export function attachMeetingAgent(deps: MeetingAgentDeps): void {
       controls.profileConfig.meeting.trigger,
       deps.channel.botIdentity?.name,
     );
-    const question = matchTrigger(chat.content, prefixes);
-    if (question === undefined) return; // not addressed to us
-    if (!question) return; // addressed but empty
+    const matched = matchTrigger(chat.content, prefixes);
+    if (matched === undefined) return; // not addressed to us
+    if (!matched) return; // addressed but empty
     const usedPrefix = prefixes.find((p) =>
       chat.content.trim().toLowerCase().includes(p.toLowerCase()),
     );
+    // Authorization comes before the stop words: otherwise anyone in the
+    // meeting could interrupt a run somebody else started.
+    const gate = meetingAuthzGate(deps, chat, matched, (word) => matchElevation(chat.content, prefixes, word));
+    if (!gate.ok) return;
+    const question = gate.question;
 
     if (STOP_WORDS.has(question.toLowerCase())) {
       const stopped = deps.activeRuns.interrupt(meetingScopeId(session.meetingId));
@@ -145,9 +193,21 @@ export function attachMeetingAgent(deps: MeetingAgentDeps): void {
       return;
     }
 
+    if (gate.elevate) {
+      // Elevation is announced to everyone in the meeting, so an attempt to
+      // go beyond read-only is never silent. The session switches with the
+      // policy: read-only history is not carried into a writable session.
+      void session
+        .sendMessage(
+          `⚠️ 本次以 ${meetingEffectiveAccess(controls.profileConfig, true)} 权限执行（由 ${chat.from.name ?? '授权用户'} 发起）。提权会切换会话，不带之前的会中对话历史。`,
+        )
+        .catch((err) => log.warn('meeting', 'elevate-notice-failed', { err: String(err) }));
+    }
+
     // Asked from inside the meeting → answer where the conversation is.
     void answerInMeeting(deps, question, {
       deliver: 'broadcast',
+      elevate: gate.elevate,
       ...(usedPrefix ? { usedPrefix } : {}),
       ...(chat.from.name ? { askedBy: chat.from.name } : {}),
     }).catch((err) =>
@@ -170,6 +230,12 @@ export interface AnswerOptions {
   deliver: 'broadcast' | 'caller';
   /** Prefix the asker actually typed, so hints quote their wording back. */
   usedPrefix?: string;
+  /**
+   * Run with the profile's default access instead of the meeting tier. Only
+   * the in-meeting elevation word sets this; `/meeting ask|notes` and the
+   * end-of-meeting summary stay read-only (summarizing needs no writes).
+   */
+  elevate?: boolean;
 }
 
 /**
@@ -191,7 +257,13 @@ export async function answerInMeeting(
     ...(opts.askedBy ? { askedBy: opts.askedBy } : {}),
   });
 
-  const answer = await runMeetingAgent(deps, prompt, opts.usedPrefix);
+  // In-meeting chat runs at the meeting tier (or elevated); everything else
+  // (`/meeting ask|notes`, the summary) is read-only: its input is meeting content.
+  const tier =
+    opts.deliver === 'broadcast'
+      ? meetingEffectiveAccess(controls.profileConfig, opts.elevate === true)
+      : meetingReadOnlyAccess(controls.profileConfig);
+  const answer = await runMeetingAgent(deps, prompt, opts.usedPrefix, opts.elevate === true, tier);
   if (!answer) return '';
   // The caller relays it themselves; never echo into the meeting.
   if (opts.deliver === 'caller') return answer;
@@ -394,13 +466,21 @@ async function runMeetingAgent(
   deps: MeetingAgentDeps,
   prompt: string,
   usedPrefix?: string,
+  elevate = false,
+  tier: AccessMode = meetingReadOnlyAccess(deps.controls.profileConfig),
 ): Promise<string> {
   const { session, controls } = deps;
   const scopeId = meetingScopeId(session.meetingId);
-  const capability =
+  const base =
     controls.profileConfig.agentKind === 'codex'
       ? codexCapability(controls.profileConfig)
       : claudeCapability(controls.profileConfig);
+  // Lowering capability.permissions.maxAccess is enough: clampAccess takes
+  // min(defaultAccess, profile max, capability max).
+  const capability = { ...base, permissions: { ...base.permissions, maxAccess: tier } };
+  if (elevate) {
+    log.warn('meeting', 'elevated', { meetingId: session.meetingId, meetingNo: session.meetingNo, tier, stage: 'start' });
+  }
   const result = await startRunFlow({
     scopeId,
     scope: {
@@ -408,11 +488,15 @@ async function runMeetingAgent(
       actorId: controls.botOwnerId ?? 'meeting',
       ...(session.originChatId ? { chatId: session.originChatId } : {}),
     },
-    prompt,
+    // Say so in read-only runs; otherwise the agent may fail silently or pretend it did the write.
+    prompt:
+      tier === 'read-only'
+        ? `${prompt}\n\n[执行环境] 当前以只读权限运行，无法写文件或执行有副作用的命令。若请求需要写操作，直接说明「本次为只读模式，未执行」并给出建议，不要假装已完成。`
+        : prompt,
     attachments: [],
-    // Meeting content is already gated by "the bot was invited into the
-    // meeting"; the per-chat allowlist doesn't apply here.
-    access: { ok: true, reason: 'allowed-chat' },
+    // Being in the meeting means "visible to every participant", not "anyone
+    // may drive it": the asker was already authorized by meetingAuthzGate.
+    access: { ok: true, reason: 'allowed-user' },
     capability,
     profileConfig: controls.profileConfig,
     sessions: deps.sessions,
@@ -448,11 +532,26 @@ async function runMeetingAgent(
   }
 
   let answer = '';
-  for await (const event of result.execution.subscribe()) {
-    const chunk = textOf(event);
-    if (chunk) answer += chunk;
-    if (event.type === 'error') {
-      log.warn('meeting', 'run-error', { meetingId: session.meetingId });
+  let failed = false;
+  try {
+    for await (const event of result.execution.subscribe()) {
+      const chunk = textOf(event);
+      if (chunk) answer += chunk;
+      if (event.type === 'error') {
+        failed = true;
+        log.warn('meeting', 'run-error', { meetingId: session.meetingId });
+      }
+    }
+  } finally {
+    // Every elevated run can be found by meetingId alone.
+    if (elevate) {
+      log.warn('meeting', 'elevated', {
+        meetingId: session.meetingId,
+        meetingNo: session.meetingNo,
+        tier,
+        stage: 'end',
+        failed,
+      });
     }
   }
   return answer.trim();

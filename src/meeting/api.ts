@@ -113,6 +113,39 @@ export function isMeetingNo(value: string): boolean {
   return /^\d{9}$/.test(value.trim());
 }
 
+export type MeetingNoExtraction =
+  | { ok: true; meetingNo: string }
+  | { ok: false; reason: 'none' }
+  | { ok: false; reason: 'ambiguous'; candidates: string[] };
+
+/**
+ * Pull a 9-digit meeting number out of free text: a bare number, a sentence,
+ * a meeting link or a number written as `123 456 789`. Deliberately not
+ * URL-shape aware — hard-coding Feishu link hosts/paths would silently fail
+ * on a shape we have not seen.
+ */
+export function extractMeetingNo(input: unknown): MeetingNoExtraction {
+  const raw = String(input ?? '');
+  const scan = (t: string): string[] => {
+    // Drop the query/fragment of links: `?password=123456789` is not a
+    // candidate. Only inside a link — "能进吗? 123456789" keeps its number.
+    const core = t.replace(/([a-z][a-z0-9+.-]*:\/\/[^\s?#]*)[?#]\S*/gi, '$1');
+    const hits: string[] = [];
+    // No digit directly on either side, or an 11-digit phone number would yield 9 digits.
+    for (const m of core.matchAll(/(?<![0-9])([0-9]{9})(?![0-9])/g)) hits.push(m[1]!);
+    return [...new Set(hits)];
+  };
+  // Pass 1: the text as written; spaces and dashes act as digit boundaries.
+  let uniq = scan(raw);
+  // Pass 2: strip separators to accept `123 456 789`. The order matters:
+  // stripping first would glue `123456789 987654321` into one 18-digit run and
+  // report "none" where the truth is "ambiguous".
+  if (uniq.length === 0) uniq = scan(raw.replace(/[\s\-\u2013\u2014()]/g, ''));
+  if (uniq.length === 1) return { ok: true, meetingNo: uniq[0]! };
+  if (uniq.length === 0) return { ok: false, reason: 'none' };
+  return { ok: false, reason: 'ambiguous', candidates: uniq };
+}
+
 export interface JoinedMeeting {
   /** Long meeting id — required by every subsequent call. */
   meetingId: string;

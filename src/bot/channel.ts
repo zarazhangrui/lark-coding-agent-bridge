@@ -46,6 +46,7 @@ import {
   toPromptAttachment,
 } from '../media/attachment';
 import { canUseDm, canUseGroup, requireMentionForChat } from '../policy/access';
+import { meetingAccessConverged, meetingEffectiveAccess } from '../meeting/authz';
 import { describeMeetingError, MeetingManager } from '../meeting/manager';
 import type { VcRequestClient } from '../meeting/api';
 import { attachMeetingAgent, summarizeEndedMeeting } from '../meeting/orchestrator';
@@ -487,6 +488,15 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
         }),
     });
     meetingManager.attachPush();
+    // One line per start that proves the in-meeting gate is in this build and
+    // shows its effective setting.
+    log.info('meeting', 'authz-active', {
+      gate: meetingConfig().access,
+      executionAccess: meetingConfig().executionAccess,
+      effective: meetingEffectiveAccess(controls.profileConfig, false),
+      converged: meetingAccessConverged(controls.profileConfig),
+      elevateWord: meetingConfig().elevateWord || '(disabled)',
+    });
     controls.meeting = meetingManager;
   }
 

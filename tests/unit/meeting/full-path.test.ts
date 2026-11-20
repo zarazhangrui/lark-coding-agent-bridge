@@ -142,7 +142,7 @@ describe('in-meeting @ from a real chat event', () => {
   it('hands the asker name to the agent for a real in-meeting @', async () => {
     const config = cfg({ trigger: '@bot' });
     const s = makeSession(config);
-    attachMeetingAgent(deps(s, config).args);
+    attachMeetingAgent(deps(s, config, { botOwnerId: 'ou_asker' }).args);
     s.ingest(REAL_CHAT);
     await flush();
     expect(mocks.startRunFlow).toHaveBeenCalledTimes(1);
@@ -152,7 +152,7 @@ describe('in-meeting @ from a real chat event', () => {
   it('accepts the mention at the end of the sentence', async () => {
     const config = cfg({ trigger: '@bot' });
     const s = makeSession(config);
-    attachMeetingAgent(deps(s, config).args);
+    attachMeetingAgent(deps(s, config, { botOwnerId: 'ou_b' }).args);
     s.ingest(chat('e-tail', '说句话听听 @bot'));
     await flush();
     expect(mocks.startRunFlow).toHaveBeenCalledTimes(1);
@@ -171,6 +171,91 @@ describe('in-meeting @ from a real chat event', () => {
     s.ingest(chat('e-self', '有事直接 @bot 叫我'));
     await flush();
     expect(mocks.startRunFlow).not.toHaveBeenCalled();
+  });
+});
+
+describe('in-meeting authorization', () => {
+  it('refuses a participant who may not DM the bot, replies once, runs nothing', async () => {
+    const config = cfg({ trigger: '@bot' });
+    const s = makeSession(config);
+    const said: string[] = [];
+    s.sendMessage = vi.fn(async (t: string) => {
+      said.push(t);
+    });
+    attachMeetingAgent(deps(s, config, { botOwnerId: 'ou_owner' }).args);
+    s.ingest(chat('e-1', '@bot 帮我删库'));
+    s.ingest(chat('e-2', '@bot 再试一次'));
+    await flush();
+    expect(mocks.startRunFlow).not.toHaveBeenCalled();
+    expect(said).toHaveLength(1);
+    expect(said[0]).toContain('尚未获得');
+    expect(s.status().deniedCount).toBe(2);
+  });
+
+  it('lets an allowlisted colleague through and runs read-only', async () => {
+    const config = cfg({ trigger: '@bot' });
+    const s = makeSession(config);
+    const d = deps(s, config, { botOwnerId: 'ou_owner' });
+    (d.args as { controls: { profileConfig: { access: { allowedUsers: string[] } } } }).controls.profileConfig.access.allowedUsers = ['ou_b'];
+    attachMeetingAgent(d.args);
+    s.ingest(chat('e-1', '@bot 总结一下'));
+    await flush();
+    expect(mocks.startRunFlow).toHaveBeenCalledTimes(1);
+    const call = mocks.startRunFlow.mock.calls[0]![0];
+    expect(call.capability.permissions.maxAccess).toBe('read-only');
+    expect(call.prompt).toContain('只读权限');
+    expect(call.access).toEqual({ ok: true, reason: 'allowed-user' });
+  });
+
+  it('a stop word from an unauthorized participant does not interrupt the run', async () => {
+    const config = cfg({ trigger: '@bot' });
+    const s = makeSession(config);
+    s.sendMessage = vi.fn(async () => {});
+    const d = deps(s, config, { botOwnerId: 'ou_owner' });
+    attachMeetingAgent(d.args);
+    s.ingest(chat('e-1', '@bot 停'));
+    await flush();
+    expect((d.args as { activeRuns: { interrupt: ReturnType<typeof vi.fn> } }).activeRuns.interrupt).not.toHaveBeenCalled();
+  });
+
+  it('elevates only when the elevation word directly follows the trigger', async () => {
+    const config = cfg({ trigger: '@bot', elevateWord: '!write' });
+    const s = makeSession(config);
+    const said: string[] = [];
+    s.sendMessage = vi.fn(async (t: string) => {
+      said.push(t);
+    });
+    const d = deps(s, config, { botOwnerId: 'ou_b' });
+    const pc = (d.args as { controls: { profileConfig: { permissions: { defaultAccess: string; maxAccess: string } } } }).controls.profileConfig;
+    pc.permissions.defaultAccess = 'workspace';
+    pc.permissions.maxAccess = 'full';
+    attachMeetingAgent(d.args);
+
+    s.ingest(chat('e-1', '@bot 别用 !write 了，先看看'));
+    await flush();
+    expect(mocks.startRunFlow.mock.calls[0]![0].capability.permissions.maxAccess).toBe('read-only');
+    expect(said.some((t) => t.includes('写权限'))).toBe(false);
+
+    s.ingest(chat('e-2', '@bot !write 改一下 README'));
+    await flush();
+    const second = mocks.startRunFlow.mock.calls[1]![0];
+    expect(second.capability.permissions.maxAccess).toBe('workspace');
+    expect(second.prompt).toContain('改一下 README');
+    expect(said.some((t) => t.includes('本次以 workspace 权限执行'))).toBe(true);
+  });
+});
+
+describe('entries other than meeting chat are read-only', () => {
+  it('/meeting ask and notes run read-only even when the meeting tier is higher', async () => {
+    const config = cfg({ executionAccess: 'workspace' });
+    const s = makeSession(config);
+    const d = deps(s, config, { botOwnerId: 'ou_owner' });
+    const pc = (d.args as { controls: { profileConfig: { permissions: { maxAccess: string } } } }).controls.profileConfig;
+    pc.permissions.maxAccess = 'full';
+    await answerInMeeting(d.args, '总结', { deliver: 'caller' });
+    expect(mocks.startRunFlow.mock.calls[0]![0].capability.permissions.maxAccess).toBe('read-only');
+    await answerInMeeting(d.args, '总结', { deliver: 'broadcast' });
+    expect(mocks.startRunFlow.mock.calls[1]![0].capability.permissions.maxAccess).toBe('workspace');
   });
 });
 

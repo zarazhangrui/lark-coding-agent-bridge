@@ -81,8 +81,9 @@ import type { WorkspaceStore } from '../workspace/store';
 import { createBoundChat, defaultChatName } from '../bot/group';
 import { fetchKnownChats, type KnownChat } from '../bot/lark-info';
 import { describeMeetingError, type MeetingManager } from '../meeting/manager';
-import { isMeetingNo } from '../meeting/api';
+import { extractMeetingNo } from '../meeting/api';
 import { answerInMeeting, meetingScopeId } from '../meeting/orchestrator';
+import { meetingAuthzSummary } from '../meeting/authz';
 import type { MeetingSession } from '../meeting/session';
 import { hasStructuredLarkCliUserAuth } from '../lark-cli/identity-policy';
 
@@ -2153,11 +2154,18 @@ async function handleMeeting(args: string, ctx: CommandContext): Promise<void> {
       await replyMeetingStatus(ctx, manager);
       return;
     case 'join': {
-      const meetingNo = rest.replace(/\s/g, '');
-      if (!isMeetingNo(meetingNo)) {
-        await reply(ctx, '用法：`/meeting join <9位会议号>`（只接受 9 位纯数字，不是会议链接）');
+      // A link, a whole sentence or a spaced-out number all work.
+      const ex = extractMeetingNo(rest);
+      if (!ex.ok) {
+        await reply(
+          ctx,
+          ex.reason === 'ambiguous'
+            ? '输入里有多个可能的会议号，请指定一个：\n' + ex.candidates.map((c) => `- ${c}`).join('\n')
+            : '没找到会议号。可以直接粘会议链接，或给 9 位会议号：`/meeting join <会议链接 或 9 位会议号>`',
+        );
         return;
       }
+      const meetingNo = ex.meetingNo;
       try {
         const session = await manager.join(meetingNo, { originChatId: ctx.msg.chatId });
         await reply(
@@ -2300,7 +2308,10 @@ function pickMeetingSession(
   ctx: CommandContext,
   explicit: string,
 ): PickedSession {
-  const wanted = explicit.replace(/\s/g, '');
+  // Joining with a link and then asking for notes with the same link must
+  // find the meeting. When nothing can be extracted, keep the old meaning.
+  const picked = extractMeetingNo(explicit);
+  const wanted = picked.ok ? picked.meetingNo : explicit.replace(/\s/g, '');
   if (wanted) {
     const found = manager.byMeetingNo(wanted);
     return found
@@ -2331,15 +2342,21 @@ async function replyMeetingStatus(ctx: CommandContext, manager: MeetingManager):
   const pushLine = push.hooked
     ? `推送：已挂载，累计收到 ${push.received} 条${push.received === 0 ? '（尚未收到，可能还没在后台订阅 vc.bot.* 事件）' : ''}`
     : `推送：未挂载（${push.reason ?? '未知原因'}），仅靠轮询`;
+  // Lets an admin confirm the in-meeting gate without opening the config file.
+  const authzLine = meetingAuthzSummary(ctx.controls.profileConfig);
 
   if (sessions.length === 0) {
-    await reply(ctx, [`当前没有在跟的会议。`, pushLine, '', '`/meeting join <9位会议号>` 开始。'].join('\n'));
+    await reply(
+      ctx,
+      [`当前没有在跟的会议。`, authzLine, pushLine, '', '`/meeting join <会议链接 或 9 位会议号>` 开始。'].join('\n'),
+    );
     return;
   }
   const lines = sessions.map(
     (s) =>
       `- **${s.topic ?? s.meetingNo}**（${s.meetingNo}）· 来源 ${s.source === 'push' ? '推送' : '轮询'}` +
-      ` · 字幕 ${s.transcriptLines} 条 · 参会 ${s.participants} 人`,
+      ` · 字幕 ${s.transcriptLines} 条 · 参会 ${s.participants} 人` +
+      (s.deniedCount ? ` · 拒绝 ${s.deniedCount} 次` : ''),
   );
-  await reply(ctx, [`正在跟 ${sessions.length} 场会议：`, ...lines, '', pushLine].join('\n'));
+  await reply(ctx, [`正在跟 ${sessions.length} 场会议：`, ...lines, '', authzLine, pushLine].join('\n'));
 }
