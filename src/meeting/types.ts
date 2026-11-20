@@ -110,7 +110,8 @@ export function unpackActivity(item: RawActivityItem, botOpenId?: string): Meeti
         const text = str(it.text) ?? str(it.content) ?? '';
         const sentenceId = String(it.sentence_id ?? it.sentenceId ?? '');
         if (!text || !sentenceId) break;
-        const speaker = actor(it, 'speaker', 'user', 'sender');
+        // `operator` last: no real transcript sample yet, so existing keys keep priority.
+        const speaker = actor(it, 'speaker', 'user', 'sender', 'operator');
         out.push({
           kind: 'transcript',
           speaker,
@@ -132,7 +133,9 @@ export function unpackActivity(item: RawActivityItem, botOpenId?: string): Meeti
         if (!content) break;
         out.push({
           kind: 'chat',
-          from: actor(it, 'sender', 'user', 'from'),
+          // Real chat_received items carry the sender as
+          // `operator: { id, user_name }`; without it `from` is always empty.
+          from: actor(it, 'operator', 'sender', 'user', 'from'),
           content,
           ...(num(it.message_type) !== undefined ? { messageType: num(it.message_type) } : {}),
         });

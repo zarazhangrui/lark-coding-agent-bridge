@@ -55,7 +55,15 @@ export class VcApiError extends Error {
   get notInGray(): boolean {
     return this.code === 20017;
   }
+
+  /** `122001` "meeting status unexpected": the meeting has ended (observed on bots/events). */
+  get meetingGone(): boolean {
+    return this.code === MEETING_GONE_CODE;
+  }
 }
+
+/** What the events API answers for a meeting that has ended (observed). */
+export const MEETING_GONE_CODE = 122001;
 
 const BASE = '/open-apis/vc/v1/bots';
 
