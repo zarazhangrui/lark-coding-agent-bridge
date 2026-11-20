@@ -2189,11 +2189,11 @@ async function handleMeeting(args: string, ctx: CommandContext): Promise<void> {
         await reply(ctx, picked.message);
         return;
       }
-      const lines = picked.session.recentTranscript();
+      const lines = picked.session.recentContext();
       if (lines.length === 0) {
         await reply(
           ctx,
-          '字幕缓冲为空 —— agent 这次拿到的会议上下文是「（暂无字幕）」。\n' +
+          '会议记录缓冲为空（没有字幕也没有弹幕）—— agent 这次拿到的会议上下文是「（暂无字幕和弹幕）」。\n' +
             '注意：同一场会里 agent 复用一个会话，**早先轮次**的字幕仍留在它自己的对话历史里，' +
             '所以它可能引用缓冲里已经没有的内容。`/new` 可以清掉该会话记忆。',
         );
@@ -2203,7 +2203,7 @@ async function handleMeeting(args: string, ctx: CommandContext): Promise<void> {
       await reply(
         ctx,
         [
-          `字幕缓冲共 ${lines.length} 条${tail.length < lines.length ? `，以下是最近 ${tail.length} 条` : ''}：`,
+          `会议记录（字幕 + 弹幕）共 ${lines.length} 条${tail.length < lines.length ? `，以下是最近 ${tail.length} 条` : ''}：`,
           '```',
           ...tail,
           '```',
@@ -2277,7 +2277,7 @@ async function handleMeeting(args: string, ctx: CommandContext): Promise<void> {
           '`/meeting leave [会议号]` — 离会',
           '`/meeting notes [会议号]` — 基于字幕做纪要（只发给你）',
           '`/meeting stop [会议号]` — 中断该会议卡住的任务',
-          '`/meeting transcript [会议号]` — 看 agent 实际拿到的字幕上下文',
+          '`/meeting transcript [会议号]` — 看 agent 实际拿到的字幕和弹幕上下文',
           '`/meeting ask <问题>` — 带会议上下文提问',
         ].join('\n'),
       );

@@ -46,7 +46,7 @@ import {
   toPromptAttachment,
 } from '../media/attachment';
 import { canUseDm, canUseGroup, requireMentionForChat } from '../policy/access';
-import { MeetingManager } from '../meeting/manager';
+import { describeMeetingError, MeetingManager } from '../meeting/manager';
 import type { VcRequestClient } from '../meeting/api';
 import { attachMeetingAgent, summarizeEndedMeeting } from '../meeting/orchestrator';
 import type { ScopeContext } from '../policy/run-policy';
@@ -449,6 +449,31 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
           ...(sessionCatalog ? { sessionCatalog } : {}),
           workspaces,
         }).catch((err) => log.warn('meeting', 'summary-failed', { err: String(err) })),
+      onAutoJoinFailed: (meetingNo, err) => {
+        if (!controls.botOwnerId) return;
+        void channel
+          .send(controls.botOwnerId, {
+            markdown:
+              `⚠️ **会议智能体** · 被邀请入会（会议号 ${meetingNo}），但自动入会失败：${describeMeetingError(err)}\n` +
+              `可以私聊发 \`/meeting join ${meetingNo}\` 重试。`,
+          })
+          .catch((e) => log.warn('meeting', 'owner-notify-failed', { kind: 'auto-join-failed', err: String(e) }));
+      },
+      // Live meetings survive a restart (dispose() doesn't leave); record them
+      // so the next start can re-adopt instead of going deaf mid-meeting.
+      ...(deps.appPaths?.mediaDir
+        ? { stateFile: join(dirname(deps.appPaths.mediaDir), 'meetings.json') }
+        : {}),
+      onResumeEnded: (meeting, err) => {
+        if (!controls.botOwnerId) return;
+        void channel
+          .send(controls.botOwnerId, {
+            markdown:
+              `⚠️ **会议智能体** · bridge 重启后没能接回会议「${meeting.topic ?? meeting.meetingNo}」（${meeting.meetingNo}）：${describeMeetingError(err)}\n` +
+              '如果会议已经结束，这场没有纪要。',
+          })
+          .catch((e) => log.warn('meeting', 'owner-notify-failed', { kind: 'resume-ended', err: String(e) }));
+      },
       onSession: (session) =>
         attachMeetingAgent({
           session,
@@ -472,6 +497,12 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
     appId: cfg.accounts.app.id,
   });
   await ownerRefresh.start();
+  // After the owner is resolved: summaries and notices for re-adopted meetings go to them.
+  if (meetingManager) {
+    void meetingManager
+      .resume()
+      .catch((err) => log.warn('meeting', 'resume-failed', { err: String(err) }));
+  }
   const knownChatsRefresh = startKnownChatsRefreshTimer(channel, controls);
 
   const identity = channel.botIdentity;
