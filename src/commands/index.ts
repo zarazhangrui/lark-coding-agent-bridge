@@ -81,8 +81,9 @@ import type { WorkspaceStore } from '../workspace/store';
 import { createBoundChat, defaultChatName } from '../bot/group';
 import { fetchKnownChats, type KnownChat } from '../bot/lark-info';
 import { describeMeetingError, type MeetingManager } from '../meeting/manager';
-import { isMeetingNo } from '../meeting/api';
+import { extractMeetingNo } from '../meeting/api';
 import { answerInMeeting, meetingScopeId } from '../meeting/orchestrator';
+import { meetingAuthzSummary } from '../meeting/authz';
 import type { MeetingSession } from '../meeting/session';
 import { hasStructuredLarkCliUserAuth } from '../lark-cli/identity-policy';
 
@@ -213,8 +214,47 @@ function isAdminCommand(cmd: string): boolean {
   return ADMIN_COMMANDS.has(cmd.startsWith('/') ? cmd : `/${cmd}`);
 }
 
+/**
+ * A forwarded Feishu meeting card arrives as
+ * `<meeting>\n📹 <topic>\n🔢 <meeting no>\n🕙 <time>\n</meeting>`. In a DM from
+ * an admin, treat it as `/meeting join <no>` instead of handing it to the
+ * agent: the agent can only join through lark-cli, which bypasses
+ * MeetingManager — the bot sits in the meeting, but nothing it hears reaches
+ * the bridge (no in-meeting answers, no summary). Anything else — another
+ * sender, a group chat, meetings disabled — falls through unchanged.
+ */
+async function tryJoinFromMeetingCard(ctx: CommandContext, trimmed: string): Promise<boolean> {
+  if (!/^<meeting>[\s\S]*<\/meeting>$/.test(trimmed)) return false;
+  if (ctx.msg.chatType !== 'p2p') return false;
+  if (!canRunAdminCommand(ctx.controls.profileConfig, ctx.controls, ctx.msg.senderId).ok) return false;
+  const manager = ctx.controls.meeting;
+  if (!ctx.controls.profileConfig.meeting.enabled || !manager) return false;
+  const numbers = [...new Set([...trimmed.matchAll(/^🔢\s*(\d{9})\s*$/gmu)].map((m) => m[1]!))];
+  log.info('meeting', 'card-intercept', {
+    sender: ctx.msg.senderId.slice(-6),
+    found: numbers.length,
+  });
+  if (numbers.length !== 1) {
+    await reply(ctx, '会议卡片里没找到唯一的 9 位会议号，请发 `/meeting join <9位会议号>`。');
+    return true;
+  }
+  const meetingNo = numbers[0]!;
+  const existing = manager.byMeetingNo(meetingNo);
+  if (existing && !existing.ended) {
+    await reply(ctx, `✅ 已在会中 **${existing.topic ?? meetingNo}**\n会议号 ${existing.meetingNo} · \`/meeting\` 看状态`);
+    return true;
+  }
+  try {
+    await handleMeeting(`join ${meetingNo}`, ctx);
+  } catch (err) {
+    log.fail('command', err, { cmd: '/meeting', via: 'meeting-card' });
+  }
+  return true;
+}
+
 export async function tryHandleCommand(ctx: CommandContext): Promise<boolean> {
   const trimmed = ctx.msg.content.trim();
+  if (await tryJoinFromMeetingCard(ctx, trimmed)) return true;
   if (!trimmed.startsWith('/')) return false;
   const parts = trimmed.split(/\s+/);
   const cmd = parts[0] ?? '';
@@ -2114,11 +2154,18 @@ async function handleMeeting(args: string, ctx: CommandContext): Promise<void> {
       await replyMeetingStatus(ctx, manager);
       return;
     case 'join': {
-      const meetingNo = rest.replace(/\s/g, '');
-      if (!isMeetingNo(meetingNo)) {
-        await reply(ctx, '用法：`/meeting join <9位会议号>`（只接受 9 位纯数字，不是会议链接）');
+      // A link, a whole sentence or a spaced-out number all work.
+      const ex = extractMeetingNo(rest);
+      if (!ex.ok) {
+        await reply(
+          ctx,
+          ex.reason === 'ambiguous'
+            ? '输入里有多个可能的会议号，请指定一个：\n' + ex.candidates.map((c) => `- ${c}`).join('\n')
+            : '没找到会议号。可以直接粘会议链接，或给 9 位会议号：`/meeting join <会议链接 或 9 位会议号>`',
+        );
         return;
       }
+      const meetingNo = ex.meetingNo;
       try {
         const session = await manager.join(meetingNo, { originChatId: ctx.msg.chatId });
         await reply(
@@ -2150,11 +2197,11 @@ async function handleMeeting(args: string, ctx: CommandContext): Promise<void> {
         await reply(ctx, picked.message);
         return;
       }
-      const lines = picked.session.recentTranscript();
+      const lines = picked.session.recentContext();
       if (lines.length === 0) {
         await reply(
           ctx,
-          '字幕缓冲为空 —— agent 这次拿到的会议上下文是「（暂无字幕）」。\n' +
+          '会议记录缓冲为空（没有字幕也没有弹幕）—— agent 这次拿到的会议上下文是「（暂无字幕和弹幕）」。\n' +
             '注意：同一场会里 agent 复用一个会话，**早先轮次**的字幕仍留在它自己的对话历史里，' +
             '所以它可能引用缓冲里已经没有的内容。`/new` 可以清掉该会话记忆。',
         );
@@ -2164,7 +2211,7 @@ async function handleMeeting(args: string, ctx: CommandContext): Promise<void> {
       await reply(
         ctx,
         [
-          `字幕缓冲共 ${lines.length} 条${tail.length < lines.length ? `，以下是最近 ${tail.length} 条` : ''}：`,
+          `会议记录（字幕 + 弹幕）共 ${lines.length} 条${tail.length < lines.length ? `，以下是最近 ${tail.length} 条` : ''}：`,
           '```',
           ...tail,
           '```',
@@ -2238,7 +2285,7 @@ async function handleMeeting(args: string, ctx: CommandContext): Promise<void> {
           '`/meeting leave [会议号]` — 离会',
           '`/meeting notes [会议号]` — 基于字幕做纪要（只发给你）',
           '`/meeting stop [会议号]` — 中断该会议卡住的任务',
-          '`/meeting transcript [会议号]` — 看 agent 实际拿到的字幕上下文',
+          '`/meeting transcript [会议号]` — 看 agent 实际拿到的字幕和弹幕上下文',
           '`/meeting ask <问题>` — 带会议上下文提问',
         ].join('\n'),
       );
@@ -2261,7 +2308,10 @@ function pickMeetingSession(
   ctx: CommandContext,
   explicit: string,
 ): PickedSession {
-  const wanted = explicit.replace(/\s/g, '');
+  // Joining with a link and then asking for notes with the same link must
+  // find the meeting. When nothing can be extracted, keep the old meaning.
+  const picked = extractMeetingNo(explicit);
+  const wanted = picked.ok ? picked.meetingNo : explicit.replace(/\s/g, '');
   if (wanted) {
     const found = manager.byMeetingNo(wanted);
     return found
@@ -2292,15 +2342,21 @@ async function replyMeetingStatus(ctx: CommandContext, manager: MeetingManager):
   const pushLine = push.hooked
     ? `推送：已挂载，累计收到 ${push.received} 条${push.received === 0 ? '（尚未收到，可能还没在后台订阅 vc.bot.* 事件）' : ''}`
     : `推送：未挂载（${push.reason ?? '未知原因'}），仅靠轮询`;
+  // Lets an admin confirm the in-meeting gate without opening the config file.
+  const authzLine = meetingAuthzSummary(ctx.controls.profileConfig);
 
   if (sessions.length === 0) {
-    await reply(ctx, [`当前没有在跟的会议。`, pushLine, '', '`/meeting join <9位会议号>` 开始。'].join('\n'));
+    await reply(
+      ctx,
+      [`当前没有在跟的会议。`, authzLine, pushLine, '', '`/meeting join <会议链接 或 9 位会议号>` 开始。'].join('\n'),
+    );
     return;
   }
   const lines = sessions.map(
     (s) =>
       `- **${s.topic ?? s.meetingNo}**（${s.meetingNo}）· 来源 ${s.source === 'push' ? '推送' : '轮询'}` +
-      ` · 字幕 ${s.transcriptLines} 条 · 参会 ${s.participants} 人`,
+      ` · 字幕 ${s.transcriptLines} 条 · 参会 ${s.participants} 人` +
+      (s.deniedCount ? ` · 拒绝 ${s.deniedCount} 次` : ''),
   );
-  await reply(ctx, [`正在跟 ${sessions.length} 场会议：`, ...lines, '', pushLine].join('\n'));
+  await reply(ctx, [`正在跟 ${sessions.length} 场会议：`, ...lines, '', authzLine, pushLine].join('\n'));
 }

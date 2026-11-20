@@ -369,9 +369,10 @@ function MeetingCard({ profile, cfg, onChange }: {
   }, [profile, cfg.enabled]);
 
   async function join() {
-    const no = joinNo.replace(/\s/g, "");
-    if (!/^\d{9}$/.test(no)) {
-      toast.error("会议号必须是 9 位数字");
+    // A link, a sentence or a spaced-out number: the server extracts the meeting number.
+    const no = joinNo.trim();
+    if (!no) {
+      toast.error("请粘会议链接或输入 9 位会议号");
       return;
     }
     setBusy(true);
@@ -506,7 +507,7 @@ function MeetingCard({ profile, cfg, onChange }: {
                   ))}
                 </div>
                 <div className="flex gap-2">
-                  <Input placeholder="9 位会议号" value={joinNo} onChange={(e) => setJoinNo(e.target.value)}
+                  <Input placeholder="会议链接或 9 位会议号" value={joinNo} onChange={(e) => setJoinNo(e.target.value)}
                     onKeyDown={(e) => { if (e.key === "Enter") void join(); }} />
                   <Button variant="outline" disabled={busy} onClick={join}>入会</Button>
                 </div>

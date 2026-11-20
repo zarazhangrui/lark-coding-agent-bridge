@@ -309,6 +309,21 @@ describe('in-meeting trigger matching', () => {
     expect(matchTrigger('@助手 ', prefixes)).toBe('');
   });
 
+  it('accepts the mention mid- or end-of-sentence', () => {
+    const prefixes = triggerPrefixes('@bot', '羽木的三儿');
+    // the real chat that went unanswered in the T0049 field test
+    expect(matchTrigger('说句话听听@羽木的三儿', prefixes)).toBe('说句话听听');
+    expect(matchTrigger('刚才说到哪了 @bot', prefixes)).toBe('刚才说到哪了');
+    expect(matchTrigger('谢谢 @bot.', prefixes)).toBe('谢谢 .');
+    expect(matchTrigger('请 @羽木的三儿 总结一下', prefixes)).toBe('请 总结一下');
+    expect(matchTrigger('喂@羽木的三儿', prefixes)).toBe('喂');
+    // not glued to latin words / emails / domains
+    expect(matchTrigger('发到 a@bot.com 了', prefixes)).toBeUndefined();
+    expect(matchTrigger('看看 @bot.com 这个', prefixes)).toBeUndefined();
+    expect(matchTrigger('看看 @bottle 这个', prefixes)).toBeUndefined();
+    expect(matchTrigger('问一下 @别人', prefixes)).toBeUndefined();
+  });
+
   it('matches latin bot names case-insensitively', () => {
     const prefixes = triggerPrefixes('@bot', 'Nemo');
     expect(matchTrigger('@nemo hello', prefixes)).toBe('hello');

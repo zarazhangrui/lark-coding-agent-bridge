@@ -1,6 +1,14 @@
+import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { dirname } from 'node:path';
 import { log } from '../core/logger';
 import type { MeetingConfig } from '../config/profile-schema';
-import { joinMeeting, VcApiError, type RawActivityItem, type VcRequestClient } from './api';
+import {
+  joinMeeting,
+  MEETING_GONE_CODE,
+  VcApiError,
+  type RawActivityItem,
+  type VcRequestClient,
+} from './api';
 import { MeetingSession, type MeetingSessionStatus } from './session';
 import type { MeetingEvent } from './types';
 
@@ -57,7 +65,28 @@ export interface MeetingManagerDeps {
   onInvited?: (meetingNo: string, inviterId?: string) => void;
   /** Meeting ended (push, or observed by the poller). */
   onEnded?: (session: MeetingSession) => void;
+  /** Auto-join after an invite failed — the inviter only sees a bot that never came. */
+  onAutoJoinFailed?: (meetingNo: string, err: unknown) => void;
+  /**
+   * Where live meetings are recorded so a restarted bridge can re-adopt them
+   * (`dispose()` keeps the bot in the meeting). Omit to disable.
+   */
+  stateFile?: string;
+  /** A recorded meeting could not be re-adopted because it ended while the bridge was down. */
+  onResumeEnded?: (meeting: PersistedMeeting, err: VcApiError) => void;
 }
+
+/** One live meeting as written to {@link MeetingManagerDeps.stateFile}. */
+export interface PersistedMeeting {
+  meetingId: string;
+  meetingNo: string;
+  topic?: string;
+  originChatId?: string;
+  startedAt?: string;
+}
+
+/** Recorded meetings older than this are not re-adopted. */
+const RESUME_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 
 function asRecord(v: unknown): Record<string, unknown> {
   return v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : {};
@@ -69,6 +98,8 @@ export class MeetingManager {
   /** `onRawEvent` teardown functions, so `dispose()` stops feeding a dead manager. */
   private unsubscribers: (() => void)[] = [];
   private disposed = false;
+  /** Recorded meetings whose re-adoption failed transiently; kept for the next start. */
+  private unresumed: PersistedMeeting[] = [];
 
   constructor(private deps: MeetingManagerDeps) {}
 
@@ -178,9 +209,10 @@ export class MeetingManager {
     log.info('meeting', 'invited', { meetingNo });
     this.deps.onInvited?.(meetingNo, inviterId);
     if (this.deps.config().autoJoinOnInvite) {
-      void this.join(meetingNo).catch((err) =>
-        log.warn('meeting', 'auto-join-failed', { meetingNo, err: String(err) }),
-      );
+      void this.join(meetingNo).catch((err) => {
+        log.warn('meeting', 'auto-join-failed', { meetingNo, err: String(err) });
+        this.deps.onAutoJoinFailed?.(meetingNo, err);
+      });
     }
   }
 
@@ -203,11 +235,17 @@ export class MeetingManager {
   private handleEnded(data: unknown): void {
     const meetingId = asRecord(asRecord(data).meeting).id;
     if (typeof meetingId !== 'string') return;
+    this.endSession(meetingId, 'push');
+  }
+
+  /** Push or poller says the meeting is over: summarize once, forget it. */
+  private endSession(meetingId: string, via: 'push' | 'poll'): void {
     const session = this.sessions.get(meetingId);
-    if (!session) return;
-    log.info('meeting', 'ended', { meetingId });
+    if (!session) return; // already ended via the other lane
+    log.info('meeting', 'ended', { meetingId, via });
     session.markEnded();
     this.sessions.delete(meetingId);
+    this.persist();
     this.deps.onEnded?.(session);
   }
 
@@ -237,8 +275,119 @@ export class MeetingManager {
     });
     this.sessions.set(session.meetingId, session);
     this.deps.onSession?.(session);
+    session.onGone = () => this.endSession(session.meetingId, 'poll');
     session.startPolling();
+    this.persist();
     return session;
+  }
+
+  /**
+   * Re-adopt the meetings recorded by a previous run. Each one is caught up
+   * (existing events read into the buffer before the agent subscribes, so old
+   * questions aren't answered twice) and then polled as usual.
+   *
+   * `122001` (what the events API returns once a meeting has ended) drops the
+   * record and fires `onResumeEnded`. Any other failure — network, rate limit,
+   * token — keeps it for the next start; records older than a day are dropped.
+   * Known gap: a question asked while the bridge was down is treated as old
+   * and not answered.
+   */
+  async resume(): Promise<void> {
+    const file = this.deps.stateFile;
+    if (!file || this.disposed) return;
+    let records: PersistedMeeting[];
+    try {
+      const parsed = JSON.parse(readFileSync(file, 'utf8')) as { meetings?: unknown };
+      records = Array.isArray(parsed.meetings) ? (parsed.meetings as PersistedMeeting[]) : [];
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+        log.warn('meeting', 'resume-read-failed', { err: String(err) });
+      }
+      return;
+    }
+    // Keep every record until it is settled: a join/leave persisting mid-resume
+    // must not wipe the ones not reached yet.
+    this.unresumed = records.filter((r) => r?.meetingId && r.meetingNo);
+    const settle = (r: PersistedMeeting) => {
+      this.unresumed = this.unresumed.filter((x) => x !== r);
+    };
+    const cutoff = Date.now() - RESUME_MAX_AGE_MS;
+    for (const r of [...this.unresumed]) {
+      if (this.sessions.has(r.meetingId)) {
+        settle(r);
+        continue;
+      }
+      if (r.startedAt && Date.parse(r.startedAt) < cutoff) {
+        log.info('meeting', 'resume-expired', { meetingNo: r.meetingNo });
+        settle(r);
+        continue;
+      }
+      const botOpenId = this.deps.botOpenId?.();
+      const session = new MeetingSession({
+        client: this.deps.client,
+        meetingId: r.meetingId,
+        meetingNo: r.meetingNo,
+        ...(r.topic ? { topic: r.topic } : {}),
+        config: this.deps.config(),
+        ...(botOpenId ? { botOpenId } : {}),
+        ...(r.originChatId ? { originChatId: r.originChatId } : {}),
+      });
+      try {
+        await session.catchUp();
+      } catch (err) {
+        session.dispose();
+        if (err instanceof VcApiError && err.code === MEETING_GONE_CODE) {
+          log.info('meeting', 'resume-dropped', { meetingNo: r.meetingNo, code: err.code });
+          settle(r);
+          this.deps.onResumeEnded?.(r, err);
+        } else {
+          log.warn('meeting', 'resume-failed', { meetingNo: r.meetingNo, err: String(err) });
+        }
+        continue;
+      }
+      if (this.disposed) {
+        session.dispose();
+        return;
+      }
+      settle(r);
+      if (this.sessions.has(r.meetingId)) {
+        session.dispose(); // joined again while we were catching up
+        continue;
+      }
+      session.resumedAt = Date.now();
+      this.sessions.set(session.meetingId, session);
+      this.deps.onSession?.(session);
+      session.onGone = () => this.endSession(session.meetingId, 'poll');
+      session.startPolling();
+      log.info('meeting', 'resumed', { meetingNo: r.meetingNo, replayed: session.status().ingested });
+    }
+    this.persist();
+  }
+
+  /** Write the live meetings to `stateFile` (atomic replace). Never throws. */
+  private persist(): void {
+    const file = this.deps.stateFile;
+    // A join still in flight on a disposed manager must not overwrite the new one's file.
+    if (!file || this.disposed) return;
+    try {
+      const live: PersistedMeeting[] = [...this.sessions.values()]
+        .filter((s) => !s.ended)
+        .map((s) => ({
+          meetingId: s.meetingId,
+          meetingNo: s.meetingNo,
+          ...(s.topic ? { topic: s.topic } : {}),
+          ...(s.originChatId ? { originChatId: s.originChatId } : {}),
+          startedAt: s.startedAt,
+        }));
+      const ids = new Set(live.map((m) => m.meetingId));
+      const meetings = [...live, ...this.unresumed.filter((m) => !ids.has(m.meetingId))];
+      mkdirSync(dirname(file), { recursive: true });
+      const tmp = `${file}.tmp-${process.pid}`;
+      writeFileSync(tmp, `${JSON.stringify({ meetings }, null, 2)}\n`);
+      renameSync(tmp, file);
+    } catch (err) {
+      log.warn('meeting', 'persist-failed', { err: String(err) });
+    }
   }
 
   /** Leave a meeting and drop its session. Idempotent. */
@@ -246,6 +395,7 @@ export class MeetingManager {
     const session = this.sessions.get(meetingId);
     if (!session) return false;
     this.sessions.delete(meetingId);
+    this.persist();
     await session.leave();
     return true;
   }
@@ -254,13 +404,15 @@ export class MeetingManager {
   async leaveAll(): Promise<void> {
     const all = [...this.sessions.values()];
     this.sessions.clear();
+    this.persist();
     await Promise.allSettled(all.map((s) => s.leave()));
   }
 
   /**
    * Stop local work without leaving the meetings. Used by `disconnect()`:
    * `/reconnect` tears the channel down and rebuilds it, and leaving every
-   * meeting on a reconnect would be surprising.
+   * meeting on a reconnect would be surprising. `stateFile` is left as is, so
+   * the next start can {@link resume} them.
    */
   dispose(): void {
     if (this.disposed) return;

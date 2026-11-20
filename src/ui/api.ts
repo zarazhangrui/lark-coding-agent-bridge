@@ -11,7 +11,7 @@ import {
   startDeviceLogin,
   type AddBotResult,
 } from '../lark-cli/user-im';
-import { isMeetingNo } from '../meeting/api';
+import { extractMeetingNo } from '../meeting/api';
 import { checkMeetingPreflight, type MeetingPreflight } from '../meeting/preflight';
 import { describeMeetingError, type MeetingManager, type MeetingPushHealth } from '../meeting/manager';
 import type { MeetingSessionStatus } from '../meeting/session';
@@ -152,7 +152,7 @@ function clampInt(value: unknown, min: number, max: number, fallback: number): n
  * Parse the in-meeting agent section. Unspecified fields keep their current
  * value; numbers are clamped to the same bounds the schema normalizer uses.
  */
-function parseMeetingBody(body: unknown, current: MeetingConfig): MeetingConfig {
+export function parseMeetingBody(body: unknown, current: MeetingConfig): MeetingConfig {
   if (!body || typeof body !== 'object' || Array.isArray(body)) return current;
   const fv = body as Record<string, unknown>;
   const t = (fv.transcript && typeof fv.transcript === 'object' ? fv.transcript : {}) as Record<string, unknown>;
@@ -182,6 +182,11 @@ function parseMeetingBody(body: unknown, current: MeetingConfig): MeetingConfig 
       fv.summaryTarget === 'origin' || fv.summaryTarget === 'owner'
         ? fv.summaryTarget
         : current.summaryTarget,
+    // Not editable in the console: saving the form must not reset the
+    // meeting authorization to its defaults.
+    access: current.access,
+    executionAccess: current.executionAccess,
+    elevateWord: current.elevateWord,
   };
 }
 
@@ -480,8 +485,17 @@ export async function meetingJoin(
 ): Promise<{ ok: true; session: MeetingSessionStatus }> {
   if (!manager) throw new ApiError(400, '会议能力不可用：profile 未在线或未启用');
   const fv = asRecord(body);
-  const meetingNo = typeof fv.meetingNo === 'string' ? fv.meetingNo.replace(/\s/g, '') : '';
-  if (!isMeetingNo(meetingNo)) throw new ApiError(400, '会议号必须是 9 位数字');
+  // Same extraction rules as `/meeting join`: a link, a sentence or a spaced-out number.
+  const ex = extractMeetingNo(typeof fv.meetingNo === 'string' ? fv.meetingNo : '');
+  if (!ex.ok) {
+    throw new ApiError(
+      400,
+      ex.reason === 'ambiguous'
+        ? `输入里有多个可能的会议号：${ex.candidates.join('、')}`
+        : '没找到会议号（可粘会议链接或 9 位会议号）',
+    );
+  }
+  const meetingNo = ex.meetingNo;
   try {
     const session = await manager.join(meetingNo);
     return { ok: true, session: session.status() };

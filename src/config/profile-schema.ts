@@ -5,6 +5,7 @@ import type {
   SecretsConfig,
 } from './schema';
 import {
+  isAccessMode,
   normalizePermissions,
   permissionsToLegacySandbox,
   type AccessMode,
@@ -107,7 +108,25 @@ export interface MeetingConfig {
   summaryOnEnd: boolean;
   /** Preferred destination for that summary. See {@link MeetingSummaryTarget}. */
   summaryTarget: MeetingSummaryTarget;
+  /**
+   * Who may drive the agent from in-meeting chat. Joining a meeting makes the
+   * bot visible to every participant; it does not make every participant
+   * allowed to run it.
+   *  - `dm-policy`: the same people who may DM the bot (owner, team mode,
+   *    admins, allowedUsers).
+   *  - `admins-only`: only those who may run admin commands.
+   */
+  access: MeetingAccess;
+  /** Access tier for runs triggered from meeting chat (capped by the profile's maxAccess). */
+  executionAccess: AccessMode;
+  /**
+   * Word that, right after the trigger, runs one request with the profile's
+   * default access instead of `executionAccess`. Empty = no elevation at all.
+   */
+  elevateWord: string;
 }
+
+export type MeetingAccess = 'dm-policy' | 'admins-only';
 
 export type LarkCliIdentityPreset = 'bot-only' | 'user-default';
 
@@ -405,6 +424,11 @@ export const MEETING_DEFAULTS: MeetingConfig = {
   pollIntervalMs: 3000,
   summaryOnEnd: false,
   summaryTarget: 'origin',
+  // Unconfigured = safe: the DM allowlist decides, runs are read-only and
+  // there is no way to elevate.
+  access: 'dm-policy',
+  executionAccess: 'read-only',
+  elevateWord: '',
 };
 
 function normalizeMeeting(input: unknown): MeetingConfig {
@@ -417,6 +441,9 @@ function normalizeMeeting(input: unknown): MeetingConfig {
     pollIntervalMs?: unknown;
     summaryOnEnd?: unknown;
     summaryTarget?: unknown;
+    access?: unknown;
+    executionAccess?: unknown;
+    elevateWord?: unknown;
   };
   const trigger = typeof raw.trigger === 'string' && raw.trigger.trim() ? raw.trigger.trim() : MEETING_DEFAULTS.trigger;
   return {
@@ -438,6 +465,12 @@ function normalizeMeeting(input: unknown): MeetingConfig {
       raw.summaryTarget === 'owner' || raw.summaryTarget === 'origin'
         ? raw.summaryTarget
         : MEETING_DEFAULTS.summaryTarget,
+    access: raw.access === 'admins-only' ? 'admins-only' : MEETING_DEFAULTS.access,
+    executionAccess: isAccessMode(raw.executionAccess) ? raw.executionAccess : MEETING_DEFAULTS.executionAccess,
+    elevateWord:
+      typeof raw.elevateWord === 'string' && raw.elevateWord.trim()
+        ? raw.elevateWord.trim()
+        : MEETING_DEFAULTS.elevateWord,
   };
 }
 

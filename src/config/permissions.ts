@@ -24,7 +24,7 @@ export interface NormalizedPermissions {
   source: PermissionSource;
 }
 
-const ACCESS_ORDER: Record<AccessMode, number> = {
+export const ACCESS_ORDER: Record<AccessMode, number> = {
   'read-only': 0,
   workspace: 1,
   full: 2,
@@ -263,7 +263,7 @@ function readSandboxMode(value: unknown, field: string): CodexSandboxMode | unde
   return value;
 }
 
-function isAccessMode(value: unknown): value is AccessMode {
+export function isAccessMode(value: unknown): value is AccessMode {
   return value === 'read-only' || value === 'workspace' || value === 'full';
 }
 
