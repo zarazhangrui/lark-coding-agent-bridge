@@ -148,6 +148,30 @@ describe('in-meeting @ from a real chat event', () => {
     expect(mocks.startRunFlow).toHaveBeenCalledTimes(1);
     expect(mocks.startRunFlow.mock.calls[0]![0].prompt).toContain('参会人「张三」');
   });
+
+  it('accepts the mention at the end of the sentence', async () => {
+    const config = cfg({ trigger: '@bot' });
+    const s = makeSession(config);
+    attachMeetingAgent(deps(s, config).args);
+    s.ingest(chat('e-tail', '说句话听听 @bot'));
+    await flush();
+    expect(mocks.startRunFlow).toHaveBeenCalledTimes(1);
+  });
+
+  it("ignores the bot's own answer even when it quotes the trigger", async () => {
+    const config = cfg({ trigger: '@bot' });
+    const s = makeSession(config);
+    const d = deps(s, config);
+    (d.args as { channel: { botIdentity: unknown } }).channel.botIdentity = {
+      name: 'bot',
+      openId: 'ou_b',
+    };
+    attachMeetingAgent(d.args);
+    // `chat()` sends as ou_b — here that is the bot itself
+    s.ingest(chat('e-self', '有事直接 @bot 叫我'));
+    await flush();
+    expect(mocks.startRunFlow).not.toHaveBeenCalled();
+  });
 });
 
 describe('meeting context = transcript + chat', () => {
@@ -283,7 +307,7 @@ describe('failures reach a human', () => {
     const client: VcRequestClient = {
       request: vi.fn(async () =>
         (failing
-          ? { code: 122001, msg: 'meeting status unexpected' }
+          ? { code: 99991400, msg: 'request trigger frequency limit' }
           : { code: 0, data: { events: [] } }) as never,
       ),
     };
@@ -297,7 +321,7 @@ describe('failures reach a human', () => {
     await vi.advanceTimersByTimeAsync(1_000 * (POLL_FAILURE_ALERT + 3));
     expect(onTrouble).toHaveBeenCalledTimes(1);
     expect(d.sent).toHaveLength(1);
-    expect(d.sent[0]!.markdown).toContain('meeting status unexpected');
+    expect(d.sent[0]!.markdown).toContain('request trigger frequency limit');
     failing = false;
     await vi.advanceTimersByTimeAsync(1_000);
     failing = true;

@@ -2,7 +2,13 @@ import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { log } from '../core/logger';
 import type { MeetingConfig } from '../config/profile-schema';
-import { joinMeeting, VcApiError, type RawActivityItem, type VcRequestClient } from './api';
+import {
+  joinMeeting,
+  MEETING_GONE_CODE,
+  VcApiError,
+  type RawActivityItem,
+  type VcRequestClient,
+} from './api';
 import { MeetingSession, type MeetingSessionStatus } from './session';
 import type { MeetingEvent } from './types';
 
@@ -79,8 +85,6 @@ export interface PersistedMeeting {
   startedAt?: string;
 }
 
-/** What the events API answers for a meeting that has ended (observed). */
-const MEETING_GONE_CODE = 122001;
 /** Recorded meetings older than this are not re-adopted. */
 const RESUME_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 
@@ -231,9 +235,14 @@ export class MeetingManager {
   private handleEnded(data: unknown): void {
     const meetingId = asRecord(asRecord(data).meeting).id;
     if (typeof meetingId !== 'string') return;
+    this.endSession(meetingId, 'push');
+  }
+
+  /** Push or poller says the meeting is over: summarize once, forget it. */
+  private endSession(meetingId: string, via: 'push' | 'poll'): void {
     const session = this.sessions.get(meetingId);
-    if (!session) return;
-    log.info('meeting', 'ended', { meetingId });
+    if (!session) return; // already ended via the other lane
+    log.info('meeting', 'ended', { meetingId, via });
     session.markEnded();
     this.sessions.delete(meetingId);
     this.persist();
@@ -266,6 +275,7 @@ export class MeetingManager {
     });
     this.sessions.set(session.meetingId, session);
     this.deps.onSession?.(session);
+    session.onGone = () => this.endSession(session.meetingId, 'poll');
     session.startPolling();
     this.persist();
     return session;
@@ -347,6 +357,7 @@ export class MeetingManager {
       session.resumedAt = Date.now();
       this.sessions.set(session.meetingId, session);
       this.deps.onSession?.(session);
+      session.onGone = () => this.endSession(session.meetingId, 'poll');
       session.startPolling();
       log.info('meeting', 'resumed', { meetingNo: r.meetingNo, replayed: session.status().ingested });
     }

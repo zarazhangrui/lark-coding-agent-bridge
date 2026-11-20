@@ -204,3 +204,61 @@ describe('push hook against the real @larksuite/channel', () => {
     expect(health.reason).toBeUndefined();
   });
 });
+
+describe('meeting end observed by the poller', () => {
+  // Pushes may never arrive (no console subscription). The events API then
+  // answers 122001 for an ended meeting; that must end the session exactly once
+  // (→ summary) instead of polling a dead meeting and alarming the owner.
+  it('ends the session once when polling hits 122001', async () => {
+    let polls = 0;
+    const client: VcRequestClient = {
+      request: vi.fn(async (p: { url: string }) => {
+        if (p.url.endsWith('/join')) return { code: 0, data: { meeting: { id: '70001' } } } as never;
+        if (p.url.endsWith('/events')) {
+          polls += 1;
+          return { code: 122001, msg: 'meeting status unexpected' } as never;
+        }
+        return { code: 0, data: {} } as never;
+      }),
+    };
+    const ended: string[] = [];
+    const m = new MeetingManager({
+      client,
+      config: () => cfg({ pollIntervalMs: 5 }),
+      onEnded: (s) => ended.push(s.meetingId),
+    });
+    const session = await m.join('123456789');
+    let trouble = 0;
+    session.onTrouble = () => (trouble += 1);
+    await new Promise((r) => setTimeout(r, 60));
+
+    expect(ended).toEqual(['70001']);
+    expect(session.ended).toBe(true);
+    expect(m.list()).toHaveLength(0);
+    expect(polls).toBe(1); // stopped polling right away
+    expect(trouble).toBe(0); // not reported as a polling failure
+  });
+
+  it('a later meeting_ended push for the same meeting does not summarize twice', async () => {
+    const { channel, handlers } = fakeChannel();
+    const client: VcRequestClient = {
+      request: vi.fn(async (p: { url: string }) => {
+        if (p.url.endsWith('/join')) return { code: 0, data: { meeting: { id: '70001' } } } as never;
+        if (p.url.endsWith('/events')) return { code: 122001, msg: 'meeting status unexpected' } as never;
+        return { code: 0, data: {} } as never;
+      }),
+    };
+    const ended: string[] = [];
+    const m = new MeetingManager({
+      client,
+      channel,
+      config: () => cfg({ pollIntervalMs: 5 }),
+      onEnded: (s) => ended.push(s.meetingId),
+    });
+    m.attachPush();
+    await m.join('123456789');
+    await new Promise((r) => setTimeout(r, 30));
+    handlers.get(VC_BOT_EVENTS.ended)?.({ meeting: { id: '70001' } });
+    expect(ended).toEqual(['70001']);
+  });
+});

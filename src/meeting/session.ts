@@ -4,6 +4,7 @@ import {
   fetchMeetingEvents,
   leaveMeeting,
   sendMeetingText,
+  VcApiError,
   type RawActivityItem,
   type VcRequestClient,
 } from './api';
@@ -68,6 +69,13 @@ export class MeetingSession {
    * {@link POLL_FAILURE_ALERT} times in a row.
    */
   onTrouble?: (kind: 'poll-failed', err: unknown) => void;
+  /**
+   * Called once when the poller sees the meeting has ended (`122001`). The
+   * `meeting_ended` push is the other way to learn it, but pushes may never
+   * arrive (no console subscription), and without this the session would poll
+   * a dead meeting forever, never summarize, and alarm the owner about it.
+   */
+  onGone?: (err: VcApiError) => void;
 
   private readonly client: VcRequestClient;
   private readonly config: MeetingConfig;
@@ -351,6 +359,12 @@ export class MeetingSession {
         // More pages queued → come back immediately instead of sleeping.
         if (page.hasMore) this.idleRounds = -1;
       } catch (err) {
+        if (err instanceof VcApiError && err.meetingGone) {
+          log.info('meeting', 'ended-observed', { meetingId: this.meetingId, code: err.code });
+          this.markEnded();
+          this.onGone?.(err);
+          return;
+        }
         this.idleRounds = Math.min(this.idleRounds + 1, 3);
         log.warn('meeting', 'poll-failed', { meetingId: this.meetingId, err: String(err) });
         // Report once per streak: a poller that keeps failing means the bot is

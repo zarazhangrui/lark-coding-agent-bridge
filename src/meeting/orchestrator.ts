@@ -75,8 +75,32 @@ export function matchTrigger(text: string, prefixes: string[]): string | undefin
       .replace(/^[\s,，、:：。.!！?？~～-]+/, '')
       .trim();
   }
+  // People also mention the bot mid- or end-of-sentence ("说句话听听@助手").
+  // Accept the mention anywhere, unless it is glued to a latin word or an
+  // email/domain on either side ("a@bot.com", "@bottle" don't count).
+  for (const prefix of prefixes) {
+    const p = prefix.trim();
+    if (!p) continue;
+    const pl = p.toLowerCase();
+    const endsWord = LATIN_WORD.test(p[p.length - 1] ?? '');
+    for (let idx = lower.indexOf(pl); idx >= 0; idx = lower.indexOf(pl, idx + 1)) {
+      const before = trimmed[idx - 1] ?? '';
+      const after = trimmed[idx + p.length] ?? '';
+      const afterNext = trimmed[idx + p.length + 1] ?? '';
+      if (EMAIL_LOCAL.test(before)) continue;
+      if (endsWord && (LATIN_WORD.test(after) || (after === '.' && LATIN_WORD.test(afterNext))))
+        continue;
+      return `${trimmed.slice(0, idx)} ${trimmed.slice(idx + p.length)}`
+        .replace(/^[\s,，、:：。.!！?？~～-]+/, '')
+        .replace(/\s+/g, ' ')
+        .trim();
+    }
+  }
   return undefined;
 }
+
+const LATIN_WORD = /[A-Za-z0-9_]/;
+const EMAIL_LOCAL = /[A-Za-z0-9_.+-]/;
 
 /** Configured prefix plus `@<botName>`, de-duplicated. */
 export function triggerPrefixes(configured: string, botName?: string): string[] {
@@ -97,6 +121,10 @@ export function attachMeetingAgent(deps: MeetingAgentDeps): void {
     const chat = event as ChatEvent;
     // message_type 3 is an in-meeting reaction, not text — never a question.
     if (chat.messageType === 3) return;
+    // Our own answers come back as chat too. Now that a mention anywhere
+    // counts, an answer quoting "@<botName>" must not trigger another run.
+    const selfId = deps.channel.botIdentity?.openId;
+    if (selfId && chat.from.id === selfId) return;
     // Read the bot name live: it is only known after connect and can change.
     const prefixes = triggerPrefixes(
       controls.profileConfig.meeting.trigger,
@@ -106,7 +134,7 @@ export function attachMeetingAgent(deps: MeetingAgentDeps): void {
     if (question === undefined) return; // not addressed to us
     if (!question) return; // addressed but empty
     const usedPrefix = prefixes.find((p) =>
-      chat.content.trim().toLowerCase().startsWith(p.toLowerCase()),
+      chat.content.trim().toLowerCase().includes(p.toLowerCase()),
     );
 
     if (STOP_WORDS.has(question.toLowerCase())) {
